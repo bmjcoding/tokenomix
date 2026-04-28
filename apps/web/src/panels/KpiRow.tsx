@@ -1,7 +1,7 @@
 /**
  * KpiRow — four MetricCards for the redesigned dashboard.
  *
- * Cards (in order): Tokens / Cache Efficiency / Sessions / Avg Session Duration
+ * Cards (in order): Tokens · 30D / Cache Efficiency / Sessions / Avg Session Duration
  *
  * Architecture: prop-driven. KpiRow accepts a MetricSummary prop — it does NOT
  * self-fetch. OverviewPage owns the single useQuery and passes data down.
@@ -9,11 +9,14 @@
  * calendar month via monthlyRollup.current) for sparklines and deltas, and
  * lifetime totals (flat MetricSummary fields) for headline numbers where noted.
  *
- * Card 1 — Tokens
- *   Headline: totalInputTokens + totalOutputTokens + totalCacheCreationTokens
- *             (lifetime; cache READS are excluded — they represent free reuse)
+ * Card 1 — Tokens · 30D
+ *   Headline: inputTokens30d + outputTokens30d + cacheCreationTokens30d
+ *             (30-day window; cache READS are excluded — they represent free reuse)
  *   Sparkline: monthlyRollup.current.dailyTokens
- *   Delta: MTD vs prior month via monthlyRollup.{current,previous}.totalTokens
+ *   Delta: null (em-dash) — the prior-period totalTokens on PeriodRollup is
+ *          input+output only with no cacheCreation component; comparing it
+ *          against the new 30d headline (which includes cacheCreation) would be
+ *          a mismatched comparison. Prefer null over a misleading delta.
  *
  * Card 2 — Cache Efficiency
  *   Headline: computeCacheEfficiency(flat lifetime token fields) → formatted %
@@ -35,6 +38,7 @@
 import type { MetricSummary } from '@tokenomix/shared';
 import { Activity, Clock, Cpu, Zap } from 'lucide-react';
 import { computeCacheEfficiency, computeDailyEfficiencySeries } from '../lib/derive.js';
+import { pctDelta } from '../lib/formatters.js';
 import { Section } from '../ui/Section.js';
 import { MetricCard } from './MetricCard.js';
 
@@ -85,15 +89,6 @@ function formatDurationMinutes(min: number): string {
   return remMin > 0 ? `${hr}h ${remMin}m` : `${hr}h`;
 }
 
-/**
- * Computes ((curr - prev) / prev) * 100.
- * Returns null when prev is 0 (renders em-dash instead of Infinity/NaN).
- */
-function pctDelta(curr: number, prev: number): number | null {
-  if (prev === 0) return null;
-  return ((curr - prev) / prev) * 100;
-}
-
 // ---------------------------------------------------------------------------
 // KpiRow
 // ---------------------------------------------------------------------------
@@ -107,15 +102,16 @@ export function KpiRow({ data }: KpiRowProps) {
   const current = data.monthlyRollup.current;
   const previous = data.monthlyRollup.previous;
 
-  // ── Card 1 — Tokens ─────────────────────────────────────────────────────
-  // Headline: lifetime total of input + output + cache creation tokens.
+  // ── Card 1 — Tokens · 30D ────────────────────────────────────────────────
+  // Headline: 30-day total of input + output + cache creation tokens.
   // Cache reads are excluded — they are free reuse, not newly produced tokens.
-  const lifetimeTokens =
-    data.totalInputTokens + data.totalOutputTokens + data.totalCacheCreationTokens;
+  const tokens30d = data.inputTokens30d + data.outputTokens30d + data.cacheCreationTokens30d;
 
-  // Delta: MTD current vs MTD previous (totalTokens on PeriodRollup is
-  // input+output, cache excluded — consistent with the same formula above).
-  const tokensDelta = pctDelta(current.totalTokens, previous.totalTokens);
+  // Delta: intentionally null. PeriodRollup.totalTokens is input+output only
+  // (no cache creation component), so comparing it against the 30d headline
+  // — which now includes cacheCreationTokens30d — would be mismatched. Prefer
+  // an em-dash over a misleading comparison.
+  const tokensDelta: number | null = null;
 
   // ── Card 2 — Cache Efficiency ────────────────────────────────────────────
   // Headline: lifetime cache-hit ratio using flat MetricSummary fields.
@@ -153,10 +149,10 @@ export function KpiRow({ data }: KpiRowProps) {
 
   return (
     <Section title="Key Metrics" cols={4} gap="md">
-      {/* Card 1 — Tokens */}
+      {/* Card 1 — Tokens · 30D */}
       <MetricCard
-        label="Tokens"
-        value={formatTokens(lifetimeTokens)}
+        label="TOKENS · 30D"
+        value={formatTokens(tokens30d)}
         sparklineData={current.dailyTokens}
         deltaPercent={tokensDelta}
         icon={<Cpu size={14} aria-hidden="true" className="shrink-0" />}

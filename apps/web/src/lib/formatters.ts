@@ -70,3 +70,13 @@ export function formatCurrency(usd: number): string {
 export function formatTokens(n: number): string {
   return new Intl.NumberFormat('en-US').format(n);
 }
+
+/**
+ * Computes percentage delta: ((curr - prev) / prev) * 100.
+ * Returns null when prev is 0 to avoid Infinity/NaN — callers should render
+ * null as an em-dash rather than a percentage.
+ */
+export function pctDelta(curr: number, prev: number): number | null {
+  if (prev === 0) return null;
+  return ((curr - prev) / prev) * 100;
+}
