@@ -1,0 +1,27 @@
+{
+  "name": "tokenomix",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@9.15.4",
+  "scripts": {
+    "dev": "concurrently -n server,web -c blue,cyan \"pnpm --filter @tokenomix/server dev\" \"pnpm --filter @tokenomix/web dev\"",
+    "build": "pnpm -r run build",
+    "start": "pnpm --filter @tokenomix/server start",
+    "start:full": "concurrently -n server,web -c blue,cyan \"pnpm --filter @tokenomix/server start\" \"pnpm --filter @tokenomix/web preview\"",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "test": "vitest run",
+    "typecheck": "pnpm -r run typecheck"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/node": "^22.0.0",
+    "concurrently": "^9.1.0",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.0"
+  }
+}

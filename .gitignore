@@ -1,0 +1,41 @@
+# deps
+node_modules/
+
+# build artifacts
+dist/
+build/
+.next/
+.turbo/
+.cache/
+*.tsbuildinfo
+
+# env
+.env
+.env.local
+.env.*
+!.env.example
+
+# misc
+.DS_Store
+*.log
+coverage/
+
+# orchestrator runtime state
+.orchestrator/lock.d/
+.orchestrator/session.id
+.orchestrator/session-base-sha
+.orchestrator/sessions/*/handoffs/
+.orchestrator/sessions/*/logs/
+.orchestrator/sessions/*/state.json
+
+# vite dev cache
+.vite/
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+
+# generated output (keep .gitkeep, exclude generated HTML)
+output/*.html
+.orchestrator/

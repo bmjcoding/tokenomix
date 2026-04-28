@@ -1,0 +1,101 @@
+@import "tailwindcss";
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Dark mode: class-based (.dark on <html>)
+   ───────────────────────────────────────────────────────────────────────────── */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Design tokens — alt-central visual language (Chase-blue + achromatic gray)
+   All color values use OKLCH notation.
+   ───────────────────────────────────────────────────────────────────────────── */
+@theme {
+  /* ── Primary accent: Chase blue ──────────────────────────────────────── */
+  --color-primary:       oklch(0.49 0.16 255);
+  --color-primary-light: oklch(0.58 0.12 255);
+  --color-primary-dark:  oklch(0.40 0.19 255);
+
+  /* ── Accent alias (light / dark) — same Chase blue ───────────────────── */
+  --color-accent:        oklch(0.49 0.16 255);
+  --color-accent-dark:   oklch(0.58 0.12 255);
+
+  /* ── Semantic background tokens ─────────────────────────────────────── */
+  --color-background:          oklch(0.99 0.005 90);
+  --color-background-dark:     oklch(0.09 0 0);
+  --color-surface:             oklch(0.97 0 0);
+  --color-surface-dark:        oklch(0.16 0 0);
+  --color-surface-elevated:    oklch(0.99 0.005 90);
+  --color-surface-elevated-dark: oklch(0.10 0 0);
+  --color-border:              oklch(0.87 0 0);
+  --color-border-dark:         oklch(0.24 0 0);
+  --color-border-strong:       oklch(0.77 0 0);
+  --color-border-strong-dark:  oklch(0.35 0 0);
+
+  /* ── Semantic text tokens ────────────────────────────────────────────── */
+  --color-text-primary:   oklch(0.10 0 0);
+  --color-text-secondary: oklch(0.43 0 0);
+  --color-text-muted:     oklch(0.52 0 0);
+
+  /* ── Achromatic gray scale (chroma = 0) ─────────────────────────────── */
+  --color-gray-50:  oklch(0.97 0 0);
+  --color-gray-100: oklch(0.95 0 0);
+  --color-gray-200: oklch(0.87 0 0);
+  --color-gray-300: oklch(0.77 0 0);
+  --color-gray-400: oklch(0.65 0 0);
+  --color-gray-500: oklch(0.52 0 0);
+  --color-gray-600: oklch(0.43 0 0);
+  --color-gray-700: oklch(0.35 0 0);
+  --color-gray-800: oklch(0.24 0 0);
+  --color-gray-900: oklch(0.16 0 0);
+  --color-gray-950: oklch(0.10 0 0);
+
+  /* ── Radius tokens ───────────────────────────────────────────────────── */
+  --radius-card:   0.75rem;   /* rounded-2xl equivalent (12px) */
+  --radius-button: 0.5rem;    /* rounded-lg equivalent (8px) */
+
+  /* ── Font family ─────────────────────────────────────────────────────── */
+  --font-family-sans: system-ui, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-family-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Base resets
+   ───────────────────────────────────────────────────────────────────────────── */
+html,
+body {
+  overflow-x: hidden;
+}
+
+html {
+  background-color: oklch(0.99 0.005 90);
+}
+
+html.dark {
+  background-color: oklch(0.09 0 0);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Layout helpers
+   ───────────────────────────────────────────────────────────────────────────── */
+:root {
+  --sidebar-width: 18rem; /* w-72 */
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Scrollbar hide utility
+   ───────────────────────────────────────────────────────────────────────────── */
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Tabular numbers for metric displays
+   ───────────────────────────────────────────────────────────────────────────── */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
