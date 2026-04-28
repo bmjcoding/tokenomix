@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-04-28
+
+### Fixed
+
+- TOKENS · 30D KPI now uses input + output only (matches HeroSpend MTD semantics).
+  Cache-creation tokens are billing-overhead, not conversational tokens, and including
+  them made the 30D figure ~10x larger than MTD.
+
 ## [3.0.0] - 2026-04-28
 
 ### Added
@@ -227,7 +235,8 @@ Internal cross-references updated:
 - `DEFAULT_OUTPUT` now points to `output/usage-dashboard.html` within the
   project, instead of a session-specific retro directory.
 
-[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.0.1...HEAD
+[3.0.1]: https://github.com/bmjcoding/tokenomix/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/bmjcoding/tokenomix/compare/v2.0.0...v3.0.0
 [2.0.0]: https://github.com/bmjcoding/tokenomix/compare/v1.2.0...v2.0.0
 [1.2.0]: https://github.com/bmjcoding/tokenomix/compare/v1.1.0...v1.2.0

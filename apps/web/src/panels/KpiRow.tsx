@@ -10,13 +10,14 @@
  * lifetime totals (flat MetricSummary fields) for headline numbers where noted.
  *
  * Card 1 — Tokens · 30D
- *   Headline: inputTokens30d + outputTokens30d + cacheCreationTokens30d
- *             (30-day window; cache READS are excluded — they represent free reuse)
+ *   Headline: inputTokens30d + outputTokens30d
+ *             (30-day window; cache tokens are EXCLUDED — cache reads are free
+ *             reuse and cache writes are billing-overhead tokens, not
+ *             conversational tokens. Matches HeroSpend MTD semantics so the
+ *             two numbers are directly comparable.)
  *   Sparkline: monthlyRollup.current.dailyTokens
- *   Delta: null (em-dash) — the prior-period totalTokens on PeriodRollup is
- *          input+output only with no cacheCreation component; comparing it
- *          against the new 30d headline (which includes cacheCreation) would be
- *          a mismatched comparison. Prefer null over a misleading delta.
+ *   Delta: null (em-dash) — no clean prior-30d comparison source in
+ *          PeriodRollup.
  *
  * Card 2 — Cache Efficiency
  *   Headline: computeCacheEfficiency(flat lifetime token fields) → formatted %
@@ -103,14 +104,14 @@ export function KpiRow({ data }: KpiRowProps) {
   const previous = data.monthlyRollup.previous;
 
   // ── Card 1 — Tokens · 30D ────────────────────────────────────────────────
-  // Headline: 30-day total of input + output + cache creation tokens.
-  // Cache reads are excluded — they are free reuse, not newly produced tokens.
-  const tokens30d = data.inputTokens30d + data.outputTokens30d + data.cacheCreationTokens30d;
+  // Headline: 30-day total of input + output tokens only.
+  // Cache tokens are excluded: cache reads are free reuse; cache writes are
+  // billing-overhead tokens, not conversational tokens. This matches HeroSpend
+  // MTD semantics (input + output only) so the two numbers are comparable.
+  const tokens30d = data.inputTokens30d + data.outputTokens30d;
 
-  // Delta: intentionally null. PeriodRollup.totalTokens is input+output only
-  // (no cache creation component), so comparing it against the 30d headline
-  // — which now includes cacheCreationTokens30d — would be mismatched. Prefer
-  // an em-dash over a misleading comparison.
+  // Delta: intentionally null — no clean prior-30d comparison source available
+  // in PeriodRollup. Prefer an em-dash over a misleading comparison.
   const tokensDelta: number | null = null;
 
   // ── Card 2 — Cache Efficiency ────────────────────────────────────────────
