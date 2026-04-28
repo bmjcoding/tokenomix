@@ -80,6 +80,10 @@ export interface RawUsageEvent {
 /**
  * A single deduplicated, priced token usage row stored in the IndexStore.
  * Produced from one (requestId, message.id) pair in the JSONL files.
+ *
+ * Optional fields are populated by the new ingest branches added in the
+ * tools/subagent analytics feature: tool_use, tool_result, and system/turn_duration
+ * events are merged into the corresponding assistant turn's row.
  */
 export interface TokenRow {
   /** YYYY-MM-DD local date (from parse_iso → local naive datetime). */
@@ -102,6 +106,36 @@ export interface TokenRow {
   /** Computed USD cost for this row (token cost × multiplier + web search add-on). */
   costUsd: number;
   isSubagent: boolean;
+
+  // ── Fields populated by the tool/duration ingest branches ──────────────────
+
+  /**
+   * Duration of this turn in milliseconds from system/turn_duration events.
+   * Undefined when no turn_duration event was emitted for this turn.
+   */
+  turnDurationMs?: number;
+
+  /**
+   * Per-tool invocation counts for tools invoked within this turn.
+   * Key: tool name (e.g. "Bash", "Read", "Write"). Value: invocation count.
+   * Undefined when no tool_use events were associated with this turn.
+   */
+  toolUses?: Record<string, number>;
+
+  /**
+   * Per-tool error counts for tools that returned is_error: true within this turn.
+   * Key: tool name. Value: error count.
+   * Undefined when no tool errors occurred within this turn.
+   */
+  toolErrors?: Record<string, number>;
+
+  /**
+   * Unique file paths touched by tool_use events within this turn.
+   * Populated from input.file_path on tool_use events only — no other input
+   * fields are extracted (privacy invariant).
+   * Undefined when no file-touching tool uses occurred within this turn.
+   */
+  filesTouched?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -175,6 +209,90 @@ export interface HeatmapPoint {
   /** 0-23 */
   hour: number;
   costUsd: number;
+}
+
+// ---------------------------------------------------------------------------
+// New analytics bucket types (tools, subagents, turns, files)
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-tool aggregated counts for the tools-breakdown panel.
+ * Populated by the aggregate() function from TokenRow.toolUses and TokenRow.toolErrors.
+ */
+export interface ToolBucket {
+  /** Tool name as emitted by Claude Code (e.g. "Bash", "Read", "Write", "Edit"). */
+  toolName: string;
+  /** Total invocations in the window. */
+  count: number;
+  /** Total invocations that returned is_error: true. */
+  errorCount: number;
+  /** errorCount / count (0..1). 0 when count is 0. */
+  errorRate: number;
+}
+
+/**
+ * Per-subagent-type aggregated stats for the subagent leaderboard panel.
+ * A "subagent" is a TokenRow where isSubagent === true.
+ * agentType is derived from the row's modelFamily.
+ */
+export interface SubagentBucket {
+  /**
+   * Agent type label derived from modelFamily (e.g. "sonnet", "haiku").
+   * Used as the display key in the leaderboard table.
+   */
+  agentType: string;
+  /** Number of subagent dispatches (turns) in the window. */
+  dispatches: number;
+  /** Sum of (inputTokens + outputTokens) across subagent turns in the window. */
+  totalTokens: number;
+  /** Sum of costUsd across subagent turns in the window. */
+  totalCostUsd: number;
+  /**
+   * Average turn duration in milliseconds.
+   * Computed only from rows that have a defined turnDurationMs; 0 when none available.
+   */
+  avgDurationMs: number;
+  /**
+   * 1 − (tool errors / tool invocations) for this subagent's turns in the window.
+   * 1.0 when no tool invocations are present (no failures by definition).
+   */
+  successRate: number;
+}
+
+/**
+ * Per-turn data shape returned by GET /api/turns.
+ * Each entry corresponds to one assistant turn (one TokenRow).
+ * Callers compute inputTokens + outputTokens for a total token count.
+ */
+export interface TurnBucket {
+  /** ISO 8601 timestamp (derived from row.date + row.hour, e.g. "2026-04-15T14:00:00"). */
+  timestamp: string;
+  sessionId: string;
+  project: string;
+  modelId: string;
+  modelFamily: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  costUsd: number;
+  /**
+   * Turn duration in milliseconds from the system/turn_duration event.
+   * null when no duration event was recorded for this turn.
+   */
+  durationMs: number | null;
+}
+
+/**
+ * Per-file-path touch count (how many turns touched the file).
+ * Defined for future downstream consumers; NOT included in MetricSummary
+ * (see REVISION 2026-04-28: topFiles removed from MetricSummary).
+ * Export this type so frontend panels can import it when needed.
+ */
+export interface FileTouchBucket {
+  /** Absolute or relative file path as emitted by the tool_use event. */
+  path: string;
+  /** Number of distinct turns that included this path in their filesTouched array. */
+  touches: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -306,6 +424,73 @@ export interface MetricSummary {
   bySession: SessionBucket[];
   /** Raw per-(date, hour) entries; NOT pre-aggregated by dayOfWeek. */
   heatmapData: HeatmapPoint[];
+
+  // ── New analytics breakdown arrays (tools + subagents) ───────────────────
+
+  /**
+   * Per-tool invocation and error counts over the filtered window.
+   * Populated from TokenRow.toolUses and TokenRow.toolErrors.
+   * Empty array when no tool_use events have been ingested.
+   */
+  byTool: ToolBucket[];
+
+  /**
+   * Per-subagent-type aggregated stats over the filtered window.
+   * Only rows where isSubagent === true contribute.
+   * Empty array when no subagent turns are present.
+   */
+  bySubagent: SubagentBucket[];
+
+  // ── Active vs idle time KPIs (30-day absolute window) ────────────────────
+
+  /**
+   * Sum of turnDurationMs for all rows in the 30-day absolute window.
+   * Represents total "active" model-compute time in milliseconds.
+   * 0 when no system/turn_duration events have been ingested.
+   */
+  activeMs30d: number;
+
+  /**
+   * Idle time in the 30-day window: wallClockMs30d − activeMs30d, floored at 0.
+   * wallClockMs30d = 30 * 24 * 3600 * 1000.
+   * Intended to be rendered alongside activeMs30d (e.g. "Active 14h 32m / Idle 695h").
+   */
+  idleMs30d: number;
+
+  // ── Files-touched KPI ─────────────────────────────────────────────────────
+
+  /**
+   * Count of unique file paths touched across all rows in the filtered window.
+   * Populated from the union of TokenRow.filesTouched arrays.
+   * 0 when no tool_use events with file_path have been ingested.
+   *
+   * NOTE: topFiles (top-N paths by touch count) is intentionally NOT included
+   * here — it has no current frontend consumer. Use FileTouchBucket if needed.
+   */
+  totalFilesTouched: number;
+
+  // ── Cost-per-turn KPIs (30-day window and prior 30-day window) ────────────
+
+  /**
+   * Mean costUsd per turn in the 30-day absolute window.
+   * 0 when no turns exist in the window.
+   */
+  avgCostPerTurn30d: number;
+
+  /**
+   * Mean costUsd per turn in the prior 30-day window (days 31–60 from today).
+   * Used for delta comparison with avgCostPerTurn30d.
+   * 0 when no turns exist in the prior window.
+   */
+  avgCostPerTurnPrev30d: number;
+
+  // ── Tool error rate KPI (30-day window) ───────────────────────────────────
+
+  /**
+   * Ratio of total tool errors to total tool invocations in the 30-day window.
+   * 0..1 range. 0 when no tool invocations exist in the window.
+   */
+  toolErrorRate30d: number;
 
   // ── Retro forward-compatibility stubs ───────────────────────────────────
   retroRollup: RetroRollup | null;
