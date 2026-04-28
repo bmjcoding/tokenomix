@@ -209,6 +209,45 @@ describe('parseJSONLFile', () => {
     expect(events).toHaveLength(1);
     expect(events[0]?.message?.usage?.cache_creation_input_tokens).toBe(10_000);
   });
+
+  it('parses API-error records where service_tier/speed/inference_geo are null', async () => {
+    // Production Claude Code emits null for these fields on records flagged
+    // isApiErrorMessage:true (all-zero usage). Without nullable() in the schema,
+    // these would fail validation and pollute startup logs with schema-mismatch
+    // warnings (one per error record across thousands of session files).
+    const line = JSON.stringify({
+      type: 'assistant',
+      requestId: 'req_api_error',
+      uuid: 'uuid-api-error',
+      timestamp: '2026-04-27T18:00:00.000Z',
+      sessionId: 'session-api-error',
+      cwd: '/test/project',
+      isApiErrorMessage: true,
+      message: {
+        id: 'msg_api_error',
+        model: 'claude-sonnet-4-6',
+        usage: {
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+          service_tier: null,
+          speed: null,
+          inference_geo: null,
+        },
+      },
+    });
+    const path = await writeFixture('api-error.jsonl', line);
+    const events = [];
+    for await (const e of parseJSONLFile(path)) {
+      events.push(e);
+    }
+    expect(events).toHaveLength(1);
+    const usage = events[0]?.message?.usage;
+    expect(usage?.service_tier).toBeNull();
+    expect(usage?.speed).toBeNull();
+    expect(usage?.inference_geo).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------

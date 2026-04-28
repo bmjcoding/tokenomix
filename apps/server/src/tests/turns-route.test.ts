@@ -53,6 +53,7 @@ function makeRow(overrides: Partial<TokenRow>): TokenRow {
     hour: 10,
     sessionId: 'session-default',
     project: '/projects/default',
+    projectName: 'default',
     modelId: 'claude-sonnet-4-6',
     modelFamily: 'sonnet',
     inputTokens: 100,

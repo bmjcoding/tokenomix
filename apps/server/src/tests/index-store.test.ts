@@ -7,9 +7,15 @@
  *     when the test system is in a DST timezone.
  *   - Days with no events produce 0 in dailySessions (not undefined/missing).
  *   - sessionCount (period-wide) is unaffected by the new field.
+ *
+ * Also covers aggregate() fields added in Subtask 2:
+ *   - totalProjectsTouched: basename-deduped count of distinct projectNames.
+ *   - cacheCreationTokens30d: sum of (cacheCreation5m + cacheCreation1h) for rows
+ *     in the absolute 30d window (projectFiltered set).
+ *   - cacheReadTokens30d: sum of cacheReadTokens for rows in the same 30d window.
  */
 
-import type { TokenRow } from '@tokenomix/shared';
+import type { MetricSummary, TokenRow } from '@tokenomix/shared';
 import { describe, expect, it } from 'vitest';
 import { IndexStore } from '../index-store.js';
 
@@ -24,6 +30,7 @@ function makeRow(overrides: Partial<TokenRow>): TokenRow {
     hour: 12,
     sessionId: 'session-a',
     project: '/test/proj',
+    projectName: 'proj',
     modelId: 'claude-sonnet-4-6',
     modelFamily: 'sonnet',
     inputTokens: 100,
@@ -181,5 +188,163 @@ describe('buildPeriodRollup — DST-safe day indexing', () => {
     // And the session counts per-day must also be distinct.
     expect(rollup.dailySessions[todayIdx]).toBe(1);
     expect(rollup.dailySessions[yesterdayIdx]).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// totalProjectsTouched — basename dedup
+// ---------------------------------------------------------------------------
+
+describe('aggregate() — totalProjectsTouched basename dedup', () => {
+  /**
+   * Two TokenRows share the same projectName basename ('alt-central') but have
+   * different full cwd project paths. aggregate() must count them as one project
+   * in totalProjectsTouched (Set<projectName>.size = 1).
+   *
+   * The test uses makeRow() which defaults projectName to 'proj'. We override
+   * project and projectName to set up the dedup scenario.
+   */
+  it('two rows with different project paths but same basename count as one project', () => {
+    const store = new IndexStore();
+    const rows = store.rows as Map<string, TokenRow>;
+
+    // Two rows: different full paths, same basename 'alt-central'.
+    rows.set(
+      'req_dup_a:msg_dup_a',
+      makeRow({
+        project: '/foo/alt-central',
+        projectName: 'alt-central',
+        sessionId: 'sess-dup-a',
+        costUsd: 0.01,
+      })
+    );
+    rows.set(
+      'req_dup_b:msg_dup_b',
+      makeRow({
+        project: '/bar/alt-central',
+        projectName: 'alt-central',
+        sessionId: 'sess-dup-b',
+        costUsd: 0.01,
+      })
+    );
+
+    const metrics: MetricSummary = store.getMetrics();
+
+    // totalProjectsTouched uses Set<projectName>, so both rows share one key.
+    expect(metrics.totalProjectsTouched).toBe(1);
+
+    // totalProjects uses raw cwd path, so it still counts 2 distinct paths.
+    expect(metrics.totalProjects).toBe(2);
+  });
+
+  it('three rows with two distinct basenames count as two projects', () => {
+    const store = new IndexStore();
+    const rows = store.rows as Map<string, TokenRow>;
+
+    rows.set(
+      'req_3p_a:msg_3p_a',
+      makeRow({ project: '/foo/alpha', projectName: 'alpha', sessionId: 'sess-3p-a' })
+    );
+    rows.set(
+      'req_3p_b:msg_3p_b',
+      makeRow({ project: '/bar/alpha', projectName: 'alpha', sessionId: 'sess-3p-b' })
+    );
+    rows.set(
+      'req_3p_c:msg_3p_c',
+      makeRow({ project: '/baz/beta', projectName: 'beta', sessionId: 'sess-3p-c' })
+    );
+
+    const metrics: MetricSummary = store.getMetrics();
+
+    expect(metrics.totalProjectsTouched).toBe(2);
+    expect(metrics.totalProjects).toBe(3); // raw cwd paths: /foo/alpha, /bar/alpha, /baz/beta
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cacheCreationTokens30d / cacheReadTokens30d — 30d window scoping
+// ---------------------------------------------------------------------------
+
+describe('aggregate() — 30d cache token aggregation', () => {
+  /**
+   * cacheCreationTokens30d and cacheReadTokens30d are computed over the
+   * projectFiltered set (absolute 30d from today, project filter only — NOT
+   * since-filtered). This test uses recent dates to ensure rows fall within
+   * the 30d window.
+   *
+   * Row A (30d window): cacheCreation5m=3000, cacheCreation1h=2000, cacheReadTokens=500
+   * Row B (30d window): cacheCreation5m=1000, cacheCreation1h=0,    cacheReadTokens=200
+   * Row C (outside 30d): cacheCreation5m=9999, cacheCreation1h=9999, cacheReadTokens=9999
+   *
+   * Expected cacheCreationTokens30d = (3000+2000) + (1000+0) = 6000
+   * Expected cacheReadTokens30d    = 500 + 200 = 700
+   */
+  it('cacheCreationTokens30d sums (cacheCreation5m + cacheCreation1h) for rows in 30d window', () => {
+    const store = new IndexStore();
+    const rows = store.rows as Map<string, TokenRow>;
+
+    // Recent dates (within 30d window).
+    rows.set(
+      'req_cache_a:msg_cache_a',
+      makeRow({
+        date: '2026-04-27',
+        cacheCreation5m: 3000,
+        cacheCreation1h: 2000,
+        cacheReadTokens: 500,
+        costUsd: 0.01,
+      })
+    );
+    rows.set(
+      'req_cache_b:msg_cache_b',
+      makeRow({
+        date: '2026-04-26',
+        cacheCreation5m: 1000,
+        cacheCreation1h: 0,
+        cacheReadTokens: 200,
+        costUsd: 0.01,
+      })
+    );
+
+    // Row outside the 30d window (2 years ago) — must NOT contribute.
+    rows.set(
+      'req_cache_old:msg_cache_old',
+      makeRow({
+        date: `${new Date().getFullYear() - 2}-01-15`,
+        cacheCreation5m: 9999,
+        cacheCreation1h: 9999,
+        cacheReadTokens: 9999,
+        costUsd: 0.01,
+      })
+    );
+
+    const metrics: MetricSummary = store.getMetrics();
+
+    // cacheCreationTokens30d = (3000+2000) + (1000+0) = 6000
+    expect(metrics.cacheCreationTokens30d).toBe(6000);
+
+    // cacheReadTokens30d = 500 + 200 = 700
+    expect(metrics.cacheReadTokens30d).toBe(700);
+  });
+
+  it('cacheCreationTokens30d is 0 when no rows fall within the 30d window', () => {
+    const store = new IndexStore();
+    const rows = store.rows as Map<string, TokenRow>;
+
+    // Only old rows — outside the 30d window.
+    rows.set(
+      'req_nocache:msg_nocache',
+      makeRow({
+        date: `${new Date().getFullYear() - 2}-06-01`,
+        cacheCreation5m: 5000,
+        cacheCreation1h: 1000,
+        cacheReadTokens: 300,
+        costUsd: 0.01,
+      })
+    );
+
+    const metrics: MetricSummary = store.getMetrics();
+
+    expect(metrics.cacheCreationTokens30d).toBe(0);
+    expect(metrics.cacheReadTokens30d).toBe(0);
   });
 });

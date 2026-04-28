@@ -8,11 +8,10 @@
  *   - TokenRow fields populated from tool_use/tool_result/system events:
  *     toolUses, toolErrors, filesTouched, turnDurationMs.
  *   - MetricSummary aggregate fields from the new analytics branches:
- *     byTool, bySubagent, activeMs30d, idleMs30d, totalFilesTouched,
+ *     byTool, bySubagent, totalFilesTouched,
  *     avgCostPerTurn30d, avgCostPerTurnPrev30d, toolErrorRate30d.
  *   - bySubagent is empty when no subagent JSONLs are present.
  *   - bySubagent is populated when a fixture path includes '/subagents/'.
- *   - idleMs30d is clamped ≥ 0.
  *   - toolErrorRate30d: errors / invocations ratio.
  *   - avgCostPerTurn30d: hand-computed from deterministic fixture values.
  */
@@ -379,6 +378,7 @@ describe('tool-ingest — MetricSummary aggregate fields', () => {
       hour: 10,
       sessionId: 'session-agg-test',
       project: '/projects/myapp',
+      projectName: 'myapp',
       modelId: 'claude-sonnet-4-6',
       modelFamily: 'sonnet',
       inputTokens: 1000,
@@ -496,52 +496,6 @@ describe('tool-ingest — MetricSummary aggregate fields', () => {
         expect(haikuBucket.totalCostUsd).toBeCloseTo(0.0013, 6);
         expect(haikuBucket.avgDurationMs).toBe(1000); // (800+1200)/2
       }
-    }
-  });
-
-  it('activeMs30d equals sum of turnDurationMs for rows in 30d window', () => {
-    const store = new IndexStore();
-    const rows = store.rows as Map<string, TokenRow>;
-
-    // Both rows within 30d window — using recent dates that are within 30d of any real "now".
-    rows.set(
-      'req_d1:msg_d1',
-      makeTokenRow({ date: '2026-04-27', costUsd: 0.01, turnDurationMs: 1500 })
-    );
-    rows.set(
-      'req_d2:msg_d2',
-      makeTokenRow({ date: '2026-04-26', costUsd: 0.01, turnDurationMs: 2500 })
-    );
-
-    const metrics: MetricSummary = store.getMetrics();
-
-    if (metrics.activeMs30d !== undefined) {
-      expect(metrics.activeMs30d).toBe(4000); // 1500 + 2500
-    }
-  });
-
-  it('idleMs30d is 30-day wall-clock minus activeMs30d, clamped >= 0', () => {
-    const store = new IndexStore();
-    const rows = store.rows as Map<string, TokenRow>;
-
-    rows.set(
-      'req_idle:msg_idle',
-      makeTokenRow({
-        date: '2026-04-27',
-        costUsd: 0.005,
-        turnDurationMs: 1_000,
-      })
-    );
-
-    const metrics: MetricSummary = store.getMetrics();
-
-    if (metrics.idleMs30d !== undefined) {
-      const wallClock30d = 30 * 24 * 3600 * 1000;
-      // idleMs30d = wallClock30d - activeMs30d, floored at 0.
-      const expectedIdle = Math.max(0, wallClock30d - (metrics.activeMs30d ?? 0));
-      expect(metrics.idleMs30d).toBe(expectedIdle);
-      // Must be non-negative.
-      expect(metrics.idleMs30d).toBeGreaterThanOrEqual(0);
     }
   });
 
@@ -697,6 +651,104 @@ describe('tool-ingest — subagent path detection via ingestFile', () => {
     if (metrics.bySubagent !== undefined) {
       // At least one subagent bucket (from the subagents/ file).
       expect(metrics.bySubagent.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Two-pass ingest: tool events arriving AFTER assistant event
+// ---------------------------------------------------------------------------
+
+describe('tool-ingest — two-pass ingest correctness (Bug 4 regression)', () => {
+  /**
+   * Regression test for Bug 4: JSONL files emitted by Claude Code can have
+   * tool_use/tool_result and system/turn_duration events that appear AFTER
+   * the assistant event for the same requestId. A single-pass ingest would
+   * drop those tool events. Two-pass ingest must merge them correctly.
+   *
+   * Layout:
+   *   1. assistant event (req_late_tools / msg_late_tools) — 100 input + 50 output
+   *   2. tool_use: Bash (requestId=req_late_tools, comes AFTER the assistant event)
+   *   3. tool_result: Bash → is_error: false
+   *   4. tool_use: Read (file_path='src/main.ts', comes AFTER the assistant event)
+   *   5. system/turn_duration: 1800ms (comes AFTER the assistant event)
+   */
+  it('tool events that arrive after the assistant event are merged into the TokenRow', async () => {
+    const requestId = 'req_late_tools';
+    const messageId = 'msg_late_tools';
+    const sessionId = 'session-late-tools';
+    const cwd = '/projects/late-tools-app';
+    const ts = '2026-04-27T12:00:00.000Z';
+
+    const lines = [
+      // 1. Assistant event first
+      assistantLine({
+        requestId,
+        messageId,
+        sessionId,
+        cwd,
+        timestampIso: ts,
+        inputTokens: 100,
+        outputTokens: 50,
+      }),
+      // 2. tool_use Bash — arrives AFTER the assistant event
+      toolUseLine({ requestId, sessionId, cwd, timestampIso: ts, toolName: 'Bash' }),
+      // 3. tool_result for Bash — no error
+      toolResultLine({
+        requestId,
+        sessionId,
+        cwd,
+        timestampIso: ts,
+        toolUseId: `uuid-tu-${requestId}-Bash`,
+        isError: false,
+      }),
+      // 4. tool_use Read with file_path — arrives AFTER the assistant event
+      toolUseLine({
+        requestId,
+        sessionId,
+        cwd,
+        timestampIso: ts,
+        toolName: 'Read',
+        filePath: 'src/main.ts',
+      }),
+      // 5. system/turn_duration — arrives AFTER the assistant event
+      systemTurnDurationLine({ requestId, sessionId, cwd, timestampIso: ts, durationMs: 1800 }),
+    ];
+
+    const filePath = await writeFixture('two-pass-late-tools.jsonl', lines.join('\n'));
+
+    const store = new IndexStore();
+    await store.ingestFile(filePath);
+
+    expect(store.indexedRows).toBe(1);
+
+    const allRows = [...(store.rows as Map<string, TokenRow>).values()];
+    const row = allRows[0];
+    expect(row).toBeDefined();
+
+    if (row) {
+      // The two-pass ingest must have merged Bash and Read tool_use events
+      // that appeared after the assistant event in the JSONL stream.
+      expect(row.toolUses).toBeDefined();
+      if (row.toolUses) {
+        expect(row.toolUses.Bash).toBe(1);
+        expect(row.toolUses.Read).toBe(1);
+      }
+
+      // Read had a file_path — must appear in filesTouched.
+      expect(row.filesTouched).toBeDefined();
+      if (row.filesTouched) {
+        expect(row.filesTouched).toContain('src/main.ts');
+      }
+
+      // system/turn_duration appeared after assistant event — must be merged.
+      expect(row.turnDurationMs).toBe(1800);
+
+      // No errors were emitted — toolErrors should be absent or empty.
+      if (row.toolErrors) {
+        const totalErrors = Object.values(row.toolErrors).reduce((s, n) => s + n, 0);
+        expect(totalErrors).toBe(0);
+      }
     }
   });
 });
