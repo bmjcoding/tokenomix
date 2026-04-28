@@ -59,12 +59,12 @@ export const RawUsageSchema = z
     cache_creation: CacheCreationSchema.optional(),
     /** Web and fetch request counts (v2.1.100+). */
     server_tool_use: ServerToolUseSchema.optional(),
-    /** "standard" | "batch" — affects pricing multiplier. */
-    service_tier: z.string().optional(),
-    /** "standard" | "fast" — affects pricing multiplier when model supports it. */
-    speed: z.string().optional(),
-    /** "us" | "not_available" | "" — affects US-only inference multiplier. */
-    inference_geo: z.string().optional(),
+    /** "standard" | "batch" — affects pricing multiplier. Null on API-error records. */
+    service_tier: z.string().nullish(),
+    /** "standard" | "fast" — affects pricing multiplier when model supports it. Null on API-error records. */
+    speed: z.string().nullish(),
+    /** "us" | "not_available" | "" — affects US-only inference multiplier. Null on API-error records. */
+    inference_geo: z.string().nullish(),
   })
   .passthrough();
 

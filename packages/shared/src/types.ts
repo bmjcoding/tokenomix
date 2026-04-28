@@ -40,12 +40,12 @@ export interface RawUsage {
   cache_creation?: CacheCreation;
   /** Web and fetch request counts (v2.1.100+). */
   server_tool_use?: ServerToolUse;
-  /** "standard" | "batch" */
-  service_tier?: string;
-  /** "standard" | "fast" */
-  speed?: string;
-  /** "us" | "not_available" | "" | … */
-  inference_geo?: string;
+  /** "standard" | "batch". Null on API-error records. */
+  service_tier?: string | null;
+  /** "standard" | "fast". Null on API-error records. */
+  speed?: string | null;
+  /** "us" | "not_available" | "" | …. Null on API-error records. */
+  inference_geo?: string | null;
 }
 
 /**
@@ -92,6 +92,12 @@ export interface TokenRow {
   hour: number;
   sessionId: string;
   project: string;
+  /**
+   * Human-readable project name derived from path.basename(cwd).
+   * Trailing slashes are stripped before basename extraction so paths like
+   * "/foo/bar/" yield "bar" not "".
+   */
+  projectName: string;
   modelId: string;
   /** Model pricing family (opus | opus_legacy | sonnet | haiku | haiku_3_5 | haiku_3). */
   modelFamily: string;
@@ -408,12 +414,32 @@ export interface MetricSummary {
   totalCacheReadTokens: number;
   totalSessions: number;
   totalProjects: number;
+  /**
+   * Count of distinct projectName basenames in the unfiltered (all-time) row set.
+   * Populated from Set<TokenRow.projectName>. Retained alongside totalProjects
+   * (which counts raw cwd strings) for backward compatibility.
+   * Structurally totalProjectsTouched ≤ totalProjects since multiple cwd paths
+   * can share the same basename.
+   */
+  totalProjectsTouched: number;
 
   // ── Windowed totals (mirroring Python collect_data totals_30d / totals_5d) ──
   costUsd30d: number;
   costUsd5d: number;
   inputTokens30d: number;
   outputTokens30d: number;
+  /**
+   * Sum of (cacheCreation5m + cacheCreation1h) for rows in the absolute 30-day
+   * window (project-filtered only, same source set as inputTokens30d/outputTokens30d).
+   * 0 when no cache-creation events exist in the window.
+   */
+  cacheCreationTokens30d: number;
+  /**
+   * Sum of cacheReadTokens for rows in the absolute 30-day window
+   * (project-filtered only, same source set as inputTokens30d/outputTokens30d).
+   * 0 when no cache-read events exist in the window.
+   */
+  cacheReadTokens30d: number;
 
   // ── Series / breakdown arrays ─────────────────────────────────────────────
   dailySeries: DailyBucket[];
@@ -440,22 +466,6 @@ export interface MetricSummary {
    * Empty array when no subagent turns are present.
    */
   bySubagent: SubagentBucket[];
-
-  // ── Active vs idle time KPIs (30-day absolute window) ────────────────────
-
-  /**
-   * Sum of turnDurationMs for all rows in the 30-day absolute window.
-   * Represents total "active" model-compute time in milliseconds.
-   * 0 when no system/turn_duration events have been ingested.
-   */
-  activeMs30d: number;
-
-  /**
-   * Idle time in the 30-day window: wallClockMs30d − activeMs30d, floored at 0.
-   * wallClockMs30d = 30 * 24 * 3600 * 1000.
-   * Intended to be rendered alongside activeMs30d (e.g. "Active 14h 32m / Idle 695h").
-   */
-  idleMs30d: number;
 
   // ── Files-touched KPI ─────────────────────────────────────────────────────
 
