@@ -32,8 +32,16 @@ import type {
   SessionBucket,
   SessionDurationStats,
   SessionSummary,
+  SubagentBucket,
   TokenRow,
+  ToolBucket,
+  TurnBucket,
   WeeklyBucket,
+} from '@tokenomix/shared';
+import type {
+  SystemTurnDurationEventParsed,
+  ToolResultEventParsed,
+  ToolUseEventParsed,
 } from '@tokenomix/shared';
 import { parseJSONLFile } from './parser.js';
 import { computeCost, model_family, resolveCacheTokens } from './pricing.js';
@@ -629,6 +637,173 @@ function aggregate(
   const bySession = [...sessionMap.values()].sort((a, b) => b.costUsd - a.costUsd).slice(0, 15);
   const heatmapData = [...heatmapMap.values()];
 
+  // ── New analytics aggregations ─────────────────────────────────────────────
+  //
+  // Two base sets drive the passes below:
+  //   `filtered`        — since+project filter; used for byTool, bySubagent, and
+  //                        totalFilesTouched so those charts react to the caller's
+  //                        time-window selection (same as dailySeries / byProject).
+  //   `projectFiltered` — project-only filter (no since); used for the windowed KPI
+  //                        fields (activeMs30d, avgCostPerTurn30d, toolErrorRate30d)
+  //                        because those are absolute 30d windows from today, matching
+  //                        the costUsd30d / inputTokens30d convention above.
+  // A future KPI should use `projectFiltered` for absolute-window metrics and
+  // `filtered` for time-selection-aware breakdowns.
+
+  // Prior 30-day window (days 31-60 from today) for avgCostPerTurnPrev30d.
+  const cutoff60d = new Date(now.getTime());
+  cutoff60d.setDate(cutoff60d.getDate() - 60);
+  cutoff60d.setHours(0, 0, 0, 0);
+
+  // ── byTool: aggregate toolUses / toolErrors over the since-filtered set ────
+  // Design decision: tool counts are scoped to the since+project filter (same
+  // as dailySeries / byProject) so the chart reacts to time-window selections.
+  const toolMap = new Map<string, { count: number; errorCount: number }>();
+  for (const row of filtered) {
+    if (row.toolUses) {
+      for (const [toolName, count] of Object.entries(row.toolUses)) {
+        const existing = toolMap.get(toolName);
+        const errorCount = row.toolErrors?.[toolName] ?? 0;
+        if (existing) {
+          existing.count += count;
+          existing.errorCount += errorCount;
+        } else {
+          toolMap.set(toolName, { count, errorCount });
+        }
+      }
+    }
+  }
+  const byTool: ToolBucket[] = [...toolMap.entries()]
+    .map(([toolName, { count, errorCount }]) => ({
+      toolName,
+      count,
+      errorCount,
+      errorRate: count > 0 ? errorCount / count : 0,
+    }))
+    .sort((a, b) => b.count - a.count);
+
+  // ── bySubagent: aggregate subagent rows over the since-filtered set ─────────
+  // agentType = modelFamily (same field the subagent leaderboard displays).
+  // dispatches = row count (not unique session count) for consistency with the
+  // rest of the codebase which uses row counts for event-based metrics.
+  const subagentMap = new Map<
+    string,
+    {
+      dispatches: number;
+      totalTokens: number;
+      totalCostUsd: number;
+      durationMsSum: number;
+      durationCount: number;
+      toolUseCount: number;
+      toolErrorCount: number;
+    }
+  >();
+  for (const row of filtered) {
+    if (!row.isSubagent) continue;
+    const agentType = row.modelFamily;
+    const existing = subagentMap.get(agentType);
+    const durationMs = row.turnDurationMs;
+    const toolUses = row.toolUses ? Object.values(row.toolUses).reduce((s, c) => s + c, 0) : 0;
+    const toolErrors = row.toolErrors
+      ? Object.values(row.toolErrors).reduce((s, c) => s + c, 0)
+      : 0;
+    if (existing) {
+      existing.dispatches += 1;
+      existing.totalTokens += row.inputTokens + row.outputTokens;
+      existing.totalCostUsd += row.costUsd;
+      if (durationMs !== undefined) {
+        existing.durationMsSum += durationMs;
+        existing.durationCount += 1;
+      }
+      existing.toolUseCount += toolUses;
+      existing.toolErrorCount += toolErrors;
+    } else {
+      subagentMap.set(agentType, {
+        dispatches: 1,
+        totalTokens: row.inputTokens + row.outputTokens,
+        totalCostUsd: row.costUsd,
+        durationMsSum: durationMs ?? 0,
+        durationCount: durationMs !== undefined ? 1 : 0,
+        toolUseCount: toolUses,
+        toolErrorCount: toolErrors,
+      });
+    }
+  }
+  const bySubagent: SubagentBucket[] = [...subagentMap.entries()]
+    .map(([agentType, acc]) => ({
+      agentType,
+      dispatches: acc.dispatches,
+      totalTokens: acc.totalTokens,
+      totalCostUsd: acc.totalCostUsd,
+      avgDurationMs: acc.durationCount > 0 ? acc.durationMsSum / acc.durationCount : 0,
+      successRate: acc.toolUseCount > 0 ? 1 - acc.toolErrorCount / acc.toolUseCount : 1,
+    }))
+    .sort((a, b) => b.dispatches - a.dispatches);
+
+  // ── Active/idle time: 30d absolute window (projectFiltered) ───────────────
+  // Uses projectFiltered (project-only filter) for the windowed KPI — same
+  // convention as costUsd30d/inputTokens30d. The `filtered` set (since+project)
+  // is used for byTool/bySubagent so they react to time-window selections.
+  const WALL_CLOCK_30D_MS = 30 * 24 * 3600 * 1000;
+  let activeMs30d = 0;
+  for (const row of projectFiltered) {
+    if (row.turnDurationMs === undefined) continue;
+    const rowDate = new Date(`${row.date}T00:00:00`);
+    if (rowDate >= cutoff30d) {
+      activeMs30d += row.turnDurationMs;
+    }
+  }
+  const idleMs30d = Math.max(0, WALL_CLOCK_30D_MS - activeMs30d);
+
+  // ── totalFilesTouched: cardinality of unique paths across filtered rows ─────
+  const touchedPathsSet = new Set<string>();
+  for (const row of filtered) {
+    if (row.filesTouched) {
+      for (const fp of row.filesTouched) {
+        touchedPathsSet.add(fp);
+      }
+    }
+  }
+  const totalFilesTouched = touchedPathsSet.size;
+
+  // ── avgCostPerTurn30d / avgCostPerTurnPrev30d ─────────────────────────────
+  // Uses projectFiltered (absolute 30d / prior 30d windows from today).
+  let costSum30d = 0;
+  let count30d = 0;
+  let costSumPrev30d = 0;
+  let countPrev30d = 0;
+  for (const row of projectFiltered) {
+    const rowDate = new Date(`${row.date}T00:00:00`);
+    if (rowDate >= cutoff30d) {
+      costSum30d += row.costUsd;
+      count30d += 1;
+    } else if (rowDate >= cutoff60d) {
+      costSumPrev30d += row.costUsd;
+      countPrev30d += 1;
+    }
+  }
+  const avgCostPerTurn30d = count30d > 0 ? costSum30d / count30d : 0;
+  const avgCostPerTurnPrev30d = countPrev30d > 0 ? costSumPrev30d / countPrev30d : 0;
+
+  // ── toolErrorRate30d: total errors / total tool uses in 30d window ────────
+  let totalToolUses30d = 0;
+  let totalToolErrors30d = 0;
+  for (const row of projectFiltered) {
+    const rowDate = new Date(`${row.date}T00:00:00`);
+    if (rowDate < cutoff30d) continue;
+    if (row.toolUses) {
+      for (const count of Object.values(row.toolUses)) {
+        totalToolUses30d += count;
+      }
+    }
+    if (row.toolErrors) {
+      for (const count of Object.values(row.toolErrors)) {
+        totalToolErrors30d += count;
+      }
+    }
+  }
+  const toolErrorRate30d = totalToolUses30d > 0 ? totalToolErrors30d / totalToolUses30d : 0;
+
   // ── Calendar-period rollups ────────────────────────────────────────────────
   // Period rollups always run over the project-filtered (not since-filtered)
   // rows so calendar windows are not truncated by an unrelated since= param.
@@ -767,6 +942,14 @@ function aggregate(
     byProject,
     bySession,
     heatmapData,
+    byTool,
+    bySubagent,
+    activeMs30d,
+    idleMs30d,
+    totalFilesTouched,
+    avgCostPerTurn30d,
+    avgCostPerTurnPrev30d,
+    toolErrorRate30d,
     retroRollup: null,
     retroTimeline: [],
     retroForecast: [],
@@ -895,8 +1078,117 @@ export class IndexStore extends EventEmitter {
   }
 
   private async ingestFileInternal(filePath: string): Promise<void> {
+    // ── Per-file scratch maps ────────────────────────────────────────────────
+    //
+    // These maps accumulate tool_use, tool_result, and system/turn_duration
+    // data keyed by requestId. They are LOCAL to each ingestFileInternal call
+    // so they never leak data across files. Each map is purged by deleting
+    // individual entries after merging them into a TokenRow.
+    //
+    // Design decision: we use requestId as the correlation key between event
+    // types, because all four event types (assistant, tool_use, tool_result,
+    // system/turn_duration) share the same requestId within one turn. This
+    // makes per-requestId attribution reliable without needing to inspect
+    // parentUuid chains.
+    //
+    // Privacy invariant: only toolName and input.file_path are extracted from
+    // tool_use events. No other fields from event.input are stored. This is
+    // enforced by the ToolUseEventSchema stripping all other input fields at
+    // parse time.
+
+    // Map<requestId, Map<toolName, {count, filePaths}>>
+    const toolAccumulator = new Map<string, Map<string, { count: number; filePaths: string[] }>>();
+
+    // Map<requestId, Map<toolUseId, {toolName, isError}>>
+    // We need toolName for error attribution, but tool_result only carries
+    // tool_use_id — so we first index tool_use by uuid to resolve tool names.
+    // Map<toolUseId(uuid), toolName>
+    const toolUseIdToName = new Map<string, string>();
+
+    // Map<requestId, Map<toolName, errorCount>>
+    const errorAccumulator = new Map<string, Map<string, number>>();
+
+    // Map<requestId, durationMs>
+    const durationAccumulator = new Map<string, number>();
+
     try {
       for await (const event of parseJSONLFile(filePath)) {
+        // ── tool_use branch ─────────────────────────────────────────────────
+        if (event.type === 'tool_use') {
+          const toolEvent = event as unknown as ToolUseEventParsed;
+          const rid = toolEvent.requestId;
+          if (!rid) continue;
+
+          const toolName = toolEvent.toolName;
+          const filePath_ = toolEvent.input?.file_path; // privacy: only file_path
+
+          // Record tool name by uuid for later join with tool_result.
+          if (toolEvent.uuid) {
+            toolUseIdToName.set(toolEvent.uuid, toolName);
+          }
+
+          // Accumulate count and file paths by (requestId, toolName).
+          let toolsForReq = toolAccumulator.get(rid);
+          if (!toolsForReq) {
+            toolsForReq = new Map();
+            toolAccumulator.set(rid, toolsForReq);
+          }
+          const existing = toolsForReq.get(toolName);
+          if (existing) {
+            existing.count += 1;
+            if (filePath_) existing.filePaths.push(filePath_);
+          } else {
+            toolsForReq.set(toolName, {
+              count: 1,
+              filePaths: filePath_ ? [filePath_] : [],
+            });
+          }
+          continue;
+        }
+
+        // ── tool_result branch ──────────────────────────────────────────────
+        if (event.type === 'tool_result') {
+          const resultEvent = event as unknown as ToolResultEventParsed;
+          const rid = resultEvent.requestId;
+
+          // Resolve and immediately purge toolUseIdToName so the map only holds
+          // entries for open (unresolved) tool invocations. This bounds peak memory
+          // to O(concurrent open tools) rather than O(all tool_use events in file).
+          const toolName = resultEvent.tool_use_id
+            ? toolUseIdToName.get(resultEvent.tool_use_id)
+            : undefined;
+          if (resultEvent.tool_use_id) {
+            toolUseIdToName.delete(resultEvent.tool_use_id);
+          }
+
+          // Only accumulate errors; non-error results need no further processing.
+          if (!rid || !resultEvent.is_error) continue;
+
+          if (!toolName) continue; // tool_use uuid not seen — skip
+
+          let errorsForReq = errorAccumulator.get(rid);
+          if (!errorsForReq) {
+            errorsForReq = new Map();
+            errorAccumulator.set(rid, errorsForReq);
+          }
+          errorsForReq.set(toolName, (errorsForReq.get(toolName) ?? 0) + 1);
+          continue;
+        }
+
+        // ── system/turn_duration branch ─────────────────────────────────────
+        if (event.type === 'system') {
+          // The AssistantEventSchema uses z.string() for type, so system events
+          // pass through. We need to check subtype at runtime.
+          const sysEvent = event as unknown as SystemTurnDurationEventParsed;
+          if ((sysEvent as { subtype?: string }).subtype !== 'turn_duration') continue;
+          const rid = sysEvent.requestId;
+          if (!rid) continue;
+          // Last write wins if multiple duration events share the same requestId.
+          durationAccumulator.set(rid, sysEvent.durationMs);
+          continue;
+        }
+
+        // ── assistant branch (existing logic) ───────────────────────────────
         if (event.type !== 'assistant') continue;
         if (!event.message?.usage) continue;
 
@@ -912,6 +1204,42 @@ export class IndexStore extends EventEmitter {
 
         const row = buildTokenRow(event, filePath);
         if (row) {
+          // Merge accumulated tool/duration data for this requestId into the row.
+          // This works reliably when tool events precede the assistant event in
+          // the JSONL stream (the common case). If tool events appear after the
+          // assistant event (unusual), they land in the next pass through this
+          // file, which is acceptable given the append-only nature of JSONL.
+          const toolsForReq = toolAccumulator.get(requestId);
+          if (toolsForReq) {
+            const toolUses: Record<string, number> = {};
+            const filesTouched: string[] = [];
+            for (const [toolName, data] of toolsForReq) {
+              toolUses[toolName] = data.count;
+              for (const fp of data.filePaths) {
+                if (!filesTouched.includes(fp)) filesTouched.push(fp);
+              }
+            }
+            row.toolUses = toolUses;
+            if (filesTouched.length > 0) row.filesTouched = filesTouched;
+            toolAccumulator.delete(requestId); // purge to bound memory
+          }
+
+          const errorsForReq = errorAccumulator.get(requestId);
+          if (errorsForReq) {
+            const toolErrors: Record<string, number> = {};
+            for (const [toolName, count] of errorsForReq) {
+              toolErrors[toolName] = count;
+            }
+            row.toolErrors = toolErrors;
+            errorAccumulator.delete(requestId); // purge
+          }
+
+          const durationMs = durationAccumulator.get(requestId);
+          if (durationMs !== undefined) {
+            row.turnDurationMs = durationMs;
+            durationAccumulator.delete(requestId); // purge
+          }
+
           this.rows.set(dedupKey, row);
 
           // Track per-session first/last timestamps for duration stats.
@@ -974,6 +1302,49 @@ export class IndexStore extends EventEmitter {
   getSessions(query: MetricsQuery = {}): SessionSummary[] {
     const allRows = [...this.rows.values()];
     return computeSessionSummaries(allRows, query);
+  }
+
+  /**
+   * Return per-turn data (TurnBucket[]) filtered by since and project, sorted
+   * by costUsd descending, sliced to limit (max 50).
+   *
+   * Each TokenRow = one assistant turn. The timestamp is reconstructed from
+   * row.date + row.hour (hour-level precision). This is an inherent limitation
+   * of the in-memory model: epoch ms is stored only in sessionTimes, not in
+   * TokenRow. Hour-level precision is acceptable for the expensive-turns table
+   * because it is sorted by cost, not by time.
+   */
+  getTurns(query: MetricsQuery = {}, limit = 10): TurnBucket[] {
+    const now = new Date();
+    const sinceCutoff = parseSinceCutoff(query.since, now);
+
+    const result: TurnBucket[] = [];
+    for (const row of this.rows.values()) {
+      if (query.project && !row.project.includes(query.project)) continue;
+      if (sinceCutoff) {
+        const rowDate = new Date(`${row.date}T00:00:00`);
+        if (rowDate < sinceCutoff) continue;
+      }
+      // Reconstruct ISO timestamp from date + hour (hour-precision).
+      const hour = String(row.hour).padStart(2, '0');
+      const timestamp = `${row.date}T${hour}:00:00`;
+      result.push({
+        timestamp,
+        sessionId: row.sessionId,
+        project: row.project,
+        modelId: row.modelId,
+        modelFamily: row.modelFamily,
+        inputTokens: row.inputTokens,
+        outputTokens: row.outputTokens,
+        cacheReadTokens: row.cacheReadTokens,
+        costUsd: row.costUsd,
+        durationMs: row.turnDurationMs ?? null,
+      });
+    }
+
+    // Sort by costUsd descending (most expensive turn first).
+    result.sort((a, b) => b.costUsd - a.costUsd);
+    return result.slice(0, Math.min(limit, 50));
   }
 
   isReady(): boolean {

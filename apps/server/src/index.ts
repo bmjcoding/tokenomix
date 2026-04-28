@@ -20,6 +20,7 @@ import { eventsRoute } from './routes/events.js';
 import { healthRoute } from './routes/health.js';
 import { metricsRoute } from './routes/metrics.js';
 import { sessionsRoute } from './routes/sessions.js';
+import { turnsRoute } from './routes/turns.js';
 import { startWatcher } from './watcher.js';
 
 const PORT = Number(process.env.PORT_BASE ?? 3000) + 1;
@@ -94,6 +95,7 @@ async function main(): Promise<void> {
   app.route('/api/sessions', sessionsRoute(store));
   app.route('/api/health', healthRoute(store));
   app.route('/api/events', eventsRoute(store));
+  app.route('/api/turns', turnsRoute(store));
 
   // Start file watcher and capture handle for graceful shutdown.
   const watcher = startWatcher(store);
