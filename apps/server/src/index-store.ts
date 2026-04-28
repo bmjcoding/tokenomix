@@ -755,24 +755,48 @@ function aggregate(
   }
   const totalFilesTouched = touchedPathsSet.size;
 
-  // ── avgCostPerTurn30d / avgCostPerTurnPrev30d ─────────────────────────────
+  // ── avgCostPerTurn30d / avgCostPerTurnPrev30d / prev-30d window totals ──────
   // Uses projectFiltered (absolute 30d / prior 30d windows from today).
+  // In a single pass we also collect:
+  //   - turn-cost values for the 30d window (for percentile computation)
+  //   - inputTokens, outputTokens, and costUsd sums for the prev-30d window
   let costSum30d = 0;
   let count30d = 0;
   let costSumPrev30d = 0;
   let countPrev30d = 0;
+  let inputTokensPrev30d = 0;
+  let outputTokensPrev30d = 0;
+  let costUsd30dPrev = 0;
+  const turnCosts30d: number[] = [];
   for (const row of projectFiltered) {
     const rowDate = new Date(`${row.date}T00:00:00`);
     if (rowDate >= cutoff30d) {
       costSum30d += row.costUsd;
       count30d += 1;
+      turnCosts30d.push(row.costUsd);
     } else if (rowDate >= cutoff60d) {
       costSumPrev30d += row.costUsd;
       countPrev30d += 1;
+      inputTokensPrev30d += row.inputTokens;
+      outputTokensPrev30d += row.outputTokens;
+      costUsd30dPrev += row.costUsd;
     }
   }
   const avgCostPerTurn30d = count30d > 0 ? costSum30d / count30d : 0;
   const avgCostPerTurnPrev30d = countPrev30d > 0 ? costSumPrev30d / countPrev30d : 0;
+
+  // ── Turn-cost percentiles (30d window) ────────────────────────────────────
+  // Formula: sort ascending, index = floor(p/100 * n) clamped to [0, n-1].
+  turnCosts30d.sort((a, b) => a - b);
+  function percentileFloor(sorted: number[], p: number): number {
+    const n = sorted.length;
+    if (n === 0) return 0;
+    const idx = Math.min(Math.floor((p / 100) * n), n - 1);
+    return sorted[idx] ?? 0;
+  }
+  const turnCostP50_30d = percentileFloor(turnCosts30d, 50);
+  const turnCostP90_30d = percentileFloor(turnCosts30d, 90);
+  const turnCostP99_30d = percentileFloor(turnCosts30d, 99);
 
   // ── toolErrorRate30d: total errors / total tool uses in 30d window ────────
   let totalToolUses30d = 0;
@@ -940,6 +964,12 @@ function aggregate(
     avgCostPerTurn30d,
     avgCostPerTurnPrev30d,
     toolErrorRate30d,
+    turnCostP50_30d,
+    turnCostP90_30d,
+    turnCostP99_30d,
+    inputTokensPrev30d,
+    outputTokensPrev30d,
+    costUsd30dPrev,
     retroRollup: null,
     retroTimeline: [],
     retroForecast: [],

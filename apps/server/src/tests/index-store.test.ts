@@ -348,3 +348,220 @@ describe('aggregate() — 30d cache token aggregation', () => {
     expect(metrics.cacheReadTokens30d).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Turn-cost percentiles (30d window) — percentileFloor formula
+// ---------------------------------------------------------------------------
+
+/**
+ * Helpers to produce dates relative to "today" that fall within various windows.
+ * All dates use local time (same as the aggregate function).
+ */
+function daysAgo(n: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+describe('aggregate() — turnCostP50_30d / turnCostP90_30d / turnCostP99_30d', () => {
+  it('returns 0 for all percentiles when the 30d window is empty', () => {
+    const store = new IndexStore();
+    const metrics = store.getMetrics();
+
+    expect(metrics.turnCostP50_30d).toBe(0);
+    expect(metrics.turnCostP90_30d).toBe(0);
+    expect(metrics.turnCostP99_30d).toBe(0);
+  });
+
+  it('single row: all three percentiles equal that row cost', () => {
+    const store = new IndexStore();
+    const rows = store.rows as Map<string, TokenRow>;
+
+    rows.set('pct_single:msg1', makeRow({ date: daysAgo(1), costUsd: 0.05 }));
+
+    const metrics = store.getMetrics();
+    // n=1: floor(50/100 * 1)=0, floor(90/100 * 1)=0, floor(99/100 * 1)=0 → idx 0 always
+    expect(metrics.turnCostP50_30d).toBeCloseTo(0.05, 10);
+    expect(metrics.turnCostP90_30d).toBeCloseTo(0.05, 10);
+    expect(metrics.turnCostP99_30d).toBeCloseTo(0.05, 10);
+  });
+
+  it('odd count (5 rows): p50 = idx 2, p90 = idx 4, p99 = idx 4', () => {
+    // costs sorted: [0.01, 0.02, 0.03, 0.04, 0.05]  (n=5)
+    // p50: floor(0.50 * 5) = floor(2.5) = 2 → 0.03
+    // p90: floor(0.90 * 5) = floor(4.5) = 4 → 0.05
+    // p99: floor(0.99 * 5) = floor(4.95) = 4 → 0.05
+    const store = new IndexStore();
+    const rows = store.rows as Map<string, TokenRow>;
+
+    const costs = [0.05, 0.01, 0.03, 0.02, 0.04]; // deliberately unsorted
+    costs.forEach((c, i) => {
+      rows.set(`pct_odd:msg${i}`, makeRow({ date: daysAgo(1), costUsd: c }));
+    });
+
+    const metrics = store.getMetrics();
+    expect(metrics.turnCostP50_30d).toBeCloseTo(0.03, 10);
+    expect(metrics.turnCostP90_30d).toBeCloseTo(0.05, 10);
+    expect(metrics.turnCostP99_30d).toBeCloseTo(0.05, 10);
+  });
+
+  it('even count (10 rows): p50 = idx 5 (floor(0.5*10)=5), p90 = idx 9', () => {
+    // costs sorted: [0.01, 0.02, ..., 0.10]  (n=10)
+    // p50: floor(0.50 * 10) = 5 → sorted[5] = 0.06
+    // p90: floor(0.90 * 10) = 9 → sorted[9] = 0.10
+    // p99: floor(0.99 * 10) = 9 → sorted[9] = 0.10
+    const store = new IndexStore();
+    const rows = store.rows as Map<string, TokenRow>;
+
+    for (let i = 1; i <= 10; i++) {
+      rows.set(`pct_even:msg${i}`, makeRow({ date: daysAgo(2), costUsd: i * 0.01 }));
+    }
+
+    const metrics = store.getMetrics();
+    expect(metrics.turnCostP50_30d).toBeCloseTo(0.06, 10);
+    expect(metrics.turnCostP90_30d).toBeCloseTo(0.1, 10);
+    expect(metrics.turnCostP99_30d).toBeCloseTo(0.1, 10);
+  });
+
+  it('rows outside the 30d window are excluded from percentile computation', () => {
+    const store = new IndexStore();
+    const rows = store.rows as Map<string, TokenRow>;
+
+    // One row in the 30d window — low cost.
+    rows.set('pct_excl_in:msg1', makeRow({ date: daysAgo(5), costUsd: 0.001 }));
+
+    // One row outside both windows (2 years ago) — huge cost; must not affect percentiles.
+    rows.set(
+      'pct_excl_out:msg2',
+      makeRow({ date: `${new Date().getFullYear() - 2}-01-15`, costUsd: 999.0 })
+    );
+
+    const metrics = store.getMetrics();
+    // With only 1 row in the window, all percentiles equal that row's cost.
+    expect(metrics.turnCostP50_30d).toBeCloseTo(0.001, 10);
+    expect(metrics.turnCostP90_30d).toBeCloseTo(0.001, 10);
+    expect(metrics.turnCostP99_30d).toBeCloseTo(0.001, 10);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Prev-30d window totals: inputTokensPrev30d / outputTokensPrev30d / costUsd30dPrev
+// ---------------------------------------------------------------------------
+
+describe('aggregate() — prev-30d window (days 31–60 from today)', () => {
+  it('returns 0 for all three fields when the prev-30d window is empty', () => {
+    const store = new IndexStore();
+    // No rows injected — store is empty.
+    const metrics = store.getMetrics();
+
+    expect(metrics.inputTokensPrev30d).toBe(0);
+    expect(metrics.outputTokensPrev30d).toBe(0);
+    expect(metrics.costUsd30dPrev).toBe(0);
+  });
+
+  it('rows in days 31–60 sum into prev-30d fields; rows in 30d window excluded', () => {
+    // Row A: 35 days ago → falls in prev-30d window (day 35, which is >= 31 from today).
+    // Row B: 50 days ago → also in prev-30d window.
+    // Row C: 5 days ago → in 30d window; must NOT count in prev-30d fields.
+    // Row D: 65 days ago → outside both windows; must NOT count anywhere.
+    const store = new IndexStore();
+    const rows = store.rows as Map<string, TokenRow>;
+
+    rows.set(
+      'prev_A:msg1',
+      makeRow({
+        date: daysAgo(35),
+        inputTokens: 1000,
+        outputTokens: 500,
+        costUsd: 0.1,
+      })
+    );
+    rows.set(
+      'prev_B:msg2',
+      makeRow({
+        date: daysAgo(50),
+        inputTokens: 2000,
+        outputTokens: 800,
+        costUsd: 0.2,
+      })
+    );
+    rows.set(
+      'prev_C_30d:msg3',
+      makeRow({
+        date: daysAgo(5),
+        inputTokens: 9999,
+        outputTokens: 9999,
+        costUsd: 9.99,
+      })
+    );
+    rows.set(
+      'prev_D_old:msg4',
+      makeRow({
+        date: daysAgo(65),
+        inputTokens: 5000,
+        outputTokens: 5000,
+        costUsd: 5.0,
+      })
+    );
+
+    const metrics = store.getMetrics();
+
+    // Only rows A and B (days 35 and 50) should count.
+    expect(metrics.inputTokensPrev30d).toBe(1000 + 2000);
+    expect(metrics.outputTokensPrev30d).toBe(500 + 800);
+    expect(metrics.costUsd30dPrev).toBeCloseTo(0.1 + 0.2, 10);
+  });
+
+  it('rows exactly on the day-30 boundary are in the 30d window, not prev-30d', () => {
+    // cutoff30d is set to midnight 30 days ago; rowDate >= cutoff30d → 30d window.
+    // A row dated exactly 30 days ago at 00:00:00 local time equals cutoff30d → 30d window.
+    const store = new IndexStore();
+    const rows = store.rows as Map<string, TokenRow>;
+
+    rows.set(
+      'boundary_30:msg1',
+      makeRow({
+        date: daysAgo(30),
+        inputTokens: 300,
+        outputTokens: 150,
+        costUsd: 0.03,
+      })
+    );
+
+    const metrics = store.getMetrics();
+
+    // This row is in the 30d window, so prev-30d totals remain 0.
+    expect(metrics.inputTokensPrev30d).toBe(0);
+    expect(metrics.outputTokensPrev30d).toBe(0);
+    expect(metrics.costUsd30dPrev).toBe(0);
+
+    // And it IS counted in the 30d window fields.
+    expect(metrics.inputTokens30d).toBeGreaterThan(0);
+  });
+
+  it('rows exactly on the day-60 boundary are in the prev-30d window, not excluded', () => {
+    // cutoff60d is set to midnight 60 days ago; rowDate >= cutoff60d → eligible for prev-30d.
+    // A row dated exactly 60 days ago at 00:00:00 local time equals cutoff60d → prev-30d window.
+    const store = new IndexStore();
+    const rows = store.rows as Map<string, TokenRow>;
+
+    rows.set(
+      'boundary_60:msg1',
+      makeRow({
+        date: daysAgo(60),
+        inputTokens: 400,
+        outputTokens: 200,
+        costUsd: 0.04,
+      })
+    );
+
+    const metrics = store.getMetrics();
+
+    expect(metrics.inputTokensPrev30d).toBe(400);
+    expect(metrics.outputTokensPrev30d).toBe(200);
+    expect(metrics.costUsd30dPrev).toBeCloseTo(0.04, 10);
+  });
+});
