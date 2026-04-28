@@ -4,18 +4,22 @@
  * Architecture:
  * - Owns the single useQuery call for MetricSummary (since='all').
  * - Passes MetricSummary down as props to all prop-driven panels:
- *   HeroSpend, KpiRow, AreaChartPanel.
- * - HeatmapPanel, ModelMixPanel, and TopSessionsTable self-fetch via their
- *   own useQuery calls — they receive no data prop.
+ *   HeroSpend, KpiRow, KpiRow2, AreaChartPanel.
+ * - HeatmapPanel, ModelMixPanel, ToolsBreakdownPanel, SubagentLeaderboard,
+ *   TopSessionsTable, and TopExpensiveTurnsTable self-fetch via their own
+ *   useQuery calls — they receive no data prop (except KpiRow2 which is
+ *   prop-driven like KpiRow).
  * - useServerEvents() SSE hook is mounted here for live cache invalidation.
  * - Period state is lifted to this page and passed to AreaChartPanel.
  *
  * Layout (top to bottom):
  *   1. HeroSpend  — full-width hero, Current Spend (MTD)
  *   2. KpiRow     — four KPI cards: Tokens, Cache Efficiency, Sessions, Avg Duration
- *   3. AreaChartPanel — spend-over-time chart with period switcher + actions
- *   4. Two-column grid: HeatmapPanel (left) + ModelMixPanel (right)
- *   5. TopSessionsTable (top 10 by cost)
+ *   3. KpiRow2    — four KPI cards: Active Time, Files Touched, Cost/Turn, Tool Error Rate
+ *   4. AreaChartPanel — spend-over-time chart with period switcher + actions
+ *   5. Three-column grid: HeatmapPanel + ModelMixPanel + ToolsBreakdownPanel
+ *   6. TopSessionsTable (top 10 by cost)
+ *   7. Two-column grid: SubagentLeaderboard + TopExpensiveTurnsTable (Agent & Turn Breakdown)
  */
 
 import { useQuery } from '@tanstack/react-query';
@@ -28,8 +32,12 @@ import { AreaChartPanel } from '../panels/AreaChartPanel.js';
 import { HeatmapPanel } from '../panels/HeatmapPanel.js';
 import { HeroSpend } from '../panels/HeroSpend.js';
 import { KpiRow } from '../panels/KpiRow.js';
+import { KpiRow2 } from '../panels/KpiRow2.js';
 import { ModelMixPanel } from '../panels/ModelMixPanel.js';
 import type { DashboardPeriod } from '../panels/PeriodSwitcher.js';
+import { SubagentLeaderboard } from '../panels/SubagentLeaderboard.js';
+import { ToolsBreakdownPanel } from '../panels/ToolsBreakdownPanel.js';
+import { TopExpensiveTurnsTable } from '../panels/TopExpensiveTurnsTable.js';
 import { TopSessionsTable } from '../panels/TopSessionsTable.js';
 
 export default function OverviewPage() {
@@ -79,17 +87,27 @@ export default function OverviewPage() {
       {/* 2. KPI row — Tokens / Cache Efficiency / Sessions / Avg Session Duration */}
       <KpiRow data={data} />
 
-      {/* 3. Area chart with period switcher, Export, and View full report */}
+      {/* 3. KPI row 2 — Active Time / Files Touched / Cost per Turn / Tool Error Rate */}
+      <KpiRow2 data={data} />
+
+      {/* 4. Area chart with period switcher, Export, and View full report */}
       <AreaChartPanel data={data} period={period} onPeriodChange={setPeriod} />
 
-      {/* 4. Heatmap + Model mix — two-column grid (stacked on small viewports) */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      {/* 5. Heatmap + Model mix + Tools breakdown — three-column grid (stacked on small viewports) */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <HeatmapPanel />
         <ModelMixPanel />
+        <ToolsBreakdownPanel since="30d" />
       </div>
 
-      {/* 5. Top 10 sessions by cost */}
+      {/* 6. Top 10 sessions by cost */}
       <TopSessionsTable limit={10} />
+
+      {/* 7. Agent & Turn Breakdown — two-column grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <SubagentLeaderboard since="30d" />
+        <TopExpensiveTurnsTable limit={10} since="30d" />
+      </div>
     </div>
   );
 }

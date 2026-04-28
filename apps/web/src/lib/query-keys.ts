@@ -40,4 +40,12 @@ export const queryKeys = {
   health(): readonly unknown[] {
     return ['health'] as const;
   },
+
+  /**
+   * Cache key for fetchTurns(params).
+   * Tuple format: ['turns', params] — T-006 invalidates by prefix ['turns'].
+   */
+  turns(params: { since?: string; project?: string; limit?: number }): readonly unknown[] {
+    return ['turns', params] as const;
+  },
 } as const;
