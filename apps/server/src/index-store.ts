@@ -43,6 +43,7 @@ import type {
   ToolResultEventParsed,
   ToolUseEventParsed,
 } from '@tokenomix/shared';
+import { logEvent } from './logger.js';
 import { parseJSONLFile } from './parser.js';
 import { computeCost, model_family, resolveCacheTokens } from './pricing.js';
 
@@ -61,33 +62,6 @@ const BATCH_SIZE = 50;
  * even under continuous high-volume ingest.
  */
 const MAX_SESSION_TIMES = 50_000;
-
-// ---------------------------------------------------------------------------
-// Structured logging
-// ---------------------------------------------------------------------------
-
-/**
- * Write a structured JSON log entry to stdout (or stderr for 'error' level).
- * All entries include timestamp, level, service, and event fields.
- */
-function logEvent(
-  level: 'info' | 'warn' | 'error',
-  event: string,
-  fields: Record<string, unknown>
-): void {
-  const entry = JSON.stringify({
-    timestamp: new Date().toISOString(),
-    level,
-    service: 'tokenomix-server',
-    event,
-    ...fields,
-  });
-  if (level === 'error') {
-    process.stderr.write(`${entry}\n`);
-  } else {
-    process.stdout.write(`${entry}\n`);
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Timestamp helpers (mirrors claude-usage.py parse_iso lines 316-339)
@@ -331,6 +305,7 @@ async function collectJsonlFiles(dir: string): Promise<string[]> {
     for (const entry of entries) {
       const name = entry.name;
       const full = nodePath.join(current, name);
+      if (entry.isSymbolicLink()) continue; // skip symlinks — avoids circular traversal
       if (entry.isDirectory()) {
         await walk(full);
       } else if (entry.isFile() && name.endsWith('.jsonl')) {
@@ -348,8 +323,18 @@ async function collectJsonlFiles(dir: string): Promise<string[]> {
 // ---------------------------------------------------------------------------
 
 /**
- * Build a TokenRow from a validated JSONL event.
+ * Build a TokenRow from a validated JSONL assistant event.
  * Returns null if essential fields are missing (usage, timestamp).
+ *
+ * `projectName` is derived here as `path.basename(cwd.replace(/\/+$/, ''))`.
+ * Trailing slashes are stripped before `basename` so paths like `/foo/bar/`
+ * yield `"bar"` rather than `""`. An empty cwd or cwd of `"/"` yields an
+ * empty string; rows with an empty `projectName` are excluded from
+ * `totalProjectsTouched` by the truthiness guard in `aggregate()`.
+ *
+ * Tool/duration fields (`toolUses`, `toolErrors`, `filesTouched`,
+ * `turnDurationMs`) are NOT populated here — they are merged by
+ * `ingestFileInternal()` after the two-pass accumulation.
  */
 export function buildTokenRow(event: RawUsageEventParsed, filePath: string): TokenRow | null {
   const msg = event.message;
@@ -371,11 +356,17 @@ export function buildTokenRow(event: RawUsageEventParsed, filePath: string): Tok
 
   const isSubagent = filePath.includes('/subagents/');
 
+  // Derive projectName as path.basename(cwd) with trailing slashes stripped.
+  // This normalizes paths like "/foo/bar/" to "bar" (not "").
+  const rawCwd = event.cwd ?? '';
+  const projectName = nodePath.basename(rawCwd.replace(/\/+$/, ''));
+
   const row: TokenRow = {
     date: toLocalDateStr(ts),
     hour: toLocalHour(ts),
     sessionId: event.sessionId ?? '',
-    project: event.cwd ?? '',
+    project: rawCwd,
+    projectName,
     modelId,
     modelFamily: model_family(modelId),
     inputTokens: usage.input_tokens ?? 0,
@@ -429,9 +420,10 @@ function parseSinceCutoff(since: string | undefined, now: Date): Date | null {
  * IMPORTANT: the `since` filter scopes the time-series data (dailySeries,
  * weeklySeries, heatmapData) and the all-time totals for the filtered view,
  * but the windowed totals (costUsd30d, costUsd5d, inputTokens30d,
- * outputTokens30d) are ALWAYS computed against the full unfiltered row set.
- * They are defined as absolute 30d/5d windows from today, not windows
- * relative to the `since` filter.
+ * outputTokens30d, cacheCreationTokens30d, cacheReadTokens30d,
+ * avgCostPerTurn30d, toolErrorRate30d) are ALWAYS computed against the full
+ * unfiltered row set. They are defined as absolute 30d/5d windows from
+ * today, not windows relative to the `since` filter.
  *
  * sessionTimes is the IndexStore's per-session timestamp map; it is passed
  * through to buildPeriodRollup, which filters it to sessions whose firstTs
@@ -476,6 +468,8 @@ function aggregate(
   let costUsd5d = 0;
   let inputTokens30d = 0;
   let outputTokens30d = 0;
+  let cacheCreationTokens30d = 0;
+  let cacheReadTokens30d = 0;
 
   for (const row of projectFiltered) {
     const rowDate = new Date(`${row.date}T00:00:00`);
@@ -483,6 +477,8 @@ function aggregate(
       costUsd30d += row.costUsd;
       inputTokens30d += row.inputTokens;
       outputTokens30d += row.outputTokens;
+      cacheCreationTokens30d += row.cacheCreation5m + row.cacheCreation1h;
+      cacheReadTokens30d += row.cacheReadTokens;
     }
     if (rowDate >= cutoff5d) {
       costUsd5d += row.costUsd;
@@ -497,6 +493,7 @@ function aggregate(
   let totalCacheReadTokens = 0;
   const sessionsSet = new Set<string>();
   const projectsSet = new Set<string>();
+  const projectsNameSet = new Set<string>();
 
   // Buckets.
   const dailyMap = new Map<string, DailyBucket>();
@@ -514,6 +511,7 @@ function aggregate(
     totalCacheReadTokens += row.cacheReadTokens;
     if (row.sessionId) sessionsSet.add(row.sessionId);
     if (row.project) projectsSet.add(row.project);
+    if (row.projectName) projectsNameSet.add(row.projectName); // empty projectName excluded by design: rows with no resolvable cwd basename are not counted as a distinct project
 
     // rowDate is re-derived here for use in the daily/weekly bucket logic.
     const rowDate = new Date(`${row.date}T00:00:00`);
@@ -644,9 +642,10 @@ function aggregate(
   //                        totalFilesTouched so those charts react to the caller's
   //                        time-window selection (same as dailySeries / byProject).
   //   `projectFiltered` — project-only filter (no since); used for the windowed KPI
-  //                        fields (activeMs30d, avgCostPerTurn30d, toolErrorRate30d)
-  //                        because those are absolute 30d windows from today, matching
-  //                        the costUsd30d / inputTokens30d convention above.
+  //                        fields (avgCostPerTurn30d, toolErrorRate30d,
+  //                        cacheCreationTokens30d, cacheReadTokens30d) because those
+  //                        are absolute 30d windows from today, matching the
+  //                        costUsd30d / inputTokens30d convention above.
   // A future KPI should use `projectFiltered` for absolute-window metrics and
   // `filtered` for time-selection-aware breakdowns.
 
@@ -740,20 +739,10 @@ function aggregate(
     }))
     .sort((a, b) => b.dispatches - a.dispatches);
 
-  // ── Active/idle time: 30d absolute window (projectFiltered) ───────────────
-  // Uses projectFiltered (project-only filter) for the windowed KPI — same
-  // convention as costUsd30d/inputTokens30d. The `filtered` set (since+project)
-  // is used for byTool/bySubagent so they react to time-window selections.
-  const WALL_CLOCK_30D_MS = 30 * 24 * 3600 * 1000;
-  let activeMs30d = 0;
-  for (const row of projectFiltered) {
-    if (row.turnDurationMs === undefined) continue;
-    const rowDate = new Date(`${row.date}T00:00:00`);
-    if (rowDate >= cutoff30d) {
-      activeMs30d += row.turnDurationMs;
-    }
-  }
-  const idleMs30d = Math.max(0, WALL_CLOCK_30D_MS - activeMs30d);
+  // NOTE: activeMs30d and idleMs30d have been removed from MetricSummary.
+  // durationAccumulator and TokenRow.turnDurationMs are retained — they are
+  // still consumed by getTurns() (TurnBucket.durationMs) and the bySubagent
+  // accumulator (SubagentBucket.avgDurationMs).
 
   // ── totalFilesTouched: cardinality of unique paths across filtered rows ─────
   const touchedPathsSet = new Set<string>();
@@ -932,10 +921,13 @@ function aggregate(
     totalCacheReadTokens,
     totalSessions: sessionsSet.size,
     totalProjects: projectsSet.size,
+    totalProjectsTouched: projectsNameSet.size,
     costUsd30d,
     costUsd5d,
     inputTokens30d,
     outputTokens30d,
+    cacheCreationTokens30d,
+    cacheReadTokens30d,
     dailySeries,
     weeklySeries,
     byModel,
@@ -944,8 +936,6 @@ function aggregate(
     heatmapData,
     byTool,
     bySubagent,
-    activeMs30d,
-    idleMs30d,
     totalFilesTouched,
     avgCostPerTurn30d,
     avgCostPerTurnPrev30d,
@@ -1077,40 +1067,68 @@ export class IndexStore extends EventEmitter {
     this.emit('change');
   }
 
+  /**
+   * Parse one JSONL file using two sequential readline passes and merge results
+   * into the shared row map.
+   *
+   * Pass 1 collects all `tool_use`, `tool_result`, and `system/turn_duration`
+   * events into `requestId`-keyed accumulators. Pass 2 builds `TokenRow` entries
+   * from `assistant` events and merges tool/duration data from pass 1.
+   *
+   * Using two passes (rather than buffering all lines) keeps peak memory at
+   * O(distinct requestIds with tool events), not O(all lines in the file).
+   * See ADR 0003 for the full rationale and alternatives considered.
+   */
   private async ingestFileInternal(filePath: string): Promise<void> {
-    // ── Per-file scratch maps ────────────────────────────────────────────────
+    // ── Two-pass ingest ───────────────────────────────────────────────────────
     //
-    // These maps accumulate tool_use, tool_result, and system/turn_duration
-    // data keyed by requestId. They are LOCAL to each ingestFileInternal call
-    // so they never leak data across files. Each map is purged by deleting
-    // individual entries after merging them into a TokenRow.
+    // Bug 4 fix: JSONL files from Claude Code can have tool_use/tool_result and
+    // system/turn_duration events that appear AFTER the assistant event for the
+    // same requestId. A single-pass approach would build the TokenRow before the
+    // tool data arrives, leaving toolUses empty for those turns.
     //
-    // Design decision: we use requestId as the correlation key between event
-    // types, because all four event types (assistant, tool_use, tool_result,
-    // system/turn_duration) share the same requestId within one turn. This
-    // makes per-requestId attribution reliable without needing to inspect
-    // parentUuid chains.
+    // Solution: stream the file twice via readline (never buffering all lines in
+    // memory). Pass 1 collects all tool_use, tool_result, and system/turn_duration
+    // events into per-requestId accumulators. Pass 2 builds TokenRow entries from
+    // assistant events and merges the complete pass-1 accumulators.
+    //
+    // Both passes re-open the file independently (no seek/rewind needed).
+    // Memory cost: O(distinct requestIds with tool events) — bounded by the
+    // number of unique turns in the file, not all lines.
     //
     // Privacy invariant: only toolName and input.file_path are extracted from
     // tool_use events. No other fields from event.input are stored. This is
     // enforced by the ToolUseEventSchema stripping all other input fields at
     // parse time.
+    //
+    // Known race window: if the file is written between pass 1 and pass 2 by an
+    // active Claude Code session, pass 2 may see lines that pass 1 did not (or
+    // vice versa). The file-watcher calls ingestFile() again on any change, so
+    // any mid-ingest append is self-healed on the next watcher event. The dedup
+    // key (requestId:messageId) ensures re-ingested rows are not double-counted.
+    //
+    // Duplicate-tool risk: if a JSONL file contains multiple assistant events
+    // sharing the same requestId (non-standard but possible in edge cases), the
+    // pass-1 toolAccumulator accumulates tool events for all of them under one
+    // key. Each assistant event in pass 2 would then receive the same merged
+    // tool data. In practice Claude Code emits one assistant event per requestId,
+    // so this risk is theoretical; the dedup key (requestId:messageId) still
+    // prevents the same (requestId, messageId) pair from being counted twice.
 
     // Map<requestId, Map<toolName, {count, filePaths}>>
     const toolAccumulator = new Map<string, Map<string, { count: number; filePaths: string[] }>>();
 
-    // Map<requestId, Map<toolUseId, {toolName, isError}>>
-    // We need toolName for error attribution, but tool_result only carries
-    // tool_use_id — so we first index tool_use by uuid to resolve tool names.
-    // Map<toolUseId(uuid), toolName>
+    // Map<toolUseId(uuid), toolName> — used to resolve tool name from tool_result.
+    // Entries are purged on first match to keep the map small.
     const toolUseIdToName = new Map<string, string>();
 
     // Map<requestId, Map<toolName, errorCount>>
     const errorAccumulator = new Map<string, Map<string, number>>();
 
-    // Map<requestId, durationMs>
+    // Map<requestId, durationMs> — from system/turn_duration events.
     const durationAccumulator = new Map<string, number>();
 
+    // ── Pass 1: collect tool/duration events ──────────────────────────────────
     try {
       for await (const event of parseJSONLFile(filePath)) {
         // ── tool_use branch ─────────────────────────────────────────────────
@@ -1185,10 +1203,23 @@ export class IndexStore extends EventEmitter {
           if (!rid) continue;
           // Last write wins if multiple duration events share the same requestId.
           durationAccumulator.set(rid, sysEvent.durationMs);
-          continue;
         }
 
-        // ── assistant branch (existing logic) ───────────────────────────────
+        // assistant and other event types are not needed in pass 1 — skip.
+      }
+    } catch (err: unknown) {
+      logEvent('error', 'ingest-error', {
+        path: filePath,
+        error: err instanceof Error ? err.message : String(err),
+        pass: 1,
+      });
+      // If pass 1 failed entirely, pass 2 will still run but with empty accumulators.
+    }
+
+    // ── Pass 2: build TokenRows from assistant events ─────────────────────────
+    try {
+      for await (const event of parseJSONLFile(filePath)) {
+        // ── assistant branch ─────────────────────────────────────────────────
         if (event.type !== 'assistant') continue;
         if (!event.message?.usage) continue;
 
@@ -1204,24 +1235,23 @@ export class IndexStore extends EventEmitter {
 
         const row = buildTokenRow(event, filePath);
         if (row) {
-          // Merge accumulated tool/duration data for this requestId into the row.
-          // This works reliably when tool events precede the assistant event in
-          // the JSONL stream (the common case). If tool events appear after the
-          // assistant event (unusual), they land in the next pass through this
-          // file, which is acceptable given the append-only nature of JSONL.
+          // Merge tool/duration data collected in pass 1 for this requestId.
+          // Because pass 1 completed before pass 2 began, tool events that
+          // appear anywhere in the file (before or after the assistant event)
+          // are guaranteed to be in the accumulators before we look them up here.
           const toolsForReq = toolAccumulator.get(requestId);
           if (toolsForReq) {
             const toolUses: Record<string, number> = {};
-            const filesTouched: string[] = [];
+            // Use a Set for O(1) dedup instead of Array.includes() which is O(n).
+            const touchedSet = new Set<string>();
             for (const [toolName, data] of toolsForReq) {
               toolUses[toolName] = data.count;
               for (const fp of data.filePaths) {
-                if (!filesTouched.includes(fp)) filesTouched.push(fp);
+                touchedSet.add(fp);
               }
             }
             row.toolUses = toolUses;
-            if (filesTouched.length > 0) row.filesTouched = filesTouched;
-            toolAccumulator.delete(requestId); // purge to bound memory
+            if (touchedSet.size > 0) row.filesTouched = [...touchedSet];
           }
 
           const errorsForReq = errorAccumulator.get(requestId);
@@ -1231,13 +1261,11 @@ export class IndexStore extends EventEmitter {
               toolErrors[toolName] = count;
             }
             row.toolErrors = toolErrors;
-            errorAccumulator.delete(requestId); // purge
           }
 
           const durationMs = durationAccumulator.get(requestId);
           if (durationMs !== undefined) {
             row.turnDurationMs = durationMs;
-            durationAccumulator.delete(requestId); // purge
           }
 
           this.rows.set(dedupKey, row);
@@ -1274,6 +1302,7 @@ export class IndexStore extends EventEmitter {
       logEvent('error', 'ingest-error', {
         path: filePath,
         error: err instanceof Error ? err.message : String(err),
+        pass: 2,
       });
     }
   }
