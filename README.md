@@ -239,6 +239,7 @@ pnpm start:full
 | `GET /api/metrics?since=7d\|30d\|all&project=...` | Flat `MetricSummary` (aggregated totals) |
 | `GET /api/sessions?since=...&project=...&limit=...` | `SessionSummary[]` (per-session breakdown) |
 | `GET /api/health` | `{ok, projectsDir, isReady, indexedRows, lastUpdated}` — 503 until ready |
+| `GET /api/turns?since=...&limit=...&project=...` | `TurnBucket[]` top-N expensive turns, sorted by cost descending (default 10, max 50) |
 | `GET /api/events` | SSE stream: `{type:'updated'\|'shutdown', ts:number}` |
 
 ### Commands

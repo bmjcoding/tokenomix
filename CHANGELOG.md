@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-04-28
+
+### Added
+
+- Tools breakdown panel — per-tool call counts and error rates over the active window
+- Subagent leaderboard — agent type, dispatches, tokens, average duration, success rate
+- Active vs idle time KPI on Activity / Insights row (second KPI row)
+- Files-touched count KPI (unique file paths read/written, paths never displayed)
+- Cost-per-turn KPI with 30-day rolling delta
+- Tool error rate KPI (tool_result.is_error percentage)
+- Top-10 expensive turns table (`GET /api/turns`)
+- ADR 0002 documenting the tool-event ingestion privacy policy
+
+### Changed
+
+- Schema now accepts `tool_use`, `tool_result`, and `system/turn_duration` events
+- `MetricSummary` extended with `byTool`, `bySubagent`, `activeMs30d`, `idleMs30d`,
+  `totalFilesTouched`, `avgCostPerTurn30d`, `avgCostPerTurnPrev30d`, `toolErrorRate30d`
+
+### Removed
+
+- `MetricSummary` fields `activeMsLifetime` and `idleMsLifetime` (superseded by the
+  30-day windowed `activeMs30d` / `idleMs30d` fields)
+
 ## [1.2.0] - 2026-04-27
 
 ### Added
@@ -138,7 +162,8 @@ Internal cross-references updated:
 - `DEFAULT_OUTPUT` now points to `output/usage-dashboard.html` within the
   project, instead of a session-specific retro directory.
 
-[Unreleased]: TBD-remote/compare/v1.2.0...HEAD
-[1.2.0]: TBD-remote/compare/v1.1.0...v1.2.0
-[1.1.0]: TBD-remote/compare/v1.0.0...v1.1.0
-[1.0.0]: TBD-remote/releases/tag/v1.0.0
+[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/bmjcoding/tokenomix/compare/v1.2.0...v2.0.0
+[1.2.0]: https://github.com/bmjcoding/tokenomix/compare/v1.1.0...v1.2.0
+[1.1.0]: https://github.com/bmjcoding/tokenomix/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/bmjcoding/tokenomix/tree/v1.0.0
