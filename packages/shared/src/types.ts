@@ -502,6 +502,64 @@ export interface MetricSummary {
    */
   toolErrorRate30d: number;
 
+  // ── Turn-cost percentiles (30-day absolute window) ────────────────────────
+  //
+  // These three fields are computed from the distribution of per-turn costUsd
+  // values for all rows in the last 30 calendar days (project-filtered, same
+  // source as avgCostPerTurn30d). Sorted ascending; index = floor(p/100 * n)
+  // clamped to [0, n-1]. Zero when no turns exist in the window.
+
+  /**
+   * 50th-percentile (median) per-turn cost in USD within the 30-day window.
+   * Window: today − 30 days to today (project-filtered only).
+   * Units: USD. Zero-state: 0 when no turns exist in the window.
+   */
+  turnCostP50_30d: number;
+
+  /**
+   * 90th-percentile per-turn cost in USD within the 30-day window.
+   * Window: today − 30 days to today (project-filtered only).
+   * Units: USD. Zero-state: 0 when no turns exist in the window.
+   */
+  turnCostP90_30d: number;
+
+  /**
+   * 99th-percentile per-turn cost in USD within the 30-day window.
+   * Window: today − 30 days to today (project-filtered only).
+   * Units: USD. Zero-state: 0 when no turns exist in the window.
+   */
+  turnCostP99_30d: number;
+
+  // ── Prior 30-day window totals (days 31–60 from today) ───────────────────
+  //
+  // These three fields mirror inputTokens30d / outputTokens30d / costUsd30d
+  // but for the immediately preceding 30-day window (days 31–60 from today).
+  // Source: projectFiltered rows (project-only filter, no since filter).
+  // Used by the frontend to compute prev-period deltas without a second API call.
+
+  /**
+   * Sum of inputTokens for rows in the prior 30-day window (days 31–60 from today).
+   * Window: today − 60 days to today − 31 days inclusive (project-filtered only).
+   * Units: token count. Zero-state: 0 when no rows exist in the prior window.
+   */
+  inputTokensPrev30d: number;
+
+  /**
+   * Sum of outputTokens for rows in the prior 30-day window (days 31–60 from today).
+   * Window: today − 60 days to today − 31 days inclusive (project-filtered only).
+   * Units: token count. Zero-state: 0 when no rows exist in the prior window.
+   */
+  outputTokensPrev30d: number;
+
+  /**
+   * Sum of costUsd for rows in the prior 30-day window (days 31–60 from today).
+   * Window: today − 60 days to today − 31 days inclusive (project-filtered only).
+   * Units: USD. Zero-state: 0 when no rows exist in the prior window.
+   * Used by the frontend to derive cost-per-output-token prev-30d delta:
+   *   costUsd30dPrev / outputTokensPrev30d (guard: outputTokensPrev30d === 0 → em-dash).
+   */
+  costUsd30dPrev: number;
+
   // ── Retro forward-compatibility stubs ───────────────────────────────────
   retroRollup: RetroRollup | null;
   retroTimeline: RetroTimelinePoint[];
