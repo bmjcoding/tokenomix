@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-04-28
+
+### Added
+
+- `MetricSummary.cacheCreationTokens30d` — sum of cache-creation tokens
+  (5 m + 1 h tiers) in the absolute 30-day window, using the same
+  project-filtered source set as `inputTokens30d` / `outputTokens30d`.
+- `MetricSummary.cacheReadTokens30d` — sum of cache-read tokens in the
+  same 30-day window.
+- `MetricSummary.totalProjectsTouched` — count of distinct project
+  basenames (derived from `path.basename(cwd)`) across all rows; collapses
+  the same project accessed from different mount points to one entry.
+- `TokenRow.projectName` — human-readable project name computed at ingest
+  time via `path.basename(cwd.replace(/\/+$/, ''))`.
+- `apps/server/src/logger.ts` — shared structured-logging module consumed
+  by both `parser.ts` and `index-store.ts`; routes `warn`/`error` to
+  stderr and `info` to stdout (POSIX convention).
+- `apps/server/scripts/verify-cache-tokens.ts` — one-off diagnostic script
+  that scans live JSONL files and confirms cache-token aggregation produces
+  no double-count. Not shipped to production; run manually with
+  `npx tsx apps/server/scripts/verify-cache-tokens.ts`.
+- ADR 0003 documenting the two-pass JSONL ingest architectural decision.
+
+### Changed
+
+- `ingestFileInternal()` now uses two sequential readline passes over the
+  same file: pass 1 collects all `tool_use`, `tool_result`, and
+  `system/turn_duration` events into `requestId`-keyed accumulators; pass 2
+  builds `TokenRow` entries and merges from those accumulators. Tool events
+  that appear after the assistant event in the JSONL stream are now correctly
+  merged (fixes the empty Tool Use Breakdown panel).
+- `KpiRow` TOKENS card now displays the 30-day token total
+  (`inputTokens30d + outputTokens30d + cacheCreationTokens30d`), labelled
+  **TOKENS · 30D**. Cache reads are excluded (free reuse). The lifetime total
+  is no longer shown as the headline figure. Delta percent is omitted because
+  no structurally equivalent prior-period baseline is available.
+- `KpiRow2` reflowed from 4 cards to 3 (**PROJECTS TOUCHED** ·
+  **AVG COST / TURN** · **TOOL ERROR RATE**); grid changed from
+  `cols={4}` to `cols={3}`.
+- `KpiRow2` card formerly labelled "Files Touched" is now **PROJECTS
+  TOUCHED** and reads `totalProjectsTouched` (basename-deduped count)
+  instead of `totalFilesTouched`.
+- `filesTouched` deduplication in pass 2 is now Set-based (`Set<string>`)
+  instead of `Array.includes()`, giving O(1) membership tests per file path.
+- `collectJsonlFiles()` in both `index-store.ts` and
+  `verify-cache-tokens.ts` now skips symbolic links before the
+  `isDirectory` check to prevent circular-traversal loops.
+- `pctDelta` helper extracted from `KpiRow.tsx` and `KpiRow2.tsx` into the
+  shared `apps/web/src/lib/formatters.ts` module.
+- `RawUsage.service_tier`, `.speed`, and `.inference_geo` are now typed
+  as `string | null` in `types.ts` and use `z.string().nullish()` in
+  `schemas.ts` to handle API-error JSONL records where these fields are
+  absent or null.
+
+### Removed
+
+- `MetricSummary.activeMs30d` and `MetricSummary.idleMs30d` — the Active
+  Time KPI card showed a persistent zero due to incomplete data and has
+  been removed. **Breaking change for external consumers of
+  `GET /api/metrics`** — these fields are absent from the response object.
+  `TokenRow.turnDurationMs` is retained; `getTurns()` and the subagent
+  leaderboard continue to use it via `TurnBucket.durationMs` and
+  `SubagentBucket.avgDurationMs`.
+- Active Time `MetricCard` removed from `KpiRow2.tsx`.
+
 ## [2.0.0] - 2026-04-28
 
 ### Added
@@ -162,7 +227,8 @@ Internal cross-references updated:
 - `DEFAULT_OUTPUT` now points to `output/usage-dashboard.html` within the
   project, instead of a session-specific retro directory.
 
-[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/bmjcoding/tokenomix/compare/v2.0.0...v3.0.0
 [2.0.0]: https://github.com/bmjcoding/tokenomix/compare/v1.2.0...v2.0.0
 [1.2.0]: https://github.com/bmjcoding/tokenomix/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/bmjcoding/tokenomix/compare/v1.0.0...v1.1.0
