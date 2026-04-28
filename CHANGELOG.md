@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-04-28
+
+### Added
+
+- OptimizationSignalsPanel — new "Optimization Signals" section on the Overview page showing P90
+  session duration (with P50 context), subagent success rate (when subagents present), and top
+  expensive project by 30-day spend share (when project data present).
+- Turn-cost percentiles on `MetricSummary`: `turnCostP50_30d`, `turnCostP90_30d`,
+  `turnCostP99_30d` — precomputed server-side from per-turn cost values in the 30-day window.
+- Previous-30-day windowed fields on `MetricSummary`: `inputTokensPrev30d`,
+  `outputTokensPrev30d`, `costUsd30dPrev` — enables token and cost delta cards on the frontend.
+- Vitest smoke tests for KpiRow, KpiRow2, and OptimizationSignalsPanel (empty-state and
+  populated-state fixtures).
+
+### Changed
+
+- KpiRow now shows four actionable optimization cards: **TOKENS · 30D** (with prev-30d delta),
+  **Cost / Output Token** (30D, cost efficiency per output token with delta), **Turn P90 Cost**
+  (30D, with P50 context line), and **Cost WoW Delta** (last-vs-prior full week from
+  `weeklySeries[]`).
+- KpiRow2 Tool Error card now shows the worst-offender tool name and error rate when any tool
+  has errors (`byTool` non-empty with `errorRate > 0`); the slot is hidden entirely otherwise,
+  reflowing the row to 2 columns.
+- ToolsBreakdownPanel renders nothing (removes itself from grid flow) when no tool data exists,
+  instead of showing a "No tool activity yet." placeholder.
+
+### Removed
+
+- Cache Efficiency KPI card from KpiRow (cache hit rate is saturated at ~96% with no user
+  lever; replaced by actionable cost and token-delta cards).
+- Sessions and Avg Session Duration KPI cards from KpiRow (replaced by the new actionable
+  cards above).
+- Tool Error Rate aggregate (30D) card from KpiRow2 (replaced by the conditional worst-tool
+  error display that hides when irrelevant).
+
 ## [3.0.1] - 2026-04-28
 
 ### Fixed
@@ -235,7 +270,8 @@ Internal cross-references updated:
 - `DEFAULT_OUTPUT` now points to `output/usage-dashboard.html` within the
   project, instead of a session-specific retro directory.
 
-[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.0.1...HEAD
+[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.1.0...HEAD
+[3.1.0]: https://github.com/bmjcoding/tokenomix/compare/v3.0.1...v3.1.0
 [3.0.1]: https://github.com/bmjcoding/tokenomix/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/bmjcoding/tokenomix/compare/v2.0.0...v3.0.0
 [2.0.0]: https://github.com/bmjcoding/tokenomix/compare/v1.2.0...v2.0.0
