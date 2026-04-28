@@ -43,8 +43,8 @@ interface MetricCardProps {
   /**
    * Percentage delta vs prior period (e.g. +12.3 or -5.1).
    * Pass null to render an em-dash — used when a delta cannot be computed
-   * (e.g. Cache Efficiency, which has no per-period token breakdown in
-   * PeriodRollup, or when previous period value is zero).
+   * (e.g. COST WoW DELTA when fewer than 2 weeks of data exist, or when the
+   * previous-period denominator is zero).
    */
   deltaPercent: number | null;
   /** Optional spark data; if provided a SparklineChart is rendered on the right. */

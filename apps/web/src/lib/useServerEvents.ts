@@ -45,6 +45,7 @@ export function useServerEvents(): void {
         ) {
           void queryClient.invalidateQueries({ queryKey: ['metrics'] });
           void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+          void queryClient.invalidateQueries({ queryKey: ['turns'] });
         }
       } catch {
         // Malformed JSON — ignore silently
@@ -53,10 +54,6 @@ export function useServerEvents(): void {
 
     source.onerror = () => {
       consecutiveErrorsRef.current += 1;
-      console.warn('[useServerEvents] SSE connection error', {
-        ts: Date.now(),
-        consecutiveErrors: consecutiveErrorsRef.current,
-      });
 
       if (consecutiveErrorsRef.current >= MAX_CONSECUTIVE_ERRORS) {
         // Dispatch a DOM event so the UI can optionally display a banner.

@@ -7,6 +7,138 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-04-28
+
+### Added
+
+- OptimizationSignalsPanel — new "Optimization Signals" section on the Overview page showing P90
+  session duration (with P50 context), subagent success rate (when subagents present), and top
+  expensive project by 30-day spend share (when project data present).
+- Turn-cost percentiles on `MetricSummary`: `turnCostP50_30d`, `turnCostP90_30d`,
+  `turnCostP99_30d` — precomputed server-side from per-turn cost values in the 30-day window.
+- Previous-30-day windowed fields on `MetricSummary`: `inputTokensPrev30d`,
+  `outputTokensPrev30d`, `costUsd30dPrev` — enables token and cost delta cards on the frontend.
+- Vitest smoke tests for KpiRow, KpiRow2, and OptimizationSignalsPanel (empty-state and
+  populated-state fixtures).
+
+### Changed
+
+- KpiRow now shows four actionable optimization cards: **TOKENS · 30D** (with prev-30d delta),
+  **Cost / Output Token** (30D, cost efficiency per output token with delta), **Turn P90 Cost**
+  (30D, with P50 context line), and **Cost WoW Delta** (last-vs-prior full week from
+  `weeklySeries[]`).
+- KpiRow2 Tool Error card now shows the worst-offender tool name and error rate when any tool
+  has errors (`byTool` non-empty with `errorRate > 0`); the slot is hidden entirely otherwise,
+  reflowing the row to 2 columns.
+- ToolsBreakdownPanel renders nothing (removes itself from grid flow) when no tool data exists,
+  instead of showing a "No tool activity yet." placeholder.
+
+### Removed
+
+- Cache Efficiency KPI card from KpiRow (cache hit rate is saturated at ~96% with no user
+  lever; replaced by actionable cost and token-delta cards).
+- Sessions and Avg Session Duration KPI cards from KpiRow (replaced by the new actionable
+  cards above).
+- Tool Error Rate aggregate (30D) card from KpiRow2 (replaced by the conditional worst-tool
+  error display that hides when irrelevant).
+
+## [3.0.1] - 2026-04-28
+
+### Fixed
+
+- TOKENS · 30D KPI now uses input + output only (matches HeroSpend MTD semantics).
+  Cache-creation tokens are billing-overhead, not conversational tokens, and including
+  them made the 30D figure ~10x larger than MTD.
+
+## [3.0.0] - 2026-04-28
+
+### Added
+
+- `MetricSummary.cacheCreationTokens30d` — sum of cache-creation tokens
+  (5 m + 1 h tiers) in the absolute 30-day window, using the same
+  project-filtered source set as `inputTokens30d` / `outputTokens30d`.
+- `MetricSummary.cacheReadTokens30d` — sum of cache-read tokens in the
+  same 30-day window.
+- `MetricSummary.totalProjectsTouched` — count of distinct project
+  basenames (derived from `path.basename(cwd)`) across all rows; collapses
+  the same project accessed from different mount points to one entry.
+- `TokenRow.projectName` — human-readable project name computed at ingest
+  time via `path.basename(cwd.replace(/\/+$/, ''))`.
+- `apps/server/src/logger.ts` — shared structured-logging module consumed
+  by both `parser.ts` and `index-store.ts`; routes `warn`/`error` to
+  stderr and `info` to stdout (POSIX convention).
+- `apps/server/scripts/verify-cache-tokens.ts` — one-off diagnostic script
+  that scans live JSONL files and confirms cache-token aggregation produces
+  no double-count. Not shipped to production; run manually with
+  `npx tsx apps/server/scripts/verify-cache-tokens.ts`.
+- ADR 0003 documenting the two-pass JSONL ingest architectural decision.
+
+### Changed
+
+- `ingestFileInternal()` now uses two sequential readline passes over the
+  same file: pass 1 collects all `tool_use`, `tool_result`, and
+  `system/turn_duration` events into `requestId`-keyed accumulators; pass 2
+  builds `TokenRow` entries and merges from those accumulators. Tool events
+  that appear after the assistant event in the JSONL stream are now correctly
+  merged (fixes the empty Tool Use Breakdown panel).
+- `KpiRow` TOKENS card now displays the 30-day token total
+  (`inputTokens30d + outputTokens30d + cacheCreationTokens30d`), labelled
+  **TOKENS · 30D**. Cache reads are excluded (free reuse). The lifetime total
+  is no longer shown as the headline figure. Delta percent is omitted because
+  no structurally equivalent prior-period baseline is available.
+- `KpiRow2` reflowed from 4 cards to 3 (**PROJECTS TOUCHED** ·
+  **AVG COST / TURN** · **TOOL ERROR RATE**); grid changed from
+  `cols={4}` to `cols={3}`.
+- `KpiRow2` card formerly labelled "Files Touched" is now **PROJECTS
+  TOUCHED** and reads `totalProjectsTouched` (basename-deduped count)
+  instead of `totalFilesTouched`.
+- `filesTouched` deduplication in pass 2 is now Set-based (`Set<string>`)
+  instead of `Array.includes()`, giving O(1) membership tests per file path.
+- `collectJsonlFiles()` in both `index-store.ts` and
+  `verify-cache-tokens.ts` now skips symbolic links before the
+  `isDirectory` check to prevent circular-traversal loops.
+- `pctDelta` helper extracted from `KpiRow.tsx` and `KpiRow2.tsx` into the
+  shared `apps/web/src/lib/formatters.ts` module.
+- `RawUsage.service_tier`, `.speed`, and `.inference_geo` are now typed
+  as `string | null` in `types.ts` and use `z.string().nullish()` in
+  `schemas.ts` to handle API-error JSONL records where these fields are
+  absent or null.
+
+### Removed
+
+- `MetricSummary.activeMs30d` and `MetricSummary.idleMs30d` — the Active
+  Time KPI card showed a persistent zero due to incomplete data and has
+  been removed. **Breaking change for external consumers of
+  `GET /api/metrics`** — these fields are absent from the response object.
+  `TokenRow.turnDurationMs` is retained; `getTurns()` and the subagent
+  leaderboard continue to use it via `TurnBucket.durationMs` and
+  `SubagentBucket.avgDurationMs`.
+- Active Time `MetricCard` removed from `KpiRow2.tsx`.
+
+## [2.0.0] - 2026-04-28
+
+### Added
+
+- Tools breakdown panel — per-tool call counts and error rates over the active window
+- Subagent leaderboard — agent type, dispatches, tokens, average duration, success rate
+- Active vs idle time KPI on Activity / Insights row (second KPI row)
+- Files-touched count KPI (unique file paths read/written, paths never displayed)
+- Cost-per-turn KPI with 30-day rolling delta
+- Tool error rate KPI (tool_result.is_error percentage)
+- Top-10 expensive turns table (`GET /api/turns`)
+- ADR 0002 documenting the tool-event ingestion privacy policy
+
+### Changed
+
+- Schema now accepts `tool_use`, `tool_result`, and `system/turn_duration` events
+- `MetricSummary` extended with `byTool`, `bySubagent`, `activeMs30d`, `idleMs30d`,
+  `totalFilesTouched`, `avgCostPerTurn30d`, `avgCostPerTurnPrev30d`, `toolErrorRate30d`
+
+### Removed
+
+- `MetricSummary` fields `activeMsLifetime` and `idleMsLifetime` (superseded by the
+  30-day windowed `activeMs30d` / `idleMs30d` fields)
+
 ## [1.2.0] - 2026-04-27
 
 ### Added
@@ -138,7 +270,11 @@ Internal cross-references updated:
 - `DEFAULT_OUTPUT` now points to `output/usage-dashboard.html` within the
   project, instead of a session-specific retro directory.
 
-[Unreleased]: TBD-remote/compare/v1.2.0...HEAD
-[1.2.0]: TBD-remote/compare/v1.1.0...v1.2.0
-[1.1.0]: TBD-remote/compare/v1.0.0...v1.1.0
-[1.0.0]: TBD-remote/releases/tag/v1.0.0
+[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.1.0...HEAD
+[3.1.0]: https://github.com/bmjcoding/tokenomix/compare/v3.0.1...v3.1.0
+[3.0.1]: https://github.com/bmjcoding/tokenomix/compare/v3.0.0...v3.0.1
+[3.0.0]: https://github.com/bmjcoding/tokenomix/compare/v2.0.0...v3.0.0
+[2.0.0]: https://github.com/bmjcoding/tokenomix/compare/v1.2.0...v2.0.0
+[1.2.0]: https://github.com/bmjcoding/tokenomix/compare/v1.1.0...v1.2.0
+[1.1.0]: https://github.com/bmjcoding/tokenomix/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/bmjcoding/tokenomix/tree/v1.0.0

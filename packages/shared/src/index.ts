@@ -19,13 +19,22 @@ export type {
   ProjectBucket,
   SessionBucket,
   HeatmapPoint,
+  // New analytics bucket types
+  ToolBucket,
+  SubagentBucket,
+  TurnBucket,
+  FileTouchBucket,
+  // Session summary
   SessionSummary,
+  // Retro stubs
   RetroRollup,
   RetroTimelinePoint,
   RetroForecastPoint,
+  // Metrics response
   MetricSummary,
   MetricsQuery,
   SinceOption,
+  // Period rollup types
   PeriodRollup,
   PeriodComparison,
   SessionDurationStats,
@@ -36,6 +45,12 @@ export {
   CacheCreationSchema,
   ServerToolUseSchema,
   RawUsageSchema,
+  // New event schemas
+  AssistantEventSchema,
+  ToolUseEventSchema,
+  ToolResultEventSchema,
+  SystemTurnDurationSchema,
+  // Union schema (replaces the old single-object schema at the same export name)
   RawUsageEventSchema,
 } from './schemas.js';
 
@@ -43,6 +58,12 @@ export type {
   CacheCreationParsed,
   ServerToolUseParsed,
   RawUsageParsed,
+  // New parsed event types
+  AssistantEventParsed,
+  ToolUseEventParsed,
+  ToolResultEventParsed,
+  SystemTurnDurationEventParsed,
+  // Union parsed type (unchanged name — drop-in for existing consumers)
   RawUsageEventParsed,
 } from './schemas.js';
 

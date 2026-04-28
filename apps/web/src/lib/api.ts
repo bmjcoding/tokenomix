@@ -8,7 +8,7 @@
  * which forwards /api → http://127.0.0.1:{PORT_BASE+1}.
  */
 
-import type { MetricSummary, MetricsQuery, SessionSummary } from '@tokenomix/shared';
+import type { MetricSummary, MetricsQuery, SessionSummary, TurnBucket } from '@tokenomix/shared';
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -70,6 +70,24 @@ export async function fetchSessions(
     limit: query.limit,
   });
   return apiFetch<SessionSummary[]>(`/api/sessions${qs}`);
+}
+
+/**
+ * GET /api/turns
+ *
+ * Returns an array of TurnBucket objects sorted by costUsd descending.
+ * The `limit` parameter controls the max number of turns returned (default 10, max 50 on server).
+ * The `since` parameter accepts the same values as MetricsQuery.since.
+ */
+export async function fetchTurns(
+  params: { since?: string; project?: string; limit?: number } = {}
+): Promise<TurnBucket[]> {
+  const qs = buildQuery({
+    since: params.since,
+    project: params.project,
+    limit: params.limit,
+  });
+  return apiFetch<TurnBucket[]>(`/api/turns${qs}`);
 }
 
 /**

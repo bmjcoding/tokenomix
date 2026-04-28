@@ -32,9 +32,18 @@ import type {
   SessionBucket,
   SessionDurationStats,
   SessionSummary,
+  SubagentBucket,
   TokenRow,
+  ToolBucket,
+  TurnBucket,
   WeeklyBucket,
 } from '@tokenomix/shared';
+import type {
+  SystemTurnDurationEventParsed,
+  ToolResultEventParsed,
+  ToolUseEventParsed,
+} from '@tokenomix/shared';
+import { logEvent } from './logger.js';
 import { parseJSONLFile } from './parser.js';
 import { computeCost, model_family, resolveCacheTokens } from './pricing.js';
 
@@ -53,33 +62,6 @@ const BATCH_SIZE = 50;
  * even under continuous high-volume ingest.
  */
 const MAX_SESSION_TIMES = 50_000;
-
-// ---------------------------------------------------------------------------
-// Structured logging
-// ---------------------------------------------------------------------------
-
-/**
- * Write a structured JSON log entry to stdout (or stderr for 'error' level).
- * All entries include timestamp, level, service, and event fields.
- */
-function logEvent(
-  level: 'info' | 'warn' | 'error',
-  event: string,
-  fields: Record<string, unknown>
-): void {
-  const entry = JSON.stringify({
-    timestamp: new Date().toISOString(),
-    level,
-    service: 'tokenomix-server',
-    event,
-    ...fields,
-  });
-  if (level === 'error') {
-    process.stderr.write(`${entry}\n`);
-  } else {
-    process.stdout.write(`${entry}\n`);
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Timestamp helpers (mirrors claude-usage.py parse_iso lines 316-339)
@@ -323,6 +305,7 @@ async function collectJsonlFiles(dir: string): Promise<string[]> {
     for (const entry of entries) {
       const name = entry.name;
       const full = nodePath.join(current, name);
+      if (entry.isSymbolicLink()) continue; // skip symlinks — avoids circular traversal
       if (entry.isDirectory()) {
         await walk(full);
       } else if (entry.isFile() && name.endsWith('.jsonl')) {
@@ -340,8 +323,18 @@ async function collectJsonlFiles(dir: string): Promise<string[]> {
 // ---------------------------------------------------------------------------
 
 /**
- * Build a TokenRow from a validated JSONL event.
+ * Build a TokenRow from a validated JSONL assistant event.
  * Returns null if essential fields are missing (usage, timestamp).
+ *
+ * `projectName` is derived here as `path.basename(cwd.replace(/\/+$/, ''))`.
+ * Trailing slashes are stripped before `basename` so paths like `/foo/bar/`
+ * yield `"bar"` rather than `""`. An empty cwd or cwd of `"/"` yields an
+ * empty string; rows with an empty `projectName` are excluded from
+ * `totalProjectsTouched` by the truthiness guard in `aggregate()`.
+ *
+ * Tool/duration fields (`toolUses`, `toolErrors`, `filesTouched`,
+ * `turnDurationMs`) are NOT populated here — they are merged by
+ * `ingestFileInternal()` after the two-pass accumulation.
  */
 export function buildTokenRow(event: RawUsageEventParsed, filePath: string): TokenRow | null {
   const msg = event.message;
@@ -363,11 +356,17 @@ export function buildTokenRow(event: RawUsageEventParsed, filePath: string): Tok
 
   const isSubagent = filePath.includes('/subagents/');
 
+  // Derive projectName as path.basename(cwd) with trailing slashes stripped.
+  // This normalizes paths like "/foo/bar/" to "bar" (not "").
+  const rawCwd = event.cwd ?? '';
+  const projectName = nodePath.basename(rawCwd.replace(/\/+$/, ''));
+
   const row: TokenRow = {
     date: toLocalDateStr(ts),
     hour: toLocalHour(ts),
     sessionId: event.sessionId ?? '',
-    project: event.cwd ?? '',
+    project: rawCwd,
+    projectName,
     modelId,
     modelFamily: model_family(modelId),
     inputTokens: usage.input_tokens ?? 0,
@@ -421,9 +420,10 @@ function parseSinceCutoff(since: string | undefined, now: Date): Date | null {
  * IMPORTANT: the `since` filter scopes the time-series data (dailySeries,
  * weeklySeries, heatmapData) and the all-time totals for the filtered view,
  * but the windowed totals (costUsd30d, costUsd5d, inputTokens30d,
- * outputTokens30d) are ALWAYS computed against the full unfiltered row set.
- * They are defined as absolute 30d/5d windows from today, not windows
- * relative to the `since` filter.
+ * outputTokens30d, cacheCreationTokens30d, cacheReadTokens30d,
+ * avgCostPerTurn30d, toolErrorRate30d) are ALWAYS computed against the full
+ * unfiltered row set. They are defined as absolute 30d/5d windows from
+ * today, not windows relative to the `since` filter.
  *
  * sessionTimes is the IndexStore's per-session timestamp map; it is passed
  * through to buildPeriodRollup, which filters it to sessions whose firstTs
@@ -468,6 +468,8 @@ function aggregate(
   let costUsd5d = 0;
   let inputTokens30d = 0;
   let outputTokens30d = 0;
+  let cacheCreationTokens30d = 0;
+  let cacheReadTokens30d = 0;
 
   for (const row of projectFiltered) {
     const rowDate = new Date(`${row.date}T00:00:00`);
@@ -475,6 +477,8 @@ function aggregate(
       costUsd30d += row.costUsd;
       inputTokens30d += row.inputTokens;
       outputTokens30d += row.outputTokens;
+      cacheCreationTokens30d += row.cacheCreation5m + row.cacheCreation1h;
+      cacheReadTokens30d += row.cacheReadTokens;
     }
     if (rowDate >= cutoff5d) {
       costUsd5d += row.costUsd;
@@ -489,6 +493,7 @@ function aggregate(
   let totalCacheReadTokens = 0;
   const sessionsSet = new Set<string>();
   const projectsSet = new Set<string>();
+  const projectsNameSet = new Set<string>();
 
   // Buckets.
   const dailyMap = new Map<string, DailyBucket>();
@@ -506,6 +511,7 @@ function aggregate(
     totalCacheReadTokens += row.cacheReadTokens;
     if (row.sessionId) sessionsSet.add(row.sessionId);
     if (row.project) projectsSet.add(row.project);
+    if (row.projectName) projectsNameSet.add(row.projectName); // empty projectName excluded by design: rows with no resolvable cwd basename are not counted as a distinct project
 
     // rowDate is re-derived here for use in the daily/weekly bucket logic.
     const rowDate = new Date(`${row.date}T00:00:00`);
@@ -628,6 +634,188 @@ function aggregate(
   const byProject = [...projectMap.values()].sort((a, b) => b.costUsd - a.costUsd);
   const bySession = [...sessionMap.values()].sort((a, b) => b.costUsd - a.costUsd).slice(0, 15);
   const heatmapData = [...heatmapMap.values()];
+
+  // ── New analytics aggregations ─────────────────────────────────────────────
+  //
+  // Two base sets drive the passes below:
+  //   `filtered`        — since+project filter; used for byTool, bySubagent, and
+  //                        totalFilesTouched so those charts react to the caller's
+  //                        time-window selection (same as dailySeries / byProject).
+  //   `projectFiltered` — project-only filter (no since); used for the windowed KPI
+  //                        fields (avgCostPerTurn30d, toolErrorRate30d,
+  //                        cacheCreationTokens30d, cacheReadTokens30d) because those
+  //                        are absolute 30d windows from today, matching the
+  //                        costUsd30d / inputTokens30d convention above.
+  // A future KPI should use `projectFiltered` for absolute-window metrics and
+  // `filtered` for time-selection-aware breakdowns.
+
+  // Prior 30-day window (days 31-60 from today) for avgCostPerTurnPrev30d.
+  const cutoff60d = new Date(now.getTime());
+  cutoff60d.setDate(cutoff60d.getDate() - 60);
+  cutoff60d.setHours(0, 0, 0, 0);
+
+  // ── byTool: aggregate toolUses / toolErrors over the since-filtered set ────
+  // Design decision: tool counts are scoped to the since+project filter (same
+  // as dailySeries / byProject) so the chart reacts to time-window selections.
+  const toolMap = new Map<string, { count: number; errorCount: number }>();
+  for (const row of filtered) {
+    if (row.toolUses) {
+      for (const [toolName, count] of Object.entries(row.toolUses)) {
+        const existing = toolMap.get(toolName);
+        const errorCount = row.toolErrors?.[toolName] ?? 0;
+        if (existing) {
+          existing.count += count;
+          existing.errorCount += errorCount;
+        } else {
+          toolMap.set(toolName, { count, errorCount });
+        }
+      }
+    }
+  }
+  const byTool: ToolBucket[] = [...toolMap.entries()]
+    .map(([toolName, { count, errorCount }]) => ({
+      toolName,
+      count,
+      errorCount,
+      errorRate: count > 0 ? errorCount / count : 0,
+    }))
+    .sort((a, b) => b.count - a.count);
+
+  // ── bySubagent: aggregate subagent rows over the since-filtered set ─────────
+  // agentType = modelFamily (same field the subagent leaderboard displays).
+  // dispatches = row count (not unique session count) for consistency with the
+  // rest of the codebase which uses row counts for event-based metrics.
+  const subagentMap = new Map<
+    string,
+    {
+      dispatches: number;
+      totalTokens: number;
+      totalCostUsd: number;
+      durationMsSum: number;
+      durationCount: number;
+      toolUseCount: number;
+      toolErrorCount: number;
+    }
+  >();
+  for (const row of filtered) {
+    if (!row.isSubagent) continue;
+    const agentType = row.modelFamily;
+    const existing = subagentMap.get(agentType);
+    const durationMs = row.turnDurationMs;
+    const toolUses = row.toolUses ? Object.values(row.toolUses).reduce((s, c) => s + c, 0) : 0;
+    const toolErrors = row.toolErrors
+      ? Object.values(row.toolErrors).reduce((s, c) => s + c, 0)
+      : 0;
+    if (existing) {
+      existing.dispatches += 1;
+      existing.totalTokens += row.inputTokens + row.outputTokens;
+      existing.totalCostUsd += row.costUsd;
+      if (durationMs !== undefined) {
+        existing.durationMsSum += durationMs;
+        existing.durationCount += 1;
+      }
+      existing.toolUseCount += toolUses;
+      existing.toolErrorCount += toolErrors;
+    } else {
+      subagentMap.set(agentType, {
+        dispatches: 1,
+        totalTokens: row.inputTokens + row.outputTokens,
+        totalCostUsd: row.costUsd,
+        durationMsSum: durationMs ?? 0,
+        durationCount: durationMs !== undefined ? 1 : 0,
+        toolUseCount: toolUses,
+        toolErrorCount: toolErrors,
+      });
+    }
+  }
+  const bySubagent: SubagentBucket[] = [...subagentMap.entries()]
+    .map(([agentType, acc]) => ({
+      agentType,
+      dispatches: acc.dispatches,
+      totalTokens: acc.totalTokens,
+      totalCostUsd: acc.totalCostUsd,
+      avgDurationMs: acc.durationCount > 0 ? acc.durationMsSum / acc.durationCount : 0,
+      successRate: acc.toolUseCount > 0 ? 1 - acc.toolErrorCount / acc.toolUseCount : 1,
+    }))
+    .sort((a, b) => b.dispatches - a.dispatches);
+
+  // NOTE: activeMs30d and idleMs30d have been removed from MetricSummary.
+  // durationAccumulator and TokenRow.turnDurationMs are retained — they are
+  // still consumed by getTurns() (TurnBucket.durationMs) and the bySubagent
+  // accumulator (SubagentBucket.avgDurationMs).
+
+  // ── totalFilesTouched: cardinality of unique paths across filtered rows ─────
+  const touchedPathsSet = new Set<string>();
+  for (const row of filtered) {
+    if (row.filesTouched) {
+      for (const fp of row.filesTouched) {
+        touchedPathsSet.add(fp);
+      }
+    }
+  }
+  const totalFilesTouched = touchedPathsSet.size;
+
+  // ── avgCostPerTurn30d / avgCostPerTurnPrev30d / prev-30d window totals ──────
+  // Uses projectFiltered (absolute 30d / prior 30d windows from today).
+  // In a single pass we also collect:
+  //   - turn-cost values for the 30d window (for percentile computation)
+  //   - inputTokens, outputTokens, and costUsd sums for the prev-30d window
+  let costSum30d = 0;
+  let count30d = 0;
+  let costSumPrev30d = 0;
+  let countPrev30d = 0;
+  let inputTokensPrev30d = 0;
+  let outputTokensPrev30d = 0;
+  let costUsd30dPrev = 0;
+  const turnCosts30d: number[] = [];
+  for (const row of projectFiltered) {
+    const rowDate = new Date(`${row.date}T00:00:00`);
+    if (rowDate >= cutoff30d) {
+      costSum30d += row.costUsd;
+      count30d += 1;
+      turnCosts30d.push(row.costUsd);
+    } else if (rowDate >= cutoff60d) {
+      costSumPrev30d += row.costUsd;
+      countPrev30d += 1;
+      inputTokensPrev30d += row.inputTokens;
+      outputTokensPrev30d += row.outputTokens;
+      costUsd30dPrev += row.costUsd;
+    }
+  }
+  const avgCostPerTurn30d = count30d > 0 ? costSum30d / count30d : 0;
+  const avgCostPerTurnPrev30d = countPrev30d > 0 ? costSumPrev30d / countPrev30d : 0;
+
+  // ── Turn-cost percentiles (30d window) ────────────────────────────────────
+  // Formula: sort ascending, index = floor(p/100 * n) clamped to [0, n-1].
+  turnCosts30d.sort((a, b) => a - b);
+  function percentileFloor(sorted: number[], p: number): number {
+    const n = sorted.length;
+    if (n === 0) return 0;
+    const idx = Math.min(Math.floor((p / 100) * n), n - 1);
+    return sorted[idx] ?? 0;
+  }
+  const turnCostP50_30d = percentileFloor(turnCosts30d, 50);
+  const turnCostP90_30d = percentileFloor(turnCosts30d, 90);
+  const turnCostP99_30d = percentileFloor(turnCosts30d, 99);
+
+  // ── toolErrorRate30d: total errors / total tool uses in 30d window ────────
+  let totalToolUses30d = 0;
+  let totalToolErrors30d = 0;
+  for (const row of projectFiltered) {
+    const rowDate = new Date(`${row.date}T00:00:00`);
+    if (rowDate < cutoff30d) continue;
+    if (row.toolUses) {
+      for (const count of Object.values(row.toolUses)) {
+        totalToolUses30d += count;
+      }
+    }
+    if (row.toolErrors) {
+      for (const count of Object.values(row.toolErrors)) {
+        totalToolErrors30d += count;
+      }
+    }
+  }
+  const toolErrorRate30d = totalToolUses30d > 0 ? totalToolErrors30d / totalToolUses30d : 0;
 
   // ── Calendar-period rollups ────────────────────────────────────────────────
   // Period rollups always run over the project-filtered (not since-filtered)
@@ -757,16 +945,31 @@ function aggregate(
     totalCacheReadTokens,
     totalSessions: sessionsSet.size,
     totalProjects: projectsSet.size,
+    totalProjectsTouched: projectsNameSet.size,
     costUsd30d,
     costUsd5d,
     inputTokens30d,
     outputTokens30d,
+    cacheCreationTokens30d,
+    cacheReadTokens30d,
     dailySeries,
     weeklySeries,
     byModel,
     byProject,
     bySession,
     heatmapData,
+    byTool,
+    bySubagent,
+    totalFilesTouched,
+    avgCostPerTurn30d,
+    avgCostPerTurnPrev30d,
+    toolErrorRate30d,
+    turnCostP50_30d,
+    turnCostP90_30d,
+    turnCostP99_30d,
+    inputTokensPrev30d,
+    outputTokensPrev30d,
+    costUsd30dPrev,
     retroRollup: null,
     retroTimeline: [],
     retroForecast: [],
@@ -894,9 +1097,159 @@ export class IndexStore extends EventEmitter {
     this.emit('change');
   }
 
+  /**
+   * Parse one JSONL file using two sequential readline passes and merge results
+   * into the shared row map.
+   *
+   * Pass 1 collects all `tool_use`, `tool_result`, and `system/turn_duration`
+   * events into `requestId`-keyed accumulators. Pass 2 builds `TokenRow` entries
+   * from `assistant` events and merges tool/duration data from pass 1.
+   *
+   * Using two passes (rather than buffering all lines) keeps peak memory at
+   * O(distinct requestIds with tool events), not O(all lines in the file).
+   * See ADR 0003 for the full rationale and alternatives considered.
+   */
   private async ingestFileInternal(filePath: string): Promise<void> {
+    // ── Two-pass ingest ───────────────────────────────────────────────────────
+    //
+    // Bug 4 fix: JSONL files from Claude Code can have tool_use/tool_result and
+    // system/turn_duration events that appear AFTER the assistant event for the
+    // same requestId. A single-pass approach would build the TokenRow before the
+    // tool data arrives, leaving toolUses empty for those turns.
+    //
+    // Solution: stream the file twice via readline (never buffering all lines in
+    // memory). Pass 1 collects all tool_use, tool_result, and system/turn_duration
+    // events into per-requestId accumulators. Pass 2 builds TokenRow entries from
+    // assistant events and merges the complete pass-1 accumulators.
+    //
+    // Both passes re-open the file independently (no seek/rewind needed).
+    // Memory cost: O(distinct requestIds with tool events) — bounded by the
+    // number of unique turns in the file, not all lines.
+    //
+    // Privacy invariant: only toolName and input.file_path are extracted from
+    // tool_use events. No other fields from event.input are stored. This is
+    // enforced by the ToolUseEventSchema stripping all other input fields at
+    // parse time.
+    //
+    // Known race window: if the file is written between pass 1 and pass 2 by an
+    // active Claude Code session, pass 2 may see lines that pass 1 did not (or
+    // vice versa). The file-watcher calls ingestFile() again on any change, so
+    // any mid-ingest append is self-healed on the next watcher event. The dedup
+    // key (requestId:messageId) ensures re-ingested rows are not double-counted.
+    //
+    // Duplicate-tool risk: if a JSONL file contains multiple assistant events
+    // sharing the same requestId (non-standard but possible in edge cases), the
+    // pass-1 toolAccumulator accumulates tool events for all of them under one
+    // key. Each assistant event in pass 2 would then receive the same merged
+    // tool data. In practice Claude Code emits one assistant event per requestId,
+    // so this risk is theoretical; the dedup key (requestId:messageId) still
+    // prevents the same (requestId, messageId) pair from being counted twice.
+
+    // Map<requestId, Map<toolName, {count, filePaths}>>
+    const toolAccumulator = new Map<string, Map<string, { count: number; filePaths: string[] }>>();
+
+    // Map<toolUseId(uuid), toolName> — used to resolve tool name from tool_result.
+    // Entries are purged on first match to keep the map small.
+    const toolUseIdToName = new Map<string, string>();
+
+    // Map<requestId, Map<toolName, errorCount>>
+    const errorAccumulator = new Map<string, Map<string, number>>();
+
+    // Map<requestId, durationMs> — from system/turn_duration events.
+    const durationAccumulator = new Map<string, number>();
+
+    // ── Pass 1: collect tool/duration events ──────────────────────────────────
     try {
       for await (const event of parseJSONLFile(filePath)) {
+        // ── tool_use branch ─────────────────────────────────────────────────
+        if (event.type === 'tool_use') {
+          const toolEvent = event as unknown as ToolUseEventParsed;
+          const rid = toolEvent.requestId;
+          if (!rid) continue;
+
+          const toolName = toolEvent.toolName;
+          const filePath_ = toolEvent.input?.file_path; // privacy: only file_path
+
+          // Record tool name by uuid for later join with tool_result.
+          if (toolEvent.uuid) {
+            toolUseIdToName.set(toolEvent.uuid, toolName);
+          }
+
+          // Accumulate count and file paths by (requestId, toolName).
+          let toolsForReq = toolAccumulator.get(rid);
+          if (!toolsForReq) {
+            toolsForReq = new Map();
+            toolAccumulator.set(rid, toolsForReq);
+          }
+          const existing = toolsForReq.get(toolName);
+          if (existing) {
+            existing.count += 1;
+            if (filePath_) existing.filePaths.push(filePath_);
+          } else {
+            toolsForReq.set(toolName, {
+              count: 1,
+              filePaths: filePath_ ? [filePath_] : [],
+            });
+          }
+          continue;
+        }
+
+        // ── tool_result branch ──────────────────────────────────────────────
+        if (event.type === 'tool_result') {
+          const resultEvent = event as unknown as ToolResultEventParsed;
+          const rid = resultEvent.requestId;
+
+          // Resolve and immediately purge toolUseIdToName so the map only holds
+          // entries for open (unresolved) tool invocations. This bounds peak memory
+          // to O(concurrent open tools) rather than O(all tool_use events in file).
+          const toolName = resultEvent.tool_use_id
+            ? toolUseIdToName.get(resultEvent.tool_use_id)
+            : undefined;
+          if (resultEvent.tool_use_id) {
+            toolUseIdToName.delete(resultEvent.tool_use_id);
+          }
+
+          // Only accumulate errors; non-error results need no further processing.
+          if (!rid || !resultEvent.is_error) continue;
+
+          if (!toolName) continue; // tool_use uuid not seen — skip
+
+          let errorsForReq = errorAccumulator.get(rid);
+          if (!errorsForReq) {
+            errorsForReq = new Map();
+            errorAccumulator.set(rid, errorsForReq);
+          }
+          errorsForReq.set(toolName, (errorsForReq.get(toolName) ?? 0) + 1);
+          continue;
+        }
+
+        // ── system/turn_duration branch ─────────────────────────────────────
+        if (event.type === 'system') {
+          // The AssistantEventSchema uses z.string() for type, so system events
+          // pass through. We need to check subtype at runtime.
+          const sysEvent = event as unknown as SystemTurnDurationEventParsed;
+          if ((sysEvent as { subtype?: string }).subtype !== 'turn_duration') continue;
+          const rid = sysEvent.requestId;
+          if (!rid) continue;
+          // Last write wins if multiple duration events share the same requestId.
+          durationAccumulator.set(rid, sysEvent.durationMs);
+        }
+
+        // assistant and other event types are not needed in pass 1 — skip.
+      }
+    } catch (err: unknown) {
+      logEvent('error', 'ingest-error', {
+        path: filePath,
+        error: err instanceof Error ? err.message : String(err),
+        pass: 1,
+      });
+      // If pass 1 failed entirely, pass 2 will still run but with empty accumulators.
+    }
+
+    // ── Pass 2: build TokenRows from assistant events ─────────────────────────
+    try {
+      for await (const event of parseJSONLFile(filePath)) {
+        // ── assistant branch ─────────────────────────────────────────────────
         if (event.type !== 'assistant') continue;
         if (!event.message?.usage) continue;
 
@@ -912,6 +1265,39 @@ export class IndexStore extends EventEmitter {
 
         const row = buildTokenRow(event, filePath);
         if (row) {
+          // Merge tool/duration data collected in pass 1 for this requestId.
+          // Because pass 1 completed before pass 2 began, tool events that
+          // appear anywhere in the file (before or after the assistant event)
+          // are guaranteed to be in the accumulators before we look them up here.
+          const toolsForReq = toolAccumulator.get(requestId);
+          if (toolsForReq) {
+            const toolUses: Record<string, number> = {};
+            // Use a Set for O(1) dedup instead of Array.includes() which is O(n).
+            const touchedSet = new Set<string>();
+            for (const [toolName, data] of toolsForReq) {
+              toolUses[toolName] = data.count;
+              for (const fp of data.filePaths) {
+                touchedSet.add(fp);
+              }
+            }
+            row.toolUses = toolUses;
+            if (touchedSet.size > 0) row.filesTouched = [...touchedSet];
+          }
+
+          const errorsForReq = errorAccumulator.get(requestId);
+          if (errorsForReq) {
+            const toolErrors: Record<string, number> = {};
+            for (const [toolName, count] of errorsForReq) {
+              toolErrors[toolName] = count;
+            }
+            row.toolErrors = toolErrors;
+          }
+
+          const durationMs = durationAccumulator.get(requestId);
+          if (durationMs !== undefined) {
+            row.turnDurationMs = durationMs;
+          }
+
           this.rows.set(dedupKey, row);
 
           // Track per-session first/last timestamps for duration stats.
@@ -946,6 +1332,7 @@ export class IndexStore extends EventEmitter {
       logEvent('error', 'ingest-error', {
         path: filePath,
         error: err instanceof Error ? err.message : String(err),
+        pass: 2,
       });
     }
   }
@@ -974,6 +1361,49 @@ export class IndexStore extends EventEmitter {
   getSessions(query: MetricsQuery = {}): SessionSummary[] {
     const allRows = [...this.rows.values()];
     return computeSessionSummaries(allRows, query);
+  }
+
+  /**
+   * Return per-turn data (TurnBucket[]) filtered by since and project, sorted
+   * by costUsd descending, sliced to limit (max 50).
+   *
+   * Each TokenRow = one assistant turn. The timestamp is reconstructed from
+   * row.date + row.hour (hour-level precision). This is an inherent limitation
+   * of the in-memory model: epoch ms is stored only in sessionTimes, not in
+   * TokenRow. Hour-level precision is acceptable for the expensive-turns table
+   * because it is sorted by cost, not by time.
+   */
+  getTurns(query: MetricsQuery = {}, limit = 10): TurnBucket[] {
+    const now = new Date();
+    const sinceCutoff = parseSinceCutoff(query.since, now);
+
+    const result: TurnBucket[] = [];
+    for (const row of this.rows.values()) {
+      if (query.project && !row.project.includes(query.project)) continue;
+      if (sinceCutoff) {
+        const rowDate = new Date(`${row.date}T00:00:00`);
+        if (rowDate < sinceCutoff) continue;
+      }
+      // Reconstruct ISO timestamp from date + hour (hour-precision).
+      const hour = String(row.hour).padStart(2, '0');
+      const timestamp = `${row.date}T${hour}:00:00`;
+      result.push({
+        timestamp,
+        sessionId: row.sessionId,
+        project: row.project,
+        modelId: row.modelId,
+        modelFamily: row.modelFamily,
+        inputTokens: row.inputTokens,
+        outputTokens: row.outputTokens,
+        cacheReadTokens: row.cacheReadTokens,
+        costUsd: row.costUsd,
+        durationMs: row.turnDurationMs ?? null,
+      });
+    }
+
+    // Sort by costUsd descending (most expensive turn first).
+    result.sort((a, b) => b.costUsd - a.costUsd);
+    return result.slice(0, Math.min(limit, 50));
   }
 
   isReady(): boolean {

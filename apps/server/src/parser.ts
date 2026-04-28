@@ -9,6 +9,7 @@ import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { RawUsageEventSchema } from '@tokenomix/shared';
 import type { RawUsageEventParsed } from '@tokenomix/shared';
+import { logEvent } from './logger.js';
 
 /**
  * Async generator that streams parsed JSONL events from a file.
@@ -33,9 +34,7 @@ export async function* parseJSONLFile(filePath: string): AsyncGenerator<RawUsage
         raw = JSON.parse(trimmed);
       } catch {
         // Malformed JSON — log path (never raw line content) and skip.
-        process.stderr.write(
-          `${JSON.stringify({ event: 'parse-warn', path: filePath, reason: 'invalid-json' })}\n`
-        );
+        logEvent('warn', 'parse-warn', { path: filePath, reason: 'invalid-json' });
         continue;
       }
 
@@ -44,9 +43,7 @@ export async function* parseJSONLFile(filePath: string): AsyncGenerator<RawUsage
         yield result.data;
       } else {
         // Zod parse failure — log path and skip. Do NOT log raw line content.
-        process.stderr.write(
-          `${JSON.stringify({ event: 'parse-warn', path: filePath, reason: 'schema-mismatch' })}\n`
-        );
+        logEvent('warn', 'parse-warn', { path: filePath, reason: 'schema-mismatch' });
       }
     }
   } catch {

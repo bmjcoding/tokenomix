@@ -40,12 +40,12 @@ export interface RawUsage {
   cache_creation?: CacheCreation;
   /** Web and fetch request counts (v2.1.100+). */
   server_tool_use?: ServerToolUse;
-  /** "standard" | "batch" */
-  service_tier?: string;
-  /** "standard" | "fast" */
-  speed?: string;
-  /** "us" | "not_available" | "" | … */
-  inference_geo?: string;
+  /** "standard" | "batch". Null on API-error records. */
+  service_tier?: string | null;
+  /** "standard" | "fast". Null on API-error records. */
+  speed?: string | null;
+  /** "us" | "not_available" | "" | …. Null on API-error records. */
+  inference_geo?: string | null;
 }
 
 /**
@@ -80,6 +80,10 @@ export interface RawUsageEvent {
 /**
  * A single deduplicated, priced token usage row stored in the IndexStore.
  * Produced from one (requestId, message.id) pair in the JSONL files.
+ *
+ * Optional fields are populated by the new ingest branches added in the
+ * tools/subagent analytics feature: tool_use, tool_result, and system/turn_duration
+ * events are merged into the corresponding assistant turn's row.
  */
 export interface TokenRow {
   /** YYYY-MM-DD local date (from parse_iso → local naive datetime). */
@@ -88,6 +92,12 @@ export interface TokenRow {
   hour: number;
   sessionId: string;
   project: string;
+  /**
+   * Human-readable project name derived from path.basename(cwd).
+   * Trailing slashes are stripped before basename extraction so paths like
+   * "/foo/bar/" yield "bar" not "".
+   */
+  projectName: string;
   modelId: string;
   /** Model pricing family (opus | opus_legacy | sonnet | haiku | haiku_3_5 | haiku_3). */
   modelFamily: string;
@@ -102,6 +112,36 @@ export interface TokenRow {
   /** Computed USD cost for this row (token cost × multiplier + web search add-on). */
   costUsd: number;
   isSubagent: boolean;
+
+  // ── Fields populated by the tool/duration ingest branches ──────────────────
+
+  /**
+   * Duration of this turn in milliseconds from system/turn_duration events.
+   * Undefined when no turn_duration event was emitted for this turn.
+   */
+  turnDurationMs?: number;
+
+  /**
+   * Per-tool invocation counts for tools invoked within this turn.
+   * Key: tool name (e.g. "Bash", "Read", "Write"). Value: invocation count.
+   * Undefined when no tool_use events were associated with this turn.
+   */
+  toolUses?: Record<string, number>;
+
+  /**
+   * Per-tool error counts for tools that returned is_error: true within this turn.
+   * Key: tool name. Value: error count.
+   * Undefined when no tool errors occurred within this turn.
+   */
+  toolErrors?: Record<string, number>;
+
+  /**
+   * Unique file paths touched by tool_use events within this turn.
+   * Populated from input.file_path on tool_use events only — no other input
+   * fields are extracted (privacy invariant).
+   * Undefined when no file-touching tool uses occurred within this turn.
+   */
+  filesTouched?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -175,6 +215,90 @@ export interface HeatmapPoint {
   /** 0-23 */
   hour: number;
   costUsd: number;
+}
+
+// ---------------------------------------------------------------------------
+// New analytics bucket types (tools, subagents, turns, files)
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-tool aggregated counts for the tools-breakdown panel.
+ * Populated by the aggregate() function from TokenRow.toolUses and TokenRow.toolErrors.
+ */
+export interface ToolBucket {
+  /** Tool name as emitted by Claude Code (e.g. "Bash", "Read", "Write", "Edit"). */
+  toolName: string;
+  /** Total invocations in the window. */
+  count: number;
+  /** Total invocations that returned is_error: true. */
+  errorCount: number;
+  /** errorCount / count (0..1). 0 when count is 0. */
+  errorRate: number;
+}
+
+/**
+ * Per-subagent-type aggregated stats for the subagent leaderboard panel.
+ * A "subagent" is a TokenRow where isSubagent === true.
+ * agentType is derived from the row's modelFamily.
+ */
+export interface SubagentBucket {
+  /**
+   * Agent type label derived from modelFamily (e.g. "sonnet", "haiku").
+   * Used as the display key in the leaderboard table.
+   */
+  agentType: string;
+  /** Number of subagent dispatches (turns) in the window. */
+  dispatches: number;
+  /** Sum of (inputTokens + outputTokens) across subagent turns in the window. */
+  totalTokens: number;
+  /** Sum of costUsd across subagent turns in the window. */
+  totalCostUsd: number;
+  /**
+   * Average turn duration in milliseconds.
+   * Computed only from rows that have a defined turnDurationMs; 0 when none available.
+   */
+  avgDurationMs: number;
+  /**
+   * 1 − (tool errors / tool invocations) for this subagent's turns in the window.
+   * 1.0 when no tool invocations are present (no failures by definition).
+   */
+  successRate: number;
+}
+
+/**
+ * Per-turn data shape returned by GET /api/turns.
+ * Each entry corresponds to one assistant turn (one TokenRow).
+ * Callers compute inputTokens + outputTokens for a total token count.
+ */
+export interface TurnBucket {
+  /** ISO 8601 timestamp (derived from row.date + row.hour, e.g. "2026-04-15T14:00:00"). */
+  timestamp: string;
+  sessionId: string;
+  project: string;
+  modelId: string;
+  modelFamily: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  costUsd: number;
+  /**
+   * Turn duration in milliseconds from the system/turn_duration event.
+   * null when no duration event was recorded for this turn.
+   */
+  durationMs: number | null;
+}
+
+/**
+ * Per-file-path touch count (how many turns touched the file).
+ * Defined for future downstream consumers; NOT included in MetricSummary
+ * (see REVISION 2026-04-28: topFiles removed from MetricSummary).
+ * Export this type so frontend panels can import it when needed.
+ */
+export interface FileTouchBucket {
+  /** Absolute or relative file path as emitted by the tool_use event. */
+  path: string;
+  /** Number of distinct turns that included this path in their filesTouched array. */
+  touches: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -290,12 +414,32 @@ export interface MetricSummary {
   totalCacheReadTokens: number;
   totalSessions: number;
   totalProjects: number;
+  /**
+   * Count of distinct projectName basenames in the unfiltered (all-time) row set.
+   * Populated from Set<TokenRow.projectName>. Retained alongside totalProjects
+   * (which counts raw cwd strings) for backward compatibility.
+   * Structurally totalProjectsTouched ≤ totalProjects since multiple cwd paths
+   * can share the same basename.
+   */
+  totalProjectsTouched: number;
 
   // ── Windowed totals (mirroring Python collect_data totals_30d / totals_5d) ──
   costUsd30d: number;
   costUsd5d: number;
   inputTokens30d: number;
   outputTokens30d: number;
+  /**
+   * Sum of (cacheCreation5m + cacheCreation1h) for rows in the absolute 30-day
+   * window (project-filtered only, same source set as inputTokens30d/outputTokens30d).
+   * 0 when no cache-creation events exist in the window.
+   */
+  cacheCreationTokens30d: number;
+  /**
+   * Sum of cacheReadTokens for rows in the absolute 30-day window
+   * (project-filtered only, same source set as inputTokens30d/outputTokens30d).
+   * 0 when no cache-read events exist in the window.
+   */
+  cacheReadTokens30d: number;
 
   // ── Series / breakdown arrays ─────────────────────────────────────────────
   dailySeries: DailyBucket[];
@@ -306,6 +450,115 @@ export interface MetricSummary {
   bySession: SessionBucket[];
   /** Raw per-(date, hour) entries; NOT pre-aggregated by dayOfWeek. */
   heatmapData: HeatmapPoint[];
+
+  // ── New analytics breakdown arrays (tools + subagents) ───────────────────
+
+  /**
+   * Per-tool invocation and error counts over the filtered window.
+   * Populated from TokenRow.toolUses and TokenRow.toolErrors.
+   * Empty array when no tool_use events have been ingested.
+   */
+  byTool: ToolBucket[];
+
+  /**
+   * Per-subagent-type aggregated stats over the filtered window.
+   * Only rows where isSubagent === true contribute.
+   * Empty array when no subagent turns are present.
+   */
+  bySubagent: SubagentBucket[];
+
+  // ── Files-touched KPI ─────────────────────────────────────────────────────
+
+  /**
+   * Count of unique file paths touched across all rows in the filtered window.
+   * Populated from the union of TokenRow.filesTouched arrays.
+   * 0 when no tool_use events with file_path have been ingested.
+   *
+   * NOTE: topFiles (top-N paths by touch count) is intentionally NOT included
+   * here — it has no current frontend consumer. Use FileTouchBucket if needed.
+   */
+  totalFilesTouched: number;
+
+  // ── Cost-per-turn KPIs (30-day window and prior 30-day window) ────────────
+
+  /**
+   * Mean costUsd per turn in the 30-day absolute window.
+   * 0 when no turns exist in the window.
+   */
+  avgCostPerTurn30d: number;
+
+  /**
+   * Mean costUsd per turn in the prior 30-day window (days 31–60 from today).
+   * Used for delta comparison with avgCostPerTurn30d.
+   * 0 when no turns exist in the prior window.
+   */
+  avgCostPerTurnPrev30d: number;
+
+  // ── Tool error rate KPI (30-day window) ───────────────────────────────────
+
+  /**
+   * Ratio of total tool errors to total tool invocations in the 30-day window.
+   * 0..1 range. 0 when no tool invocations exist in the window.
+   */
+  toolErrorRate30d: number;
+
+  // ── Turn-cost percentiles (30-day absolute window) ────────────────────────
+  //
+  // These three fields are computed from the distribution of per-turn costUsd
+  // values for all rows in the last 30 calendar days (project-filtered, same
+  // source as avgCostPerTurn30d). Sorted ascending; index = floor(p/100 * n)
+  // clamped to [0, n-1]. Zero when no turns exist in the window.
+
+  /**
+   * 50th-percentile (median) per-turn cost in USD within the 30-day window.
+   * Window: today − 30 days to today (project-filtered only).
+   * Units: USD. Zero-state: 0 when no turns exist in the window.
+   */
+  turnCostP50_30d: number;
+
+  /**
+   * 90th-percentile per-turn cost in USD within the 30-day window.
+   * Window: today − 30 days to today (project-filtered only).
+   * Units: USD. Zero-state: 0 when no turns exist in the window.
+   */
+  turnCostP90_30d: number;
+
+  /**
+   * 99th-percentile per-turn cost in USD within the 30-day window.
+   * Window: today − 30 days to today (project-filtered only).
+   * Units: USD. Zero-state: 0 when no turns exist in the window.
+   */
+  turnCostP99_30d: number;
+
+  // ── Prior 30-day window totals (days 31–60 from today) ───────────────────
+  //
+  // These three fields mirror inputTokens30d / outputTokens30d / costUsd30d
+  // but for the immediately preceding 30-day window (days 31–60 from today).
+  // Source: projectFiltered rows (project-only filter, no since filter).
+  // Used by the frontend to compute prev-period deltas without a second API call.
+
+  /**
+   * Sum of inputTokens for rows in the prior 30-day window (days 31–60 from today).
+   * Window: today − 60 days to today − 31 days inclusive (project-filtered only).
+   * Units: token count. Zero-state: 0 when no rows exist in the prior window.
+   */
+  inputTokensPrev30d: number;
+
+  /**
+   * Sum of outputTokens for rows in the prior 30-day window (days 31–60 from today).
+   * Window: today − 60 days to today − 31 days inclusive (project-filtered only).
+   * Units: token count. Zero-state: 0 when no rows exist in the prior window.
+   */
+  outputTokensPrev30d: number;
+
+  /**
+   * Sum of costUsd for rows in the prior 30-day window (days 31–60 from today).
+   * Window: today − 60 days to today − 31 days inclusive (project-filtered only).
+   * Units: USD. Zero-state: 0 when no rows exist in the prior window.
+   * Used by the frontend to derive cost-per-output-token prev-30d delta:
+   *   costUsd30dPrev / outputTokensPrev30d (guard: outputTokensPrev30d === 0 → em-dash).
+   */
+  costUsd30dPrev: number;
 
   // ── Retro forward-compatibility stubs ───────────────────────────────────
   retroRollup: RetroRollup | null;

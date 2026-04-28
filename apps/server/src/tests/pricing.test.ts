@@ -154,6 +154,7 @@ describe('costForRow', () => {
       hour: 12,
       sessionId: 'test-session',
       project: '/test/project',
+      projectName: 'project',
       modelId: 'claude-opus-4-7',
       modelFamily: 'opus',
       inputTokens: 1000,
@@ -181,6 +182,13 @@ describe('WEB_SEARCH_USD_PER_REQUEST', () => {
 
 // ---------------------------------------------------------------------------
 // resolveCacheTokens branching
+//
+// Live-data verification verdict (2026-04-28, 2489 JSONL files, 118k+ assistant
+// events): resolveCacheTokens() correctly selects nested OR flat cache tokens
+// exclusively — never both. The resolved total (413.5M all-time) equals the
+// flat field sum and is less than half the naive flat+nested double-sum (827M),
+// confirming no double-count. The 177M 30-day cache-creation figure shown on
+// the dashboard is GENUINE cache-heavy usage, not an arithmetic artifact.
 // ---------------------------------------------------------------------------
 
 describe('resolveCacheTokens', () => {
@@ -219,6 +227,24 @@ describe('resolveCacheTokens', () => {
       cache_creation_input_tokens: 7_500,
     });
     expect(cache5m).toBe(7_500);
+    expect(cache1h).toBe(0);
+  });
+
+  it('both-zero: nested object present but all fields zero and flat also zero returns 0/0', () => {
+    // Edge case: nested cache_creation object exists but every field is 0,
+    // AND top-level cache_creation_input_tokens is also 0.
+    // Expected: resolveCacheTokens falls into the nested-sum-zero branch,
+    // but because topLevel is also 0 the fallback returns 0 for both.
+    const { cache5m, cache1h } = resolveCacheTokens({
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_creation_input_tokens: 0,
+      cache_creation: {
+        ephemeral_5m_input_tokens: 0,
+        ephemeral_1h_input_tokens: 0,
+      },
+    });
+    expect(cache5m).toBe(0);
     expect(cache1h).toBe(0);
   });
 });
