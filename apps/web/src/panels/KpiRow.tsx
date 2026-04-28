@@ -1,45 +1,24 @@
 /**
- * KpiRow — four MetricCards for the redesigned dashboard.
+ * KpiRow — four actionable MetricCards for the redesigned dashboard.
  *
- * Cards (in order): Tokens · 30D / Cache Efficiency / Sessions / Avg Session Duration
+ * Cards (in order):
+ *   1. TOKENS · 30D     — inputTokens30d + outputTokens30d; real prev-30d delta
+ *   2. COST / OUTPUT TOKEN (30D) — costUsd30d / outputTokens30d; per-day sparkline
+ *   3. TURN P90 COST (30D) — turnCostP90_30d; p50/p99 context line; no sparkline
+ *   4. COST WoW DELTA     — pctDelta of last two weeklySeries entries; no sparkline
  *
  * Architecture: prop-driven. KpiRow accepts a MetricSummary prop — it does NOT
  * self-fetch. OverviewPage owns the single useQuery and passes data down.
- * There is no period toggle here; all four cards always reflect MTD (current
- * calendar month via monthlyRollup.current) for sparklines and deltas, and
- * lifetime totals (flat MetricSummary fields) for headline numbers where noted.
  *
- * Card 1 — Tokens · 30D
- *   Headline: inputTokens30d + outputTokens30d
- *             (30-day window; cache tokens are EXCLUDED — cache reads are free
- *             reuse and cache writes are billing-overhead tokens, not
- *             conversational tokens. Matches HeroSpend MTD semantics so the
- *             two numbers are directly comparable.)
- *   Sparkline: monthlyRollup.current.dailyTokens
- *   Delta: null (em-dash) — no clean prior-30d comparison source in
- *          PeriodRollup.
- *
- * Card 2 — Cache Efficiency
- *   Headline: computeCacheEfficiency(flat lifetime token fields) → formatted %
- *   Sparkline: computeDailyEfficiencySeries(data.dailySeries)
- *   Delta: em-dash — PeriodRollup has no per-type token breakdown, so a
- *          per-period efficiency delta cannot be computed cleanly.
- *
- * Card 3 — Sessions
- *   Headline: data.totalSessions (lifetime, locale-grouped)
- *   Sparkline: monthlyRollup.current.dailySessions
- *   Delta: MTD vs prior month via monthlyRollup.{current,previous}.sessionCount
- *
- * Card 4 — Avg Session Duration
- *   Headline: monthlyRollup.current.sessionDuration.medianMinutes (Xm Ys)
- *   Sparkline: monthlyRollup.current.sessionDuration.weeklyMedianTrend
- *   Delta: MTD vs prior month via sessionDuration.medianMinutes
+ * Empty/zero state contract:
+ *   - Any divide-by-zero or missing prev-period data renders em-dash (null delta).
+ *   - Zero headline values render "0" (or "$0.0000") — not NaN or undefined.
+ *   - weeklySeries < 2 entries → WoW card renders em-dash value and null delta.
  */
 
 import type { MetricSummary } from '@tokenomix/shared';
-import { Activity, Clock, Cpu, Zap } from 'lucide-react';
-import { computeCacheEfficiency, computeDailyEfficiencySeries } from '../lib/derive.js';
-import { pctDelta } from '../lib/formatters.js';
+import { BarChart2, Cpu, DollarSign, TrendingUp } from 'lucide-react';
+import { formatCurrency, pctDelta } from '../lib/formatters.js';
 import { Section } from '../ui/Section.js';
 import { MetricCard } from './MetricCard.js';
 
@@ -49,9 +28,9 @@ import { MetricCard } from './MetricCard.js';
 
 /**
  * Formats a large integer with K/M/B suffix.
- * Uses one decimal place to keep labels compact (e.g. "15.8M", "1.2k").
+ * One decimal place to keep labels compact (e.g. "15.8M", "1.2k").
  */
-function formatTokens(n: number): string {
+function formatTokenCount(n: number): string {
   if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
@@ -59,35 +38,14 @@ function formatTokens(n: number): string {
 }
 
 /**
- * Formats a session count with locale grouping separators (e.g. "1,234").
+ * Formats a cost-per-output-token value as an adaptive micro-dollar string.
+ * e.g. 0.000004 → "$0.0000" (4dp), 0.0042 → "$0.0042", 0.12 → "$0.12"
+ * Appends "/tok" suffix for per-token display.
+ * Returns em-dash string when value is not finite (divide-by-zero guard).
  */
-function formatCount(n: number): string {
-  return n.toLocaleString('en-US');
-}
-
-/**
- * Formats a fractional percentage to one decimal place (e.g. "78.4%").
- */
-function formatEfficiency(pct: number): string {
-  return `${pct.toFixed(1)}%`;
-}
-
-/**
- * Formats a duration given in decimal minutes as "Xm Ys" (e.g. "34m 22s").
- * If seconds are zero, renders just "Xm" (e.g. "5m").
- * If the duration is less than 1 minute, renders "Xs" (e.g. "45s").
- * For durations >= 60 min, renders "Xh Ym" (e.g. "1h 15m").
- */
-function formatDurationMinutes(min: number): string {
-  if (min < 1) return `${Math.round(min * 60)}s`;
-  if (min < 60) {
-    const wholeMin = Math.floor(min);
-    const sec = Math.round((min - wholeMin) * 60);
-    return sec > 0 ? `${wholeMin}m ${sec}s` : `${wholeMin}m`;
-  }
-  const hr = Math.floor(min / 60);
-  const remMin = Math.round(min - hr * 60);
-  return remMin > 0 ? `${hr}h ${remMin}m` : `${hr}h`;
+function formatCostPerToken(usd: number): string {
+  if (!Number.isFinite(usd)) return '—';
+  return `${formatCurrency(usd)}/tok`;
 }
 
 // ---------------------------------------------------------------------------
@@ -100,94 +58,109 @@ interface KpiRowProps {
 }
 
 export function KpiRow({ data }: KpiRowProps) {
-  const current = data.monthlyRollup.current;
-  const previous = data.monthlyRollup.previous;
-
-  // ── Card 1 — Tokens · 30D ────────────────────────────────────────────────
-  // Headline: 30-day total of input + output tokens only.
-  // Cache tokens are excluded: cache reads are free reuse; cache writes are
-  // billing-overhead tokens, not conversational tokens. This matches HeroSpend
-  // MTD semantics (input + output only) so the two numbers are comparable.
+  // ── Card 1 — TOKENS · 30D ─────────────────────────────────────────────────
+  // Headline: 30-day total of input + output tokens only (cache excluded).
+  // Delta: pctDelta vs prior 30-day window (days 31-60), null when prev is zero.
   const tokens30d = data.inputTokens30d + data.outputTokens30d;
+  const tokensPrev30d = data.inputTokensPrev30d + data.outputTokensPrev30d;
+  const tokensDelta = pctDelta(tokens30d, tokensPrev30d);
+  // Sparkline: daily token sums from monthlyRollup
+  const tokensSparkline = data.monthlyRollup.current.dailyTokens;
 
-  // Delta: intentionally null — no clean prior-30d comparison source available
-  // in PeriodRollup. Prefer an em-dash over a misleading comparison.
-  const tokensDelta: number | null = null;
+  // ── Card 2 — COST / OUTPUT TOKEN (30D) ───────────────────────────────────
+  // Headline: costUsd30d / outputTokens30d — guard divide-by-zero with em-dash.
+  const costPerOutputToken =
+    data.outputTokens30d > 0 ? data.costUsd30d / data.outputTokens30d : null;
 
-  // ── Card 2 — Cache Efficiency ────────────────────────────────────────────
-  // Headline: lifetime cache-hit ratio using flat MetricSummary fields.
-  // PeriodRollup has no per-type token breakdown, so a per-period efficiency
-  // cannot be computed — delta is always null (em-dash) for this card.
-  const cacheEfficiencyPct = computeCacheEfficiency({
-    cacheReadTokens: data.totalCacheReadTokens,
-    cacheCreationTokens: data.totalCacheCreationTokens,
-    inputTokens: data.totalInputTokens,
-  });
+  const costPerTokenStr =
+    costPerOutputToken !== null ? formatCostPerToken(costPerOutputToken) : '—';
 
-  // Efficiency sparkline uses daily series because DailyBucket carries
-  // per-type token fields (cacheReadTokens, cacheCreationTokens, inputTokens).
-  const efficiencySparkline = computeDailyEfficiencySeries(data.dailySeries);
+  // Delta: pctDelta vs prior period — both denominators must be non-zero.
+  const costPerTokenPrev =
+    data.outputTokensPrev30d > 0 ? data.costUsd30dPrev / data.outputTokensPrev30d : null;
 
-  // Cache Efficiency delta is intentionally null.
-  // Rationale: PeriodRollup contains only totalTokens (input+output combined)
-  // with no per-type breakdown, so computing per-period cache efficiency would
-  // require fields that do not exist in PeriodRollup. We render an em-dash
-  // rather than an approximation that would mislead the user.
-  const cacheEfficiencyDelta: number | null = null;
+  const costPerTokenDelta =
+    costPerOutputToken !== null && costPerTokenPrev !== null
+      ? pctDelta(costPerOutputToken, costPerTokenPrev)
+      : null;
 
-  // ── Card 3 — Sessions ────────────────────────────────────────────────────
-  // Headline: lifetime total sessions (MetricSummary flat field).
-  // Delta: MTD current vs MTD previous session counts.
-  const sessionsDelta = pctDelta(current.sessionCount, previous.sessionCount);
+  // Sparkline: cost-per-output-token per day — skip days with 0 outputTokens.
+  const costPerTokenSparkline: number[] = data.dailySeries
+    .filter((d) => d.outputTokens > 0)
+    .map((d) => d.costUsd / d.outputTokens);
 
-  // ── Card 4 — Avg Session Duration ────────────────────────────────────────
-  // Headline: MTD median session duration (medianMinutes from PeriodRollup).
-  // Sparkline: weekly median trend for the current month.
-  // Delta: MTD current vs MTD previous median duration.
-  const dur = current.sessionDuration;
-  const prevDur = previous.sessionDuration;
-  const durationDelta = pctDelta(dur.medianMinutes, prevDur.medianMinutes);
+  // ── Card 3 — TURN P90 COST (30D) ─────────────────────────────────────────
+  // Headline: turnCostP90_30d formatted as currency.
+  // Context: "P50: $X.XXXX · P99: $X.XXXX"
+  // Delta: null — no prior-period percentile available.
+  const p90Str = data.turnCostP90_30d > 0 ? formatCurrency(data.turnCostP90_30d) : '—';
+  const p50Str = data.turnCostP50_30d > 0 ? formatCurrency(data.turnCostP50_30d) : '—';
+  const p99Str = data.turnCostP99_30d > 0 ? formatCurrency(data.turnCostP99_30d) : '—';
+  const turnCostContext = `P50: ${p50Str} · P99: ${p99Str}`;
+
+  // ── Card 4 — COST WoW DELTA ───────────────────────────────────────────────
+  // Derive from weeklySeries: compare last two entries sorted by weekStart.
+  // Guard: fewer than 2 entries → em-dash headline, null delta.
+  const sortedWeeks = [...data.weeklySeries].sort((a, b) =>
+    a.weekStart < b.weekStart ? -1 : a.weekStart > b.weekStart ? 1 : 0
+  );
+
+  // Use explicit index access — TypeScript can't narrow from length checks on
+  // ternary-assigned consts when exactOptionalPropertyTypes is on.
+  const lastWeekEntry = sortedWeeks[sortedWeeks.length - 1] ?? null;
+  const prevWeekEntry = sortedWeeks[sortedWeeks.length - 2] ?? null;
+
+  // wowDelta: number for the colored pill when 2+ weeks exist; null → em-dash pill.
+  // value: absolute this-week cost as the headline (meaningful even without delta);
+  //        em-dash when fewer than 2 weeks so the card has no standalone signal.
+  const wowDelta =
+    lastWeekEntry !== null && prevWeekEntry !== null
+      ? pctDelta(lastWeekEntry.costUsd, prevWeekEntry.costUsd)
+      : null;
+
+  const wowValueStr =
+    sortedWeeks.length >= 2 && lastWeekEntry !== null ? formatCurrency(lastWeekEntry.costUsd) : '—';
+
+  // Context: shows the prior-week cost for reference when delta is available.
+  const wowContext: string | undefined =
+    prevWeekEntry !== null ? `vs ${formatCurrency(prevWeekEntry.costUsd)} prev week` : undefined;
 
   return (
     <Section title="Key Metrics" cols={4} gap="md">
-      {/* Card 1 — Tokens · 30D */}
+      {/* Card 1 — TOKENS · 30D */}
       <MetricCard
         label="TOKENS · 30D"
-        value={formatTokens(tokens30d)}
-        sparklineData={current.dailyTokens}
+        value={formatTokenCount(tokens30d)}
+        sparklineData={tokensSparkline}
         deltaPercent={tokensDelta}
         icon={<Cpu size={14} aria-hidden="true" className="shrink-0" />}
       />
 
-      {/* Card 2 — Cache Efficiency */}
-      {/*
-       * Delta is always null here: PeriodRollup has no per-type token fields,
-       * so we cannot compute a per-period efficiency ratio. Em-dash is shown.
-       */}
+      {/* Card 2 — COST / OUTPUT TOKEN (30D) */}
       <MetricCard
-        label="Cache Efficiency"
-        value={formatEfficiency(cacheEfficiencyPct)}
-        sparklineData={efficiencySparkline}
-        deltaPercent={cacheEfficiencyDelta}
-        icon={<Zap size={14} aria-hidden="true" className="shrink-0" />}
+        label="COST / OUTPUT TOKEN (30D)"
+        value={costPerTokenStr}
+        {...(costPerTokenSparkline.length > 1 ? { sparklineData: costPerTokenSparkline } : {})}
+        deltaPercent={costPerTokenDelta}
+        icon={<DollarSign size={14} aria-hidden="true" className="shrink-0" />}
       />
 
-      {/* Card 3 — Sessions */}
+      {/* Card 3 — TURN P90 COST (30D) */}
       <MetricCard
-        label="Sessions"
-        value={formatCount(data.totalSessions)}
-        sparklineData={current.dailySessions}
-        deltaPercent={sessionsDelta}
-        icon={<Activity size={14} aria-hidden="true" className="shrink-0" />}
+        label="TURN P90 COST (30D)"
+        value={p90Str}
+        deltaPercent={null}
+        context={turnCostContext}
+        icon={<BarChart2 size={14} aria-hidden="true" className="shrink-0" />}
       />
 
-      {/* Card 4 — Avg Session Duration */}
+      {/* Card 4 — COST WoW DELTA */}
       <MetricCard
-        label="Avg Session Duration"
-        value={dur.medianMinutes > 0 ? formatDurationMinutes(dur.medianMinutes) : '—'}
-        sparklineData={dur.weeklyMedianTrend}
-        deltaPercent={durationDelta}
-        icon={<Clock size={14} aria-hidden="true" className="shrink-0" />}
+        label="COST WoW DELTA"
+        value={wowValueStr}
+        deltaPercent={wowDelta}
+        {...(wowContext !== undefined ? { context: wowContext } : {})}
+        icon={<TrendingUp size={14} aria-hidden="true" className="shrink-0" />}
       />
     </Section>
   );

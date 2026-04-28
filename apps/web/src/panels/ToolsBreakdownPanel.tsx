@@ -40,6 +40,9 @@ export function ToolsBreakdownPanel({ since = '30d' }: ToolsBreakdownPanelProps)
 
   const totalCount = badgeItems.reduce((s, t) => s + t.count, 0);
 
+  // Post-fetch empty state: render nothing so the OverviewPage grid reflows.
+  if (data && data.byTool.length === 0) return null;
+
   return (
     <Card as="section" aria-label="Tool use breakdown">
       <h2 className="text-base font-semibold text-gray-950 dark:text-white mb-4">
@@ -57,30 +60,25 @@ export function ToolsBreakdownPanel({ since = '30d' }: ToolsBreakdownPanelProps)
         </div>
       )}
 
-      {data &&
-        (data.byTool.length === 0 ? (
-          <div className="flex items-center justify-center h-48">
-            <p className="text-sm text-gray-500 dark:text-gray-400">No tool activity yet.</p>
+      {data && (
+        <>
+          <ToolMixBar data={data.byTool} height={240} />
+          <div className="mt-4 flex flex-wrap gap-2" aria-label="Tool legend">
+            {badgeItems.map((t) => {
+              const pct = totalCount > 0 ? ((t.count / totalCount) * 100).toFixed(0) : '0';
+              return (
+                <Badge
+                  key={t.toolName}
+                  variant="default"
+                  title={`${t.count.toLocaleString()} calls`}
+                >
+                  {t.toolName} {pct}%
+                </Badge>
+              );
+            })}
           </div>
-        ) : (
-          <>
-            <ToolMixBar data={data.byTool} height={240} />
-            <div className="mt-4 flex flex-wrap gap-2" aria-label="Tool legend">
-              {badgeItems.map((t) => {
-                const pct = totalCount > 0 ? ((t.count / totalCount) * 100).toFixed(0) : '0';
-                return (
-                  <Badge
-                    key={t.toolName}
-                    variant="default"
-                    title={`${t.count.toLocaleString()} calls`}
-                  >
-                    {t.toolName} {pct}%
-                  </Badge>
-                );
-              })}
-            </div>
-          </>
-        ))}
+        </>
+      )}
     </Card>
   );
 }

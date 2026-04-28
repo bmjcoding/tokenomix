@@ -80,3 +80,21 @@ export function pctDelta(curr: number, prev: number): number | null {
   if (prev === 0) return null;
   return ((curr - prev) / prev) * 100;
 }
+
+/**
+ * Formats a duration given in minutes as a compact human-readable string.
+ * Delegates to formatDuration(minutes * 60 * 1000) — a single conversion site
+ * so all duration formatting uses the same scale thresholds.
+ *
+ * Examples:
+ *   0       → "0ms"  (rounds to 0 ms — same as formatDuration(0))
+ *   0.5     → "30s"
+ *   5       → "5m"
+ *   14.5    → "14m 30s"
+ *   90      → "1h 30m"
+ *
+ * Use this instead of duplicating the minute→ms conversion inline.
+ */
+export function formatDurationMinutes(minutes: number): string {
+  return formatDuration(minutes * 60 * 1000);
+}

@@ -13,11 +13,12 @@
  * - Period state is lifted to this page and passed to AreaChartPanel.
  *
  * Layout (top to bottom):
- *   1. HeroSpend  — full-width hero, Current Spend (MTD)
- *   2. KpiRow     — four KPI cards: Tokens, Cache Efficiency, Sessions, Avg Duration
- *   3. KpiRow2    — four KPI cards: Active Time, Files Touched, Cost/Turn, Tool Error Rate
- *   4. AreaChartPanel — spend-over-time chart with period switcher + actions
- *   5. Three-column grid: HeatmapPanel + ModelMixPanel + ToolsBreakdownPanel
+ *   1. HeroSpend              — full-width hero, Current Spend (MTD)
+ *   2. KpiRow                 — TOKENS · 30D w/ delta, Cost/Output Token, Turn P90 Cost, Cost WoW Delta
+ *   3. KpiRow2                — Projects Touched, Avg Cost/Turn; optional Worst-Tool Error (hidden when none)
+ *   3a. OptimizationSignals   — P90 Session Duration; optional Subagent Success Rate + Top Project
+ *   4. AreaChartPanel         — spend-over-time chart with period switcher + actions
+ *   5. Three-column grid: HeatmapPanel + ModelMixPanel + ToolsBreakdownPanel (hidden when no tool data)
  *   6. TopSessionsTable (top 10 by cost)
  *   7. Two-column grid: SubagentLeaderboard + TopExpensiveTurnsTable (Agent & Turn Breakdown)
  */
@@ -34,6 +35,7 @@ import { HeroSpend } from '../panels/HeroSpend.js';
 import { KpiRow } from '../panels/KpiRow.js';
 import { KpiRow2 } from '../panels/KpiRow2.js';
 import { ModelMixPanel } from '../panels/ModelMixPanel.js';
+import { OptimizationSignalsPanel } from '../panels/OptimizationSignalsPanel.js';
 import type { DashboardPeriod } from '../panels/PeriodSwitcher.js';
 import { SubagentLeaderboard } from '../panels/SubagentLeaderboard.js';
 import { ToolsBreakdownPanel } from '../panels/ToolsBreakdownPanel.js';
@@ -84,11 +86,14 @@ export default function OverviewPage() {
       {/* 1. Hero — Current Spend (MTD) */}
       <HeroSpend data={data} />
 
-      {/* 2. KPI row — Tokens / Cache Efficiency / Sessions / Avg Session Duration */}
+      {/* 2. KPI row — TOKENS · 30D / Cost per Output Token / Turn P90 Cost / Cost WoW Delta */}
       <KpiRow data={data} />
 
-      {/* 3. KPI row 2 — Active Time / Files Touched / Cost per Turn / Tool Error Rate */}
+      {/* 3. KPI row 2 — Projects Touched / Avg Cost per Turn / Worst-Tool Error (conditional) */}
       <KpiRow2 data={data} />
+
+      {/* 3a. Optimization Signals — P90 session duration, subagent success rate, top project */}
+      <OptimizationSignalsPanel data={data} />
 
       {/* 4. Area chart with period switcher, Export, and View full report */}
       <AreaChartPanel data={data} period={period} onPeriodChange={setPeriod} />
