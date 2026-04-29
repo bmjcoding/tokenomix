@@ -267,16 +267,15 @@ describe('buildSessionsRows', () => {
     const rows = buildSessionsRows(SESSION_FIXTURES);
     const first = rows[1];
     expect(first).toBeDefined();
-    // [date, project, projectName, sessionId, costUsd, inputTokens, outputTokens, cacheCreation, cacheRead, events, isSubagent, duration]
+    // [date, project, projectName, sessionId, costUsd, inputTokens, outputTokens, cacheCreation, cacheRead, events, duration]
     // index 0 is the formatted date string
     expect(first?.[1]).toBe('/home/user/project-a');
     expect(first?.[2]).toBe('project-a');
     expect(first?.[3]).toBe('abc123');
     expect(first?.[4]).toBe(1.2345);
-    expect(first?.[10]).toBe(false);
     // Duration cell: first fixture has durationMs: 2_250_000 (37m 30s)
-    expect(typeof first?.[11]).toBe('string');
-    expect(first?.[11]).not.toBe('');
+    expect(typeof first?.[10]).toBe('string');
+    expect(first?.[10]).not.toBe('');
   });
 
   it('date cell formats firstTs to MM-DD-YYYY', () => {
@@ -293,11 +292,11 @@ describe('buildSessionsRows', () => {
     expect(rows[2]?.[0]).toBe('—');
   });
 
-  it('each data row has 12 elements', () => {
+  it('each data row has 11 elements', () => {
     const rows = buildSessionsRows(SESSION_FIXTURES);
     // Skip header row (index 0)
     for (let i = 1; i < rows.length; i++) {
-      expect(rows[i]).toHaveLength(12);
+      expect(rows[i]).toHaveLength(11);
     }
   });
 
@@ -339,13 +338,6 @@ describe('RFC 4180 output via serializeCsv + buildSessionsRows', () => {
     expect(csv).toContain('"/home/user/say ""hello"""');
   });
 
-  it('serializes boolean IsSubagent as "true" or "false"', () => {
-    const csv = serializeCsv(buildSessionsRows(SESSION_FIXTURES));
-    const rows = parseCsvRows(csv);
-    expect(rows[1]?.[10]).toBe('false'); // first session isSubagent: false
-    expect(rows[2]?.[10]).toBe('true'); // second session isSubagent: true
-  });
-
   it('uses CRLF line endings throughout', () => {
     const csv = serializeCsv(buildSessionsRows(SESSION_FIXTURES));
     const crlfCount = (csv.match(/\r\n/g) ?? []).length;
@@ -374,7 +366,6 @@ describe('RFC 4180 output via serializeCsv + buildSessionsRows', () => {
       'CacheCreation',
       'CacheRead',
       'Events',
-      'IsSubagent',
       'Duration',
     ]);
   });
@@ -382,10 +373,10 @@ describe('RFC 4180 output via serializeCsv + buildSessionsRows', () => {
   it('Duration cell is formatted string for known durationMs', () => {
     const rows = parseCsvRows(serializeCsv(buildSessionsRows(SESSION_FIXTURES)));
     // first fixture: durationMs 2_250_000 — formatDurationNullable produces a non-em-dash string
-    expect(rows[1]?.[11]).toBeDefined();
-    expect(rows[1]?.[11]).not.toBe('—');
+    expect(rows[1]?.[10]).toBeDefined();
+    expect(rows[1]?.[10]).not.toBe('—');
     // second fixture: durationMs null — should be em-dash
-    expect(rows[2]?.[11]).toBe('—');
+    expect(rows[2]?.[10]).toBe('—');
   });
 });
 
