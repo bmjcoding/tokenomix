@@ -89,9 +89,13 @@ export type {
   RetroTimelinePoint,
   ServerToolUse,
   SessionBucket,
+  // Session detail
+  SessionDetail,
   SessionDurationStats,
   // Session summary
   SessionSummary,
+  // Session turn row (for detail view)
+  SessionTurnRow,
   SinceOption,
   SubagentBucket,
   TokenRow,

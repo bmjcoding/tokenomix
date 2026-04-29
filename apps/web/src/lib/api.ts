@@ -8,7 +8,13 @@
  * which forwards /api → http://127.0.0.1:{PORT_BASE+1}.
  */
 
-import type { MetricSummary, MetricsQuery, SessionSummary, TurnBucket } from '@tokenomix/shared';
+import type {
+  MetricSummary,
+  MetricsQuery,
+  SessionDetail,
+  SessionSummary,
+  TurnBucket,
+} from '@tokenomix/shared';
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -88,6 +94,32 @@ export async function fetchTurns(
     limit: params.limit,
   });
   return apiFetch<TurnBucket[]>(`/api/turns${qs}`);
+}
+
+/**
+ * GET /api/sessions/:sessionId
+ *
+ * Returns a SessionDetail object for the given session.
+ * Throws on non-2xx (404 when session not found, 400 for invalid id).
+ */
+export async function fetchSessionDetail(sessionId: string): Promise<SessionDetail> {
+  return apiFetch<SessionDetail>(`/api/sessions/${encodeURIComponent(sessionId)}`);
+}
+
+/**
+ * POST /api/sessions/:sessionId/reveal
+ *
+ * Asks the server to reveal the session's JSONL file in the OS file manager
+ * (e.g. Finder on macOS). Returns void on success (204).
+ * Throws on non-2xx.
+ */
+export async function revealSessionJsonl(sessionId: string): Promise<void> {
+  const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/reveal`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    throw new Error(`reveal failed: ${res.status}`);
+  }
 }
 
 /**

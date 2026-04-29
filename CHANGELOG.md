@@ -7,6 +7,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-04-29
+
+### Added
+
+- Date column as column 1 on the Full Session Report (`/report`), formatted
+  `MMMM-DD-YYYY` (e.g. `April-29-2026`). Project shifts to column 2.
+- `SessionSummary.firstTs` field (`string | null`, ISO 8601 UTC) — populated by
+  `computeSessionSummaries()` from the existing `sessionTimes` map; `null` when
+  the session was evicted before a timestamp was recorded.
+- `formatSessionDate(iso)` helper in `apps/web/src/lib/formatters.ts` — locale-free
+  date formatting using hardcoded month names; produces the `MMMM-DD-YYYY` display
+  string consumed by the Full Session Report Date column.
+
+- Initial prompt preview (first 500 characters, server-truncated) and JSONL file path
+  display on the session detail view; new `SessionDetail.initialPrompt`,
+  `initialPromptTruncated`, and `jsonlPath` fields exposed via `GET /api/sessions/:id`.
+  The server captures the first user-role message at ingest time and hard-caps it at 500
+  characters before serialisation. The JSONL path is metadata only — no endpoint serves
+  file contents. Both fields are hidden on the frontend when null. Server already binds
+  `127.0.0.1`; no network-exposure change.
+- Per-component USD cost breakdown (input / output / cache create / cache read) on the
+  session detail view; rendered under each token-count metric card and exposed via
+  `SessionDetail.costBreakdown` from `GET /api/sessions/:id`.
+- Per-session detail page at `/report/$sessionId` — three-tab view (Overview / Tools /
+  Turns) with KPI MetricCards, ToolMixBar donut, per-tool breakdown table, and per-turn
+  cost table.
+- `GET /api/sessions/:id` endpoint returning a `SessionDetail` JSON object with
+  aggregated header fields, full `byTool` array, per-turn rows, and `firstTs`/`lastTs`
+  timestamps. The `:id` param is validated against an allowlist regex that rejects path
+  separators and NULL bytes.
+- `SessionDetail` and `SessionTurnRow` shared types in `packages/shared` (re-exported
+  from the barrel).
+- `formatProjectName(project)` helper in `apps/web/src/lib/formatters.ts` — extracts
+  the basename of a project path for display, handling trailing slashes.
+- `escapeFormula(value)` helper in `apps/web/src/lib/csvExport.ts` — prefixes cells
+  starting with `=`, `+`, `-`, `@`, or TAB with a single quote to prevent spreadsheet
+  formula injection.
+- `fetchSessionDetail(sessionId)` API helper and `queryKeys.sessionDetail(sessionId)`
+  cache key in `apps/web/src/lib/`.
+- Server-side duration observability: `session_detail` log event emitted with
+  `durationMs` and `found` fields on every `GET /api/sessions/:id` call.
+- 20 new tests: 9 server-side cases covering 200/404/400 paths, path-separator and
+  NULL-byte guards, `projectName`/`topTools` shape, empty `toolUses`, and sort order;
+  11 web cases covering CSV formula-injection regression paths.
+
+- `POST /api/sessions/:id/reveal` endpoint that opens the session's JSONL file in
+  the OS file manager (Finder on macOS, Explorer on Windows, file manager on Linux).
+  The path is validated against the in-memory session map and passed as a separate
+  `spawn` argument — no shell interpolation. New `IndexStore.getJsonlPathForSession()`
+  helper; tests cover 204, 404, and 400 paths.
+- "Reveal in Finder" button on the session detail page: posts to the new endpoint and
+  shows a transient check icon on success, replacing the previous "Copy path" button.
+
+### Changed
+
+- Full Session Report table now uses `table-fixed` layout with explicit `<colgroup>`
+  widths — columns no longer reflow when sort changes or row content varies.
+- CSV export gains a `Date` column at index 0 (header and per-row tuple length
+  increased to 11); existing columns shift right by one position.
+
+- Full Session Report (`/report`) reorganized: Project (basename) is now the primary
+  column with session ID shown as secondary text; the Type column was removed; a Top
+  Tools chip column shows up to 3 tool badges with a `+N more` overflow count;
+  pagination set to 50 sessions per page.
+- `SessionSummary` extended with `projectName: string`, `topTools: ToolBucket[]`, and
+  `toolNamesCount: number` fields, populated by `computeSessionSummaries()` on the
+  server.
+- CSV export adds a `ProjectName` column (basename) at index 1, after the full `Project`
+  path column. All CSV cells now pass through formula-injection escaping.
+- `Tabs` primitive accepts an optional `ariaLabel` prop to override the default
+  accessible name, enabling correct labelling when used outside a dashboard context.
+- SSE handler (`useServerEvents.ts`) now invalidates the `['session']` cache key
+  alongside the existing keys, so the session list refreshes on file-watch events.
+- Full Session Report top-tools chip column: `+N more` overflow indicator now always
+  renders on a second line (was inconsistently inline) and links directly to the
+  session's Tools tab (`/report/$sessionId#tools`).
+- Session detail initial-prompt preview: copy button removed; text remains selectable.
+  JSONL path action changed from copy-to-clipboard to reveal-in-file-manager.
+
+### Fixed
+
+- CSV formula-injection vulnerability: cells whose first character is a formula trigger
+  (`=`, `+`, `-`, `@`, TAB) are now escaped before writing to the CSV stream.
+
 ## [3.2.0] - 2026-04-29
 
 ### Added
@@ -321,7 +405,8 @@ Internal cross-references updated:
 - `DEFAULT_OUTPUT` now points to `output/usage-dashboard.html` within the
   project, instead of a session-specific retro directory.
 
-[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.2.0...HEAD
+[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.3.0...HEAD
+[3.3.0]: https://github.com/bmjcoding/tokenomix/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/bmjcoding/tokenomix/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/bmjcoding/tokenomix/compare/v3.0.1...v3.1.0
 [3.0.1]: https://github.com/bmjcoding/tokenomix/compare/v3.0.0...v3.0.1

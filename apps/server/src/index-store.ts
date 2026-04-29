@@ -16,6 +16,7 @@
 import { EventEmitter } from 'node:events';
 import type { Dirent } from 'node:fs';
 import { readdir as readdirFn } from 'node:fs/promises';
+import { open as fsOpen } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as nodePath from 'node:path';
 import type {
@@ -37,8 +38,10 @@ import type {
   RawUsage,
   RawUsageEventParsed,
   SessionBucket,
+  SessionDetail,
   SessionDurationStats,
   SessionSummary,
+  SessionTurnRow,
   SubagentBucket,
   SystemTurnDurationEventParsed,
   TokenRow,
@@ -79,6 +82,18 @@ const BATCH_SIZE = 50;
  * even under continuous high-volume ingest.
  */
 const MAX_SESSION_TIMES = 50_000;
+
+/**
+ * Server-side hard cap on the initial-prompt text stored in sessionInitialPrompts.
+ * Prompts longer than this are truncated before storage and serialisation.
+ */
+const PROMPT_MAX_CHARS = 500;
+
+/**
+ * Maximum bytes read per JSONL file when scanning for the first user message.
+ * Prevents reading entire transcripts for very large files.
+ */
+const PROMPT_SCAN_MAX_BYTES = 64 * 1024; // 64 KB
 
 interface PricingRuntimeConfig {
   provider: PricingProvider;
@@ -1714,7 +1729,11 @@ function aggregate(
 // Session summary computation
 // ---------------------------------------------------------------------------
 
-function computeSessionSummaries(rows: TokenRow[], query: MetricsQuery): SessionSummary[] {
+function computeSessionSummaries(
+  rows: TokenRow[],
+  query: MetricsQuery,
+  sessionTimes: Map<string, { firstTs: number; lastTs: number }>
+): SessionSummary[] {
   const now = new Date();
   const sinceCutoff = parseSinceCutoff(query.since, now);
 
@@ -1723,6 +1742,7 @@ function computeSessionSummaries(rows: TokenRow[], query: MetricsQuery): Session
     {
       sessionId: string;
       project: string;
+      projectName: string;
       costUsd: number;
       inputTokens: number;
       outputTokens: number;
@@ -1732,6 +1752,9 @@ function computeSessionSummaries(rows: TokenRow[], query: MetricsQuery): Session
       isSubagent: boolean;
     }
   >();
+
+  // Parallel accumulator: sessionId → toolName → { count, errorCount }
+  const toolAccumulator = new Map<string, Map<string, { count: number; errorCount: number }>>();
 
   for (const row of rows) {
     if (query.project && !row.project.includes(query.project)) continue;
@@ -1752,6 +1775,7 @@ function computeSessionSummaries(rows: TokenRow[], query: MetricsQuery): Session
       sessionMap.set(row.sessionId, {
         sessionId: row.sessionId,
         project: row.project,
+        projectName: row.projectName,
         costUsd: row.costUsd,
         inputTokens: row.inputTokens,
         outputTokens: row.outputTokens,
@@ -1761,9 +1785,58 @@ function computeSessionSummaries(rows: TokenRow[], query: MetricsQuery): Session
         isSubagent: row.isSubagent,
       });
     }
+
+    // Accumulate tool uses and errors for this session.
+    let sessionTools = toolAccumulator.get(row.sessionId);
+    if (!sessionTools) {
+      sessionTools = new Map<string, { count: number; errorCount: number }>();
+      toolAccumulator.set(row.sessionId, sessionTools);
+    }
+    const uses = row.toolUses ?? {};
+    const errors = row.toolErrors ?? {};
+    for (const [toolName, count] of Object.entries(uses)) {
+      const existing2 = sessionTools.get(toolName);
+      if (existing2) {
+        existing2.count += count;
+      } else {
+        sessionTools.set(toolName, { count, errorCount: 0 });
+      }
+    }
+    for (const [toolName, errCount] of Object.entries(errors)) {
+      const existing2 = sessionTools.get(toolName);
+      if (existing2) {
+        existing2.errorCount += errCount;
+      } else {
+        sessionTools.set(toolName, { count: 0, errorCount: errCount });
+      }
+    }
   }
 
-  return [...sessionMap.values()].sort((a, b) => b.costUsd - a.costUsd);
+  // Build final SessionSummary[] with topTools and toolNamesCount.
+  const result: SessionSummary[] = [];
+  for (const entry of sessionMap.values()) {
+    const sessionTools = toolAccumulator.get(entry.sessionId);
+    let topTools: ToolBucket[] = [];
+    let toolNamesCount = 0;
+    if (sessionTools && sessionTools.size > 0) {
+      toolNamesCount = sessionTools.size;
+      topTools = [...sessionTools.entries()]
+        .sort((a, b) => b[1].count - a[1].count)
+        .slice(0, 3)
+        .map(([toolName, { count, errorCount }]) => ({
+          toolName,
+          count,
+          errorCount,
+          errorRate: count > 0 ? errorCount / count : 0,
+        }));
+    }
+    const t = sessionTimes.get(entry.sessionId);
+    const firstTs: string | null = t ? new Date(t.firstTs).toISOString() : null;
+    const durationMs: number | null = t ? t.lastTs - t.firstTs : null;
+    result.push({ ...entry, firstTs, durationMs, topTools, toolNamesCount });
+  }
+
+  return result.sort((a, b) => b.costUsd - a.costUsd);
 }
 
 // ---------------------------------------------------------------------------
@@ -1776,6 +1849,16 @@ export class IndexStore extends EventEmitter {
   private readonly rowTimestampMs = new Map<string, number>();
   /** Per-session first/last event timestamps (epoch ms). Used for duration stats. */
   private readonly sessionTimes = new Map<string, { firstTs: number; lastTs: number }>();
+  /**
+   * Per-session first qualifying user-message text (truncated to PROMPT_MAX_CHARS),
+   * truncation flag, and the JSONL file path that contained the message.
+   * Eviction follows the same MAX_SESSION_TIMES cap and oldest-10% batch policy
+   * as sessionTimes to keep memory bounded.
+   */
+  private readonly sessionInitialPrompts = new Map<
+    string,
+    { prompt: string; truncated: boolean; jsonlPath: string }
+  >();
   private readonly fileIngestionAudits = new Map<string, FileIngestionAudit>();
   private filesDiscovered = 0;
   private snapshot: MetricSummary | null = null;
@@ -1826,6 +1909,113 @@ export class IndexStore extends EventEmitter {
   }
 
   /**
+   * Scan the first PROMPT_SCAN_MAX_BYTES of a JSONL file looking for the first
+   * user-role event with qualifying text content. Stores the result in
+   * sessionInitialPrompts (keyed by sessionId). Skips if the session already
+   * has an entry. Reads raw lines rather than going through parseJSONLFile
+   * because the Zod schema strips user-message text for privacy reasons; this
+   * helper only extracts and truncates the first user message then discards the
+   * rest, satisfying the same privacy intent.
+   */
+  private async captureInitialPrompt(filePath: string): Promise<void> {
+    let fh: Awaited<ReturnType<typeof fsOpen>> | undefined;
+    try {
+      fh = await fsOpen(filePath, 'r');
+      const buf = Buffer.allocUnsafe(PROMPT_SCAN_MAX_BYTES);
+      const { bytesRead } = await fh.read(buf, 0, PROMPT_SCAN_MAX_BYTES, 0);
+      const chunk = buf.subarray(0, bytesRead).toString('utf-8');
+
+      // Split on newlines; the last element may be a partial line — discard it
+      // unless it is the only element (entire file fits in the buffer).
+      const rawLines = chunk.split('\n');
+      const lines =
+        bytesRead < PROMPT_SCAN_MAX_BYTES
+          ? rawLines // full file fits; keep all lines
+          : rawLines.slice(0, -1); // drop potentially-truncated last line
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(trimmed);
+        } catch {
+          continue; // malformed JSON — skip
+        }
+
+        if (
+          typeof parsed !== 'object' ||
+          parsed === null ||
+          (parsed as Record<string, unknown>).type !== 'user'
+        ) {
+          continue;
+        }
+
+        const rec = parsed as Record<string, unknown>;
+        const sessionId = typeof rec.sessionId === 'string' ? rec.sessionId : undefined;
+        if (!sessionId) continue;
+
+        // Skip if already captured for this session.
+        if (this.sessionInitialPrompts.has(sessionId)) continue;
+
+        // Extract text from message.content (plain string or array of blocks).
+        const msg = rec.message as Record<string, unknown> | undefined;
+        if (!msg) continue;
+        const content = msg.content;
+
+        let text = '';
+        if (typeof content === 'string') {
+          text = content;
+        } else if (Array.isArray(content)) {
+          const parts: string[] = [];
+          for (const block of content) {
+            if (
+              typeof block === 'object' &&
+              block !== null &&
+              (block as Record<string, unknown>).type === 'text'
+            ) {
+              const t = (block as Record<string, unknown>).text;
+              if (typeof t === 'string' && t.trim().length > 0) {
+                parts.push(t);
+              }
+            }
+          }
+          text = parts.join('\n');
+        }
+
+        const trimmedText = text.trim();
+        if (!trimmedText) continue; // no qualifying text (e.g. only tool_result blocks)
+
+        // Truncate and flag.
+        const truncated = trimmedText.length > PROMPT_MAX_CHARS;
+        const prompt = truncated ? trimmedText.slice(0, PROMPT_MAX_CHARS) : trimmedText;
+
+        this.sessionInitialPrompts.set(sessionId, { prompt, truncated, jsonlPath: filePath });
+
+        // Evict oldest 10% when size exceeds the cap (mirrors recordSessionTimestamp).
+        if (this.sessionInitialPrompts.size > MAX_SESSION_TIMES) {
+          const evictCount = Math.ceil(MAX_SESSION_TIMES * 0.1);
+          const keys = [...this.sessionInitialPrompts.keys()];
+          for (let ei = 0; ei < evictCount && ei < keys.length; ei++) {
+            const key = keys[ei];
+            if (key) this.sessionInitialPrompts.delete(key);
+          }
+        }
+
+        // Only the first qualifying user event per file (single-session scan).
+        // Continue scanning remaining lines in case earlier lines had a
+        // different sessionId that needed capturing, but for this sessionId we
+        // are done.
+      }
+    } catch {
+      // File open or read failure — silently skip; prompt capture is best-effort.
+    } finally {
+      await fh?.close().catch(() => undefined);
+    }
+  }
+
+  /**
    * Full startup scan — discover all JSONL files and ingest in parallel batches
    * of BATCH_SIZE to avoid fd-limit exhaustion with 2,500+ files.
    */
@@ -1868,6 +2058,12 @@ export class IndexStore extends EventEmitter {
    */
   private async ingestFileInternal(filePath: string): Promise<void> {
     const fileAudit = emptyFileIngestionAudit();
+
+    // Capture the first qualifying user message for this file's sessions.
+    // This runs as a best-effort preliminary scan and does not affect the
+    // two-pass assistant-event ingest below.
+    await this.captureInitialPrompt(filePath);
+
     // ── Two-pass ingest ───────────────────────────────────────────────────────
     //
     // Bug 4 fix: JSONL files from Claude Code can have tool_use/tool_result and
@@ -2274,7 +2470,7 @@ export class IndexStore extends EventEmitter {
   /** Return per-session summaries, optionally filtered. */
   getSessions(query: MetricsQuery = {}): SessionSummary[] {
     const allRows = [...this.rows.values()];
-    return computeSessionSummaries(allRows, query);
+    return computeSessionSummaries(allRows, query, this.sessionTimes);
   }
 
   /**
@@ -2317,6 +2513,167 @@ export class IndexStore extends EventEmitter {
     // Sort by costUsd descending (most expensive turn first).
     result.sort((a, b) => b.costUsd - a.costUsd);
     return result.slice(0, Math.min(limit, 50));
+  }
+
+  /**
+   * Return the full SessionDetail for a given sessionId, or null when no rows
+   * exist for that session. Aggregates token/cost totals, derives a full
+   * ToolBucket array (all tools, not capped at 3), and builds a per-turn array
+   * sorted ascending by timestamp (oldest first).
+   *
+   * firstTs and lastTs are read from the private sessionTimes map; they are
+   * returned as null when the entry has been evicted (50K-entry LRU cap).
+   */
+  getSessionDetail(sessionId: string): SessionDetail | null {
+    const sessionRows: TokenRow[] = [];
+    for (const row of this.rows.values()) {
+      if (row.sessionId === sessionId) sessionRows.push(row);
+    }
+    if (sessionRows.length === 0) return null;
+
+    // Aggregate totals.
+    let costUsd = 0;
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let cacheCreationTokens = 0;
+    let cacheReadTokens = 0;
+    let webSearchRequests = 0;
+    let isSubagent = false;
+    let project = '';
+    let projectName = '';
+
+    // Per-component cost accumulators (USD).
+    let sumInputCostUsd = 0;
+    let sumOutputCostUsd = 0;
+    let sumCacheCreationCostUsd = 0;
+    let sumCacheReadCostUsd = 0;
+
+    // Full tool accumulator (not capped).
+    const toolAcc = new Map<string, { count: number; errorCount: number }>();
+
+    for (const row of sessionRows) {
+      costUsd += row.costUsd;
+      inputTokens += row.inputTokens;
+      outputTokens += row.outputTokens;
+      cacheCreationTokens += row.cacheCreation5m + row.cacheCreation1h;
+      cacheReadTokens += row.cacheReadTokens;
+      webSearchRequests += row.webSearchRequests;
+      if (row.isSubagent) isSubagent = true;
+      // Use the first row's project/projectName (consistent within a session).
+      if (!project) {
+        project = row.project;
+        projectName = row.projectName;
+      }
+
+      // Accumulate per-component USD costs: prefer stored values, fall back to
+      // pricing-table estimate (same pattern as addCostComponents).
+      const fallback = fallbackCostComponentsForRow(row);
+      sumInputCostUsd += row.inputCostUsd ?? fallback.inputCostUsd;
+      sumOutputCostUsd += row.outputCostUsd ?? fallback.outputCostUsd;
+      sumCacheCreationCostUsd += row.cacheCreationCostUsd ?? fallback.cacheCreationCostUsd;
+      sumCacheReadCostUsd += row.cacheReadCostUsd ?? fallback.cacheReadCostUsd;
+
+      const uses = row.toolUses ?? {};
+      const errors = row.toolErrors ?? {};
+      for (const [toolName, count] of Object.entries(uses)) {
+        const e = toolAcc.get(toolName);
+        if (e) {
+          e.count += count;
+        } else {
+          toolAcc.set(toolName, { count, errorCount: 0 });
+        }
+      }
+      for (const [toolName, errCount] of Object.entries(errors)) {
+        const e = toolAcc.get(toolName);
+        if (e) {
+          e.errorCount += errCount;
+        } else {
+          toolAcc.set(toolName, { count: 0, errorCount: errCount });
+        }
+      }
+    }
+
+    // Build byTool (all tools, sorted by count desc).
+    const byTool: ToolBucket[] = [...toolAcc.entries()]
+      .sort((a, b) => b[1].count - a[1].count)
+      .map(([toolName, { count, errorCount }]) => ({
+        toolName,
+        count,
+        errorCount,
+        errorRate: count > 0 ? errorCount / count : 0,
+      }));
+
+    // Build turns array sorted ascending by date+hour (oldest first).
+    const turns: SessionTurnRow[] = sessionRows
+      .slice()
+      .sort((a, b) => {
+        const aKey = `${a.date}:${String(a.hour).padStart(2, '0')}`;
+        const bKey = `${b.date}:${String(b.hour).padStart(2, '0')}`;
+        return aKey < bKey ? -1 : aKey > bKey ? 1 : 0;
+      })
+      .map((row) => ({
+        timestamp: formatLocalHourIso(row.date, row.hour),
+        modelId: row.modelId,
+        modelFamily: row.modelFamily,
+        inputTokens: row.inputTokens,
+        outputTokens: row.outputTokens,
+        cacheReadTokens: row.cacheReadTokens,
+        costUsd: row.costUsd,
+        durationMs: row.turnDurationMs ?? null,
+        toolUses: row.toolUses ?? {},
+        toolErrors: row.toolErrors ?? {},
+      }));
+
+    // Read first/last timestamps from sessionTimes (null when evicted).
+    const times = this.sessionTimes.get(sessionId);
+    const firstTs = times ? new Date(times.firstTs).toISOString() : null;
+    const lastTs = times ? new Date(times.lastTs).toISOString() : null;
+
+    // Read initial-prompt data from sessionInitialPrompts (null when absent or evicted).
+    const promptEntry = this.sessionInitialPrompts.get(sessionId);
+    const initialPrompt = promptEntry?.prompt ?? null;
+    const initialPromptTruncated = promptEntry?.truncated ?? false;
+    const jsonlPath = promptEntry?.jsonlPath ?? null;
+
+    return {
+      sessionId,
+      project,
+      projectName,
+      costUsd,
+      costBreakdown: {
+        input: sumInputCostUsd,
+        output: sumOutputCostUsd,
+        cacheCreate: sumCacheCreationCostUsd,
+        cacheRead: sumCacheReadCostUsd,
+      },
+      inputTokens,
+      outputTokens,
+      cacheCreationTokens,
+      cacheReadTokens,
+      webSearchRequests,
+      events: sessionRows.length,
+      isSubagent,
+      firstTs,
+      lastTs,
+      initialPrompt,
+      initialPromptTruncated,
+      jsonlPath,
+      byTool,
+      turns,
+    };
+  }
+
+  /**
+   * Return the JSONL file path for a given session, or null when no entry
+   * exists in sessionInitialPrompts (e.g. the session was never ingested or
+   * the entry was evicted by the LRU cap).
+   *
+   * Used by the POST /api/sessions/:id/reveal route to locate the file to
+   * open in the OS file manager without exposing internal map access outside
+   * this class.
+   */
+  getJsonlPathForSession(sessionId: string): string | null {
+    return this.sessionInitialPrompts.get(sessionId)?.jsonlPath ?? null;
   }
 
   isReady(): boolean {

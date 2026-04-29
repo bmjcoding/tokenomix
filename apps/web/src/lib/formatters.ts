@@ -98,3 +98,97 @@ export function pctDelta(curr: number, prev: number): number | null {
 export function formatDurationMinutes(minutes: number): string {
   return formatDuration(minutes * 60 * 1000);
 }
+
+/**
+ * Formats an ISO 8601 date string (or null) as `MM-DD-YYYY`.
+ *
+ * Format details:
+ *   - Month: zero-padded 2-digit numeric (e.g. "04").
+ *   - Day: zero-padded 2-digit numeric (e.g. "09").
+ *   - Year: full 4-digit year (e.g. "2026").
+ *   - Separator: dash between each segment.
+ *   - Example: "2026-04-29T14:00:00.000Z" → "04-29-2026"
+ *
+ * Date components are derived from LOCAL time (getMonth / getDate / getFullYear)
+ * so the output matches the user's wall-clock date, not UTC.
+ *
+ * Null fallback: returns '—' (em dash) for null, empty string, or any input
+ * that produces an invalid Date (e.g. garbage strings).
+ */
+export function formatSessionDate(iso: string | null): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '—';
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const year = d.getFullYear();
+  return `${month}-${day}-${year}`;
+}
+
+/** Month name abbreviations (same approach as formatSessionDate's comment notes). */
+const MONTH_ABBR = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+];
+
+/**
+ * Formats one or two ISO 8601 date strings into a human-readable range string.
+ *
+ * Format: "MMM D, YYYY – MMM D, YYYY"
+ * Single date (start === end): "MMM D, YYYY"
+ * Empty / null / invalid input: returns ""
+ *
+ * Date components are derived from LOCAL time (getMonth / getDate / getFullYear)
+ * to match the calendar date visible to the user.
+ *
+ * Examples:
+ *   formatDateRange("2026-04-06T00:00:00Z", "2026-04-29T00:00:00Z")
+ *     → "Apr 6, 2026 – Apr 29, 2026"
+ *   formatDateRange("2026-04-06T00:00:00Z", "2026-04-06T00:00:00Z")
+ *     → "Apr 6, 2026"
+ *   formatDateRange(null, null) → ""
+ */
+export function formatDateRange(startIso: string | null, endIso: string | null): string {
+  function fmtDate(iso: string | null): string | null {
+    if (!iso) return null;
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return null;
+    const month = MONTH_ABBR[d.getMonth()];
+    const day = d.getDate();
+    const year = d.getFullYear();
+    return `${month} ${day}, ${year}`;
+  }
+
+  const start = fmtDate(startIso);
+  const end = fmtDate(endIso);
+
+  if (!start && !end) return '';
+  if (!start) return end ?? '';
+  if (!end) return start;
+  if (start === end) return start;
+  return `${start} – ${end}`;
+}
+
+/**
+ * Derives the basename of an absolute project path for display purposes.
+ *
+ * Algorithm:
+ *   1. Strip any trailing slash(es) so "/foo/bar/" and "/foo/bar" both yield "bar".
+ *   2. Split on "/" and take the last non-empty segment.
+ *   3. Fall back to the original (trimmed) input when no slash is present
+ *      (bare name like "myproject") or when every segment is empty (degenerate
+ *      inputs such as "" or "/").
+ *
+ * Examples:
+ *   "/Users/me/projects/tokenomix"  → "tokenomix"
+ *   "/Users/me/projects/tokenomix/" → "tokenomix"
+ *   "tokenomix"                     → "tokenomix"
+ *   ""                              → ""
+ *   "/"                             → "/"
+ */
+export function formatProjectName(project: string): string {
+  const trimmed = project.replace(/\/+$/, '');
+  const parts = trimmed.split('/');
+  const last = parts.at(-1) ?? '';
+  return last !== '' ? last : trimmed || project;
+}

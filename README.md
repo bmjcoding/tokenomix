@@ -117,9 +117,19 @@ include `costUsd`, `cost_usd`, `gatewayCostUsd`, `internalCostUsd`, and
 | --- | --- |
 | `GET /api/metrics?since=7d\|30d\|all&project=...` | Aggregated totals, series, model/project/tool breakdowns |
 | `GET /api/sessions?since=...&project=...&limit=...` | Per-session breakdown sorted by cost |
+| `GET /api/sessions/:id` | Full detail for a single session: header totals, all-tool breakdown, per-turn rows |
 | `GET /api/turns?since=...&limit=...&project=...` | Top expensive turns, default 10 and max 50 |
 | `GET /api/health` | Readiness and index statistics |
 | `GET /api/events` | SSE stream for file-watch updates |
+
+## Dashboard Pages
+
+| Route | Description |
+| --- | --- |
+| `/` | Overview — spend hero, KPI cards, activity heatmap, model mix |
+| `/models` | Model usage and cost breakdown |
+| `/report` | Full session list with project name, top tools, and pagination |
+| `/report/$sessionId` | Per-session detail — Overview / Tools / Turns tabs |
 
 ## Development Notes
 

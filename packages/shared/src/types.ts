@@ -456,14 +456,152 @@ export interface FileTouchBucket {
 /** Session-level summary returned by GET /api/sessions. */
 export interface SessionSummary {
   sessionId: string;
+  /** Full absolute cwd path (e.g. "/Users/x/.claude/projects/my-app"). */
   project: string;
+  /** Human-readable project name derived from path.basename(cwd). */
+  projectName: string;
   costUsd: number;
   inputTokens: number;
   outputTokens: number;
   cacheCreationTokens: number;
   cacheReadTokens: number;
   events: number;
+  /**
+   * ISO 8601 timestamp of the first turn in this session (UTC). null when the session
+   * has been evicted from the in-memory sessionTimes map (sessions older than the
+   * 50,000-entry LRU cap). Matches the format and semantics of SessionDetail.firstTs.
+   */
+  firstTs: string | null;
+  /**
+   * Session duration in milliseconds (lastTs - firstTs from the in-memory sessionTimes map).
+   * null when the session has been evicted from sessionTimes (older than the 50,000-entry LRU cap).
+   * Computed server-side; the frontend formats it via formatDurationNullable.
+   */
+  durationMs: number | null;
   isSubagent: boolean;
+  /**
+   * Top-3 tools by invocation count across all turns in this session.
+   * Sorted descending by count. Empty array when no tool data is available.
+   */
+  topTools: ToolBucket[];
+  /**
+   * Total count of distinct tool names seen across all turns in this session.
+   * Used to derive the "+N more" overflow badge in the list chip column.
+   * 0 when no tool data is available.
+   */
+  toolNamesCount: number;
+}
+
+// ---------------------------------------------------------------------------
+// Session detail types (for GET /api/sessions/:id)
+// ---------------------------------------------------------------------------
+
+/**
+ * Lightweight per-turn shape for the session detail view.
+ * One entry per TokenRow in the session, sorted ascending by timestamp.
+ */
+export interface SessionTurnRow {
+  /**
+   * Local ISO 8601 timestamp with UTC offset, derived from row.date + row.hour.
+   * Same format as TurnBucket.timestamp: "2026-04-15T14:00:00.000-05:00".
+   */
+  timestamp: string;
+  modelId: string;
+  modelFamily: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  costUsd: number;
+  /**
+   * Turn duration in milliseconds from the system/turn_duration event.
+   * null when no duration event was recorded for this turn.
+   */
+  durationMs: number | null;
+  /**
+   * Per-tool invocation counts for this turn.
+   * Empty object when no tool_use events were associated with this turn
+   * (normalises undefined on TokenRow to a defined empty record).
+   */
+  toolUses: Record<string, number>;
+  /**
+   * Per-tool error counts for this turn.
+   * Empty object when no tool errors occurred within this turn.
+   */
+  toolErrors: Record<string, number>;
+}
+
+/**
+ * Full session rollup returned by GET /api/sessions/:id.
+ * Includes token/cost totals, per-tool aggregates, and per-turn detail rows.
+ */
+export interface SessionDetail {
+  sessionId: string;
+  /** Full absolute cwd path. */
+  project: string;
+  /** Human-readable project name derived from path.basename(cwd). */
+  projectName: string;
+  costUsd: number;
+  /**
+   * Per-component USD cost breakdown for the session.
+   * Sum of input + output + cacheCreate + cacheRead equals the total costUsd
+   * field, modulo small rounding differences. All values default to 0 when no
+   * priced rows are in the session.
+   */
+  costBreakdown: {
+    /** USD cost attributed to raw input tokens for the session. */
+    input: number;
+    /** USD cost attributed to output tokens for the session. */
+    output: number;
+    /** USD cost attributed to cache creation tokens for the session. */
+    cacheCreate: number;
+    /** USD cost attributed to cache read tokens for the session. */
+    cacheRead: number;
+  };
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  /** Count of web search requests across all turns in this session. */
+  webSearchRequests: number;
+  /** Count of assistant turns (TokenRows) in this session. */
+  events: number;
+  isSubagent: boolean;
+  /**
+   * ISO 8601 timestamp of the first turn in the session.
+   * null when the session has been evicted from the in-memory sessionTimes map
+   * (applies to sessions older than the 50,000-entry LRU cap).
+   */
+  firstTs: string | null;
+  /**
+   * ISO 8601 timestamp of the last turn in the session.
+   * null when evicted from the sessionTimes map (same condition as firstTs).
+   */
+  lastTs: string | null;
+  /**
+   * Truncated text of the first user-role message in this session, server-hard-capped to 500 chars.
+   * null when no qualifying user message was found or the entry has been evicted.
+   * Privacy intent: server hard-truncates so the wire shape is bounded; the API never
+   * serves the full transcript or the JSONL file contents. Pair with initialPromptTruncated
+   * and jsonlPath as the only data surfaces beyond aggregates.
+   */
+  initialPrompt: string | null;
+  /**
+   * True when the original first-user-message text exceeded the server-side cap (500 chars)
+   * and initialPrompt has been truncated. False when null/short. Drives the "(truncated)"
+   * indicator in the UI.
+   */
+  initialPromptTruncated: boolean;
+  /**
+   * Absolute filesystem path of the first JSONL file that contained an event for this
+   * session. null when not captured (older sessions or evicted entries). Path string only —
+   * the API does NOT serve the file contents; this is metadata for "Reveal in Finder" /
+   * copy-to-clipboard affordances on the client.
+   */
+  jsonlPath: string | null;
+  /** Tool usage aggregated across all turns in this session. */
+  byTool: ToolBucket[];
+  /** Per-turn detail rows, sorted ascending by timestamp (oldest first). */
+  turns: SessionTurnRow[];
 }
 
 // ---------------------------------------------------------------------------

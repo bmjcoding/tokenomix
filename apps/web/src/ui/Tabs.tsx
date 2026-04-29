@@ -19,7 +19,15 @@
  * - No external dependencies.
  */
 
-import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react';
+import {
+  type KeyboardEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from 'react';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -41,6 +49,13 @@ export interface TabsProps {
    */
   syncWithHash?: boolean;
   className?: string;
+  /**
+   * Accessible label for the tab list (role="tablist"). Defaults to
+   * "Dashboard sections" for backward compatibility with existing usages.
+   * Pass a contextual value (e.g. "Session detail sections") when the Tabs
+   * instance appears outside the main dashboard.
+   */
+  ariaLabel?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -55,7 +70,13 @@ function cx(...classes: (string | undefined | false | null)[]): string {
 // Tabs
 // ---------------------------------------------------------------------------
 
-export function Tabs({ items, defaultKey, syncWithHash = true, className }: TabsProps) {
+export function Tabs({
+  items,
+  defaultKey,
+  syncWithHash = true,
+  className,
+  ariaLabel = 'Dashboard sections',
+}: TabsProps) {
   const baseId = useId();
 
   // ── Initial active key resolution ──────────────────────────────────────────
@@ -144,7 +165,7 @@ export function Tabs({ items, defaultKey, syncWithHash = true, className }: Tabs
       {/* ── Tab list ──────────────────────────────────────────────────────── */}
       <div
         role="tablist"
-        aria-label="Dashboard sections"
+        aria-label={ariaLabel}
         className="flex items-end gap-0 border-b border-gray-200 dark:border-gray-800"
       >
         {items.map((item) => {
@@ -183,10 +204,7 @@ export function Tabs({ items, defaultKey, syncWithHash = true, className }: Tabs
                 'dark:focus-visible:ring-offset-gray-950',
                 isActive
                   ? // Active state: dark underline, full-opacity text
-                    [
-                      'border-gray-950 dark:border-white',
-                      'text-gray-950 dark:text-white',
-                    ].join(' ')
+                    ['border-gray-950 dark:border-white', 'text-gray-950 dark:text-white'].join(' ')
                   : // Inactive state: transparent underline, muted text with hover
                     [
                       'border-transparent',

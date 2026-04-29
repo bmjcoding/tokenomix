@@ -12,6 +12,7 @@ const OverviewPage = lazy(() => import('./pages/OverviewPage.js'));
 const SessionsPage = lazy(() => import('./pages/SessionsPage.js'));
 const ModelsPage = lazy(() => import('./pages/ModelsPage.js'));
 const FullReportPage = lazy(() => import('./pages/FullReportPage.js'));
+const SessionDetailPage = lazy(() => import('./pages/SessionDetailPage.js'));
 
 /** Shared Suspense fallback used while page chunks are loading. */
 function PageFallback() {
@@ -80,8 +81,24 @@ const reportRoute = createRoute({
   ),
 });
 
+const reportDetailRoute = createRoute({
+  getParentRoute: () => layoutRoute,
+  path: '/report/$sessionId',
+  component: () => (
+    <Suspense fallback={<PageFallback />}>
+      <SessionDetailPage />
+    </Suspense>
+  ),
+});
+
 const routeTree = rootRoute.addChildren([
-  layoutRoute.addChildren([overviewRoute, sessionsRoute, modelsRoute, reportRoute]),
+  layoutRoute.addChildren([
+    overviewRoute,
+    sessionsRoute,
+    modelsRoute,
+    reportRoute,
+    reportDetailRoute,
+  ]),
 ]);
 
 export const router = createRouter({ routeTree });
