@@ -150,7 +150,7 @@ interface TopToolsCellProps {
 
 function TopToolsCell({ session }: TopToolsCellProps) {
   const tools = session.topTools ?? [];
-  const overflow = session.toolNamesCount > 3 ? session.toolNamesCount - 3 : 0;
+  const overflow = (session.toolNamesCount ?? 0) > 3 ? (session.toolNamesCount ?? 0) - 3 : 0;
 
   if (tools.length === 0) {
     return (
@@ -160,29 +160,39 @@ function TopToolsCell({ session }: TopToolsCellProps) {
     );
   }
 
-  const tooltipText =
-    session.toolNamesCount > 3 ? `Showing top 3 of ${session.toolNamesCount} tools` : undefined;
-
   return (
     <div
-      className="flex flex-wrap gap-1"
-      title={tooltipText}
+      className="flex flex-col gap-1.5 items-start"
       aria-label={`Top tools: ${tools.map((t) => t.toolName).join(', ')}${overflow > 0 ? ` and ${overflow} more` : ''}`}
     >
-      {tools.map((tool) => (
-        <span
-          key={tool.toolName}
-          className="inline-flex items-center gap-1 text-xs font-medium rounded-full px-2 py-0.5 bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-200"
+      {/* Row 1: top-3 chips */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        {tools.map((tool) => (
+          <span
+            key={tool.toolName}
+            className="inline-flex items-center gap-1 text-xs font-medium rounded-full px-2 py-0.5 bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-200"
+          >
+            <span className="max-w-[84px] truncate">{tool.toolName}</span>
+            <span className="tabular-nums text-gray-500 dark:text-gray-400">{tool.count}</span>
+          </span>
+        ))}
+      </div>
+      {/* Row 2: +N more — always on its own line when overflow > 0 */}
+      {overflow > 0 ? (
+        <Link
+          to="/report/$sessionId"
+          params={{ sessionId: session.sessionId }}
+          hash="tools"
+          className={[
+            'text-xs font-medium text-gray-500 dark:text-gray-400 transition-colors',
+            // design-lint-disable dark-mode-pairs: compound modifier prefix (hover:) hides the dark pairing from naive line scan
+            'hover:text-gray-700 dark:hover:text-gray-200',
+          ].join(' ')}
+          aria-label={`View ${overflow} more tools for this session`}
         >
-          <span className="max-w-[84px] truncate">{tool.toolName}</span>
-          <span className="tabular-nums text-gray-500 dark:text-gray-400">{tool.count}</span>
-        </span>
-      ))}
-      {overflow > 0 && (
-        <span className="inline-flex items-center text-xs font-medium rounded-full px-2 py-0.5 bg-gray-50 dark:bg-gray-900 text-gray-500 dark:text-gray-400">
           +{overflow} more
-        </span>
-      )}
+        </Link>
+      ) : null}
     </div>
   );
 }

@@ -16,8 +16,17 @@
  *
  * Returns 404 with { error: string } when the session is not found.
  * Returns 400 with { error: string } for invalid/unsafe id param values.
+ *
+ * POST /api/sessions/:id/reveal
+ *
+ * Opens the session's JSONL file in the OS file manager (Finder on macOS,
+ * Explorer on Windows, xdg-open on Linux). Returns 204 No Content on success
+ * or when spawn fails (the caller cannot recover). Returns 404 when the
+ * session has no recorded JSONL path.
  */
 
+import { spawn } from 'node:child_process';
+import * as nodePath from 'node:path';
 import type { MetricsQuery, SessionDetail, SessionSummary } from '@tokenomix/shared';
 import { Hono } from 'hono';
 import type { IndexStore } from '../index-store.js';
@@ -28,6 +37,18 @@ const MAX_PARAM_LEN = 200;
 // This rejects NULL bytes, path separators, unicode separators, and all other
 // non-identifier characters in a single check (preferred over an enumerated denylist).
 const SAFE_ID_RE = /^[A-Za-z0-9_\-.:@]+$/;
+
+/**
+ * Validate a session ID path parameter.
+ * Returns the id string when valid, or null when the value is absent,
+ * oversized, or contains non-allowlist characters.
+ */
+function validateId(id: string | undefined): string | null {
+  if (!id || id.length === 0 || id.length > MAX_PARAM_LEN || !SAFE_ID_RE.test(id)) {
+    return null;
+  }
+  return id;
+}
 
 export function sessionsRoute(store: IndexStore): Hono {
   const app = new Hono();
@@ -48,12 +69,9 @@ export function sessionsRoute(store: IndexStore): Hono {
   });
 
   app.get('/:id', (c) => {
-    const id = c.req.param('id');
+    const id = validateId(c.req.param('id'));
 
-    // Guard: reject empty, oversized, or non-allowlist id values.
-    // SAFE_ID_RE also implicitly rejects NULL bytes, path separators (/\),
-    // unicode separators, and any other non-identifier characters.
-    if (!id || id.length === 0 || id.length > MAX_PARAM_LEN || !SAFE_ID_RE.test(id)) {
+    if (!id) {
       return c.json({ error: 'invalid param' }, 400);
     }
 
@@ -68,6 +86,56 @@ export function sessionsRoute(store: IndexStore): Hono {
 
     logEvent('info', 'session_detail', { sessionId: id, found: true, durationMs });
     return c.json(detail);
+  });
+
+  /**
+   * POST /api/sessions/:id/reveal
+   *
+   * Opens the session's JSONL file in the OS file manager and returns 204.
+   * Uses spawn (not exec) so the path is passed as a separate argv element —
+   * no shell interpolation, no injection risk.
+   *
+   * Does NOT log the path — it may contain sensitive directory names.
+   */
+  app.post('/:id/reveal', (c) => {
+    const id = validateId(c.req.param('id'));
+
+    if (!id) {
+      return c.json({ error: 'invalid param' }, 400);
+    }
+
+    const jsonlPath = store.getJsonlPathForSession(id);
+
+    if (jsonlPath === null) {
+      logEvent('info', 'session_reveal', { sessionId: id, found: false });
+      return c.json({ error: 'session not found' }, 404);
+    }
+
+    let cmd: string;
+    let args: string[];
+
+    if (process.platform === 'darwin') {
+      cmd = 'open';
+      args = ['-R', jsonlPath];
+    } else if (process.platform === 'win32') {
+      cmd = 'explorer.exe';
+      // /select, must be a single argument with the comma attached; path is separate.
+      args = ['/select,', jsonlPath];
+    } else {
+      // Linux: file managers don't reliably support "select-and-reveal", so open
+      // the parent directory instead.
+      cmd = 'xdg-open';
+      args = [nodePath.dirname(jsonlPath)];
+    }
+
+    const child = spawn(cmd, args, { detached: true, stdio: 'ignore' });
+    child.on('error', (err) => {
+      logEvent('warn', 'session_reveal_failed', { sessionId: id, err: err.message });
+    });
+    child.unref();
+
+    logEvent('info', 'session_reveal', { sessionId: id, platform: process.platform });
+    return new Response(null, { status: 204 });
   });
 
   return app;

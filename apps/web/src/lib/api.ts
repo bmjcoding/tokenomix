@@ -107,6 +107,22 @@ export async function fetchSessionDetail(sessionId: string): Promise<SessionDeta
 }
 
 /**
+ * POST /api/sessions/:sessionId/reveal
+ *
+ * Asks the server to reveal the session's JSONL file in the OS file manager
+ * (e.g. Finder on macOS). Returns void on success (204).
+ * Throws on non-2xx.
+ */
+export async function revealSessionJsonl(sessionId: string): Promise<void> {
+  const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/reveal`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    throw new Error(`reveal failed: ${res.status}`);
+  }
+}
+
+/**
  * GET /api/health
  *
  * Returns a lightweight health check object.

@@ -2656,6 +2656,19 @@ export class IndexStore extends EventEmitter {
     };
   }
 
+  /**
+   * Return the JSONL file path for a given session, or null when no entry
+   * exists in sessionInitialPrompts (e.g. the session was never ingested or
+   * the entry was evicted by the LRU cap).
+   *
+   * Used by the POST /api/sessions/:id/reveal route to locate the file to
+   * open in the OS file manager without exposing internal map access outside
+   * this class.
+   */
+  getJsonlPathForSession(sessionId: string): string | null {
+    return this.sessionInitialPrompts.get(sessionId)?.jsonlPath ?? null;
+  }
+
   isReady(): boolean {
     return this._initialized;
   }

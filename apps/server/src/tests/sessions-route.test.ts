@@ -2,6 +2,7 @@
  * Tests for the sessions API routes:
  *   - GET /api/sessions       → SessionSummary[]
  *   - GET /api/sessions/:id   → SessionDetail | { error: string }
+ *   - POST /api/sessions/:id/reveal → 204 | 404 | 400
  *
  * Tests exercise the real route handler from apps/server/src/routes/sessions.ts
  * via Hono's test client pattern (`app.request(url)`).
@@ -18,16 +19,31 @@
  *   5. SessionSummary list includes projectName field
  *   6. Graceful handling when toolUses is undefined on every row in a session
  *   7–10. initialPrompt / initialPromptTruncated / jsonlPath from ingestFile
+ *   11–13. POST /api/sessions/:id/reveal
  */
 
+import { EventEmitter } from 'node:events';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { SessionDetail, SessionSummary, TokenRow } from '@tokenomix/shared';
 import { Hono } from 'hono';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { IndexStore } from '../index-store.js';
 import { sessionsRoute } from '../routes/sessions.js';
+
+// ---------------------------------------------------------------------------
+// Module-level mock for node:child_process — hoisted by Vitest before imports
+// so the route module picks up the mock when it runs `spawn(...)`.
+// Each test that needs spawn mocked will configure the mock via
+// `mockSpawn.mockReturnValue(...)`.
+// ---------------------------------------------------------------------------
+vi.mock('node:child_process', () => ({
+  spawn: vi.fn(),
+}));
+
+// Import the mocked spawn AFTER vi.mock so we get the mock version.
+const { spawn: mockSpawn } = await import('node:child_process');
 
 // ---------------------------------------------------------------------------
 // App factory — uses the REAL route (no inline reimplementation)
@@ -655,5 +671,83 @@ describe('GET /api/sessions/:id — initialPrompt fields', () => {
     expect(body.initialPrompt).toBe('Hello\nWorld');
     expect(body.initialPromptTruncated).toBe(false);
     expect(body.jsonlPath).toBe(tmpFile);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests for POST /api/sessions/:id/reveal
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a minimal ChildProcess-like EventEmitter stub that satisfies the
+ * spawn return type used by the reveal route (unref + error event only).
+ */
+function makeSpawnStub() {
+  const emitter = new EventEmitter() as EventEmitter & { unref: () => void };
+  emitter.unref = vi.fn();
+  return emitter;
+}
+
+describe('POST /api/sessions/:id/reveal', () => {
+  // Reset the spawn mock after each test so call counts don't bleed between tests.
+  afterEach(() => {
+    vi.mocked(mockSpawn).mockReset();
+  });
+
+  it('returns 204 for a known session and calls spawn with the correct arguments (macOS)', async () => {
+    const store = new IndexStore();
+    const sessionId = 'sess-reveal-ok';
+
+    const tmpFile = await writeTempJsonl(sessionId, 'reveal me');
+    await store.ingestFile(tmpFile);
+
+    // Configure the mock to return an EventEmitter stub with .unref().
+    const spawnStub = makeSpawnStub();
+    vi.mocked(mockSpawn).mockReturnValue(
+      spawnStub as unknown as ReturnType<typeof import('node:child_process').spawn>
+    );
+
+    // Override platform to darwin so the darwin branch is exercised.
+    const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin');
+
+    const app = buildSessionsApp(store);
+    const res = await app.request(`/api/sessions/${sessionId}/reveal`, { method: 'POST' });
+
+    expect(res.status).toBe(204);
+
+    // spawn must be called once with the right command and path as separate arg.
+    expect(vi.mocked(mockSpawn)).toHaveBeenCalledOnce();
+    const [cmd, args] = vi.mocked(mockSpawn).mock.calls[0] as unknown as [string, string[]];
+    expect(cmd).toBe('open');
+    expect(args).toEqual(['-R', tmpFile]);
+
+    // .unref() must be called so the child doesn't keep the event loop alive.
+    expect(spawnStub.unref).toHaveBeenCalledOnce();
+
+    platformSpy.mockRestore();
+  });
+
+  it('returns 404 with { error } when session has no recorded JSONL path', async () => {
+    const store = new IndexStore();
+    // Do not ingest any file — sessionInitialPrompts will have no entry.
+
+    const app = buildSessionsApp(store);
+    const res = await app.request('/api/sessions/missing-session/reveal', { method: 'POST' });
+
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: string };
+    expect(typeof body.error).toBe('string');
+    expect(body.error.length).toBeGreaterThan(0);
+  });
+
+  it('returns 400 when ID contains a path separator (foo%2Fbar)', async () => {
+    const store = new IndexStore();
+
+    const app = buildSessionsApp(store);
+    const res = await app.request('/api/sessions/foo%2Fbar/reveal', { method: 'POST' });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(typeof body.error).toBe('string');
   });
 });
