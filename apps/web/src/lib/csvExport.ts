@@ -23,17 +23,32 @@ import type { DailyBucket, SessionSummary } from '@tokenomix/shared';
 // ---------------------------------------------------------------------------
 
 /**
+ * Prefix-escape spreadsheet formula triggers per OWASP CSV injection guidance.
+ * If the string starts with `=`, `+`, `-`, `@`, or TAB (`\t`), a single quote
+ * (`'`) is prepended so spreadsheet applications (Excel, LibreOffice, Google
+ * Sheets) treat the cell as text rather than evaluating it as a formula.
+ */
+export function escapeFormula(value: string): string {
+  if (value.length > 0 && /^[=+\-@\t]/.test(value)) {
+    return `'${value}`;
+  }
+  return value;
+}
+
+/**
  * Quote a single CSV field value per RFC 4180.
- * Fields that contain a comma, double-quote, CR, or LF are wrapped in
- * double-quotes. Internal double-quote characters are escaped by doubling.
+ * Applies formula-injection escape first, then wraps in double-quotes when
+ * the field contains a comma, double-quote, CR, or LF.
+ * Internal double-quote characters are escaped by doubling.
  */
 export function quoteField(value: string): string {
-  const needsQuoting = /[",\r\n]/.test(value);
+  const safe = escapeFormula(value);
+  const needsQuoting = /[",\r\n]/.test(safe);
   if (!needsQuoting) {
-    return value;
+    return safe;
   }
   // Escape internal double-quotes by doubling them.
-  const escaped = value.replace(/"/g, '""');
+  const escaped = safe.replace(/"/g, '""');
   return `"${escaped}"`;
 }
 
@@ -54,6 +69,7 @@ export function serializeCsv(
 /** Column headers for session export. */
 export const SESSIONS_HEADERS = [
   'Project',
+  'ProjectName',
   'SessionId',
   'CostUSD',
   'InputTokens',
@@ -85,6 +101,7 @@ export function buildSessionsRows(
     (s) =>
       [
         s.project,
+        s.projectName,
         s.sessionId,
         s.costUsd,
         s.inputTokens,
@@ -150,7 +167,7 @@ function triggerDownload(csvContent: string, filename: string): void {
  * Export an array of SessionSummary records as a downloadable CSV file.
  *
  * Columns (in order):
- *   Project, SessionId, CostUSD, InputTokens, OutputTokens,
+ *   Project, ProjectName, SessionId, CostUSD, InputTokens, OutputTokens,
  *   CacheCreation, CacheRead, Events, IsSubagent
  *
  * @param sessions - Array of SessionSummary objects from GET /api/sessions.

@@ -29,6 +29,7 @@ import {
   buildDailySeriesRows,
   buildSessionsRows,
   DAILY_SERIES_HEADERS,
+  escapeFormula,
   exportDailySeriesCsv,
   exportSessionsCsv,
   quoteField,
@@ -44,6 +45,7 @@ const SESSION_FIXTURES: SessionSummary[] = [
   {
     sessionId: 'abc123',
     project: '/home/user/project-a',
+    projectName: 'project-a',
     costUsd: 1.2345,
     inputTokens: 1000,
     outputTokens: 500,
@@ -51,11 +53,14 @@ const SESSION_FIXTURES: SessionSummary[] = [
     cacheReadTokens: 100,
     events: 42,
     isSubagent: false,
+    topTools: [],
+    toolNamesCount: 0,
   },
   {
     sessionId: 'def456',
     // project contains a comma — must be quoted
     project: '/home/user/project, alpha',
+    projectName: 'project, alpha',
     costUsd: 0.0001,
     inputTokens: 10,
     outputTokens: 5,
@@ -63,11 +68,14 @@ const SESSION_FIXTURES: SessionSummary[] = [
     cacheReadTokens: 0,
     events: 1,
     isSubagent: true,
+    topTools: [],
+    toolNamesCount: 0,
   },
   {
     sessionId: 'ghi789',
     // project contains a double-quote — must be quoted and doubled
     project: '/home/user/say "hello"',
+    projectName: 'say "hello"',
     costUsd: 2.0,
     inputTokens: 2000,
     outputTokens: 1000,
@@ -75,6 +83,8 @@ const SESSION_FIXTURES: SessionSummary[] = [
     cacheReadTokens: 300,
     events: 10,
     isSubagent: false,
+    topTools: [],
+    toolNamesCount: 0,
   },
 ];
 
@@ -149,6 +159,35 @@ function parseCsvRows(csv: string): string[][] {
 // Pure serialization tests (no DOM required)
 // ---------------------------------------------------------------------------
 
+describe('escapeFormula', () => {
+  it('prepends a single quote when the value starts with =', () => {
+    expect(escapeFormula('=HYPERLINK("evil")')).toBe("'=HYPERLINK(\"evil\")");
+  });
+
+  it('prepends a single quote when the value starts with +', () => {
+    expect(escapeFormula('+1234')).toBe("'+1234");
+  });
+
+  it('prepends a single quote when the value starts with -', () => {
+    expect(escapeFormula('-1234')).toBe("'-1234");
+  });
+
+  it('prepends a single quote when the value starts with @', () => {
+    expect(escapeFormula('@SUM(A1)')).toBe("'@SUM(A1)");
+  });
+
+  it('prepends a single quote when the value starts with a TAB character', () => {
+    expect(escapeFormula('\tmalicious')).toBe("'\tmalicious");
+  });
+
+  it('leaves safe values unchanged', () => {
+    expect(escapeFormula('safe-project')).toBe('safe-project');
+    expect(escapeFormula('')).toBe('');
+    expect(escapeFormula('/home/user/project')).toBe('/home/user/project');
+    expect(escapeFormula('2026-01-01')).toBe('2026-01-01');
+  });
+});
+
 describe('quoteField', () => {
   it('returns plain strings unchanged', () => {
     expect(quoteField('simple')).toBe('simple');
@@ -218,11 +257,12 @@ describe('buildSessionsRows', () => {
     const rows = buildSessionsRows(SESSION_FIXTURES);
     const first = rows[1];
     expect(first).toBeDefined();
-    // [project, sessionId, costUsd, inputTokens, outputTokens, cacheCreation, cacheRead, events, isSubagent]
+    // [project, projectName, sessionId, costUsd, inputTokens, outputTokens, cacheCreation, cacheRead, events, isSubagent]
     expect(first?.[0]).toBe('/home/user/project-a');
-    expect(first?.[1]).toBe('abc123');
-    expect(first?.[2]).toBe(1.2345);
-    expect(first?.[8]).toBe(false);
+    expect(first?.[1]).toBe('project-a');
+    expect(first?.[2]).toBe('abc123');
+    expect(first?.[3]).toBe(1.2345);
+    expect(first?.[9]).toBe(false);
   });
 
   it('produces header-only rows for an empty sessions array', () => {
@@ -266,8 +306,8 @@ describe('RFC 4180 output via serializeCsv + buildSessionsRows', () => {
   it('serializes boolean IsSubagent as "true" or "false"', () => {
     const csv = serializeCsv(buildSessionsRows(SESSION_FIXTURES));
     const rows = parseCsvRows(csv);
-    expect(rows[1]?.[8]).toBe('false'); // first session isSubagent: false
-    expect(rows[2]?.[8]).toBe('true'); // second session isSubagent: true
+    expect(rows[1]?.[9]).toBe('false'); // first session isSubagent: false
+    expect(rows[2]?.[9]).toBe('true'); // second session isSubagent: true
   });
 
   it('uses CRLF line endings throughout', () => {
@@ -289,6 +329,7 @@ describe('RFC 4180 output via serializeCsv + buildSessionsRows', () => {
     const rows = parseCsvRows(csv);
     expect(rows[0]).toEqual([
       'Project',
+      'ProjectName',
       'SessionId',
       'CostUSD',
       'InputTokens',
@@ -298,6 +339,54 @@ describe('RFC 4180 output via serializeCsv + buildSessionsRows', () => {
       'Events',
       'IsSubagent',
     ]);
+  });
+});
+
+describe('CSV injection prevention via quoteField + escapeFormula', () => {
+  const makeSession = (project: string, projectName: string): SessionSummary => ({
+    sessionId: 'test-id',
+    project,
+    projectName,
+    costUsd: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 0,
+    events: 0,
+    isSubagent: false,
+    topTools: [],
+    toolNamesCount: 0,
+  });
+
+  it('prefixes = formula trigger with a single quote in the Project column', () => {
+    const csv = serializeCsv(buildSessionsRows([makeSession('=HYPERLINK("x")', 'evil')]));
+    expect(csv).toContain("'=HYPERLINK");
+  });
+
+  it('prefixes + trigger in the ProjectName column', () => {
+    const csv = serializeCsv(buildSessionsRows([makeSession('/safe/path', '+1')]));
+    expect(csv).toContain("'+1");
+  });
+
+  it('prefixes - trigger', () => {
+    const csv = serializeCsv(buildSessionsRows([makeSession('-bad', 'safe')]));
+    expect(csv).toContain("'-bad");
+  });
+
+  it('prefixes @ trigger', () => {
+    const csv = serializeCsv(buildSessionsRows([makeSession('@SUM(1)', 'safe')]));
+    expect(csv).toContain("'@SUM(1)");
+  });
+
+  it('prefixes TAB trigger', () => {
+    const csv = serializeCsv(buildSessionsRows([makeSession('\tevil', 'safe')]));
+    expect(csv).toContain("'\t");
+  });
+
+  it('does not modify safe values', () => {
+    const csv = serializeCsv(buildSessionsRows([makeSession('/home/user/project', 'project')]));
+    expect(csv).toContain('/home/user/project');
+    expect(csv).not.toContain("'");
   });
 });
 
@@ -430,7 +519,7 @@ describe('exportSessionsCsv — download trigger', () => {
 
   it('passes a string blob containing the CSV header to Blob', () => {
     exportSessionsCsv(SESSION_FIXTURES);
-    expect(lastBlobParts).toContain('Project,SessionId,CostUSD');
+    expect(lastBlobParts).toContain('Project,ProjectName,SessionId,CostUSD');
   });
 
   it('passes a blob with correct row count', () => {

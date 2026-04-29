@@ -48,4 +48,12 @@ export const queryKeys = {
   turns(params: { since?: string; project?: string; limit?: number }): readonly unknown[] {
     return ['turns', params] as const;
   },
+
+  /**
+   * Cache key for fetchSessionDetail(sessionId).
+   * Tuple format: ['session', sessionId] — invalidate by prefix ['session'].
+   */
+  sessionDetail(sessionId: string): readonly [string, string] {
+    return ['session', sessionId] as const;
+  },
 } as const;

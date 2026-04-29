@@ -46,6 +46,7 @@ export function useServerEvents(): void {
           void queryClient.invalidateQueries({ queryKey: ['metrics'] });
           void queryClient.invalidateQueries({ queryKey: ['sessions'] });
           void queryClient.invalidateQueries({ queryKey: ['turns'] });
+          void queryClient.invalidateQueries({ queryKey: ['session'] });
         }
       } catch {
         // Malformed JSON — ignore silently

@@ -98,3 +98,27 @@ export function pctDelta(curr: number, prev: number): number | null {
 export function formatDurationMinutes(minutes: number): string {
   return formatDuration(minutes * 60 * 1000);
 }
+
+/**
+ * Derives the basename of an absolute project path for display purposes.
+ *
+ * Algorithm:
+ *   1. Strip any trailing slash(es) so "/foo/bar/" and "/foo/bar" both yield "bar".
+ *   2. Split on "/" and take the last non-empty segment.
+ *   3. Fall back to the original (trimmed) input when no slash is present
+ *      (bare name like "myproject") or when every segment is empty (degenerate
+ *      inputs such as "" or "/").
+ *
+ * Examples:
+ *   "/Users/me/projects/tokenomix"  → "tokenomix"
+ *   "/Users/me/projects/tokenomix/" → "tokenomix"
+ *   "tokenomix"                     → "tokenomix"
+ *   ""                              → ""
+ *   "/"                             → "/"
+ */
+export function formatProjectName(project: string): string {
+  const trimmed = project.replace(/\/+$/, '');
+  const parts = trimmed.split('/');
+  const last = parts.at(-1) ?? '';
+  return last !== '' ? last : trimmed || project;
+}
