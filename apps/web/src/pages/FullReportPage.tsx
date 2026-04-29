@@ -11,9 +11,9 @@
  *   Cost (formatted $X.XX)
  *   Input Tokens (locale-grouped)
  *   Output Tokens (locale-grouped)
- *   Events (locale-grouped)
+ *   Duration (formatted)
  *
- * Cache Creation and Cache Read tokens are omitted from this view for
+ * Events and Cache Creation/Cache Read tokens are omitted from this view for
  * readability; they remain in SessionSummary and the CSV export.
  *
  * Default sort: date descending (most recent first).
@@ -73,7 +73,7 @@ type SortKey =
   | 'date'
   | 'project'
   | 'duration'
-  | keyof Pick<SessionSummary, 'costUsd' | 'inputTokens' | 'outputTokens' | 'events'>;
+  | keyof Pick<SessionSummary, 'costUsd' | 'inputTokens' | 'outputTokens'>;
 
 type SortDir = 'asc' | 'desc';
 
@@ -339,9 +339,9 @@ function TopToolsCell({ session }: TopToolsCellProps) {
 // Skeleton rows (loading state)
 // ---------------------------------------------------------------------------
 
-// 8 columns: Date, Project, Top Tools, Cost, Input Tokens, Output Tokens, Events, Duration
+// 7 columns: Date, Project, Top Tools, Cost, Input Tokens, Output Tokens, Duration
 const SKELETON_ROW_KEYS = ['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7'] as const;
-// First 3 cells are left-aligned (Date, Project, Top Tools); trailing 5 are center-aligned (numeric).
+// First 3 cells are left-aligned (Date, Project, Top Tools); trailing 4 are center-aligned (numeric).
 const SKELETON_CELL_KEYS: { key: string; align: 'left' | 'center' }[] = [
   { key: 'c0', align: 'left' },
   { key: 'c1', align: 'left' },
@@ -350,7 +350,6 @@ const SKELETON_CELL_KEYS: { key: string; align: 'left' | 'center' }[] = [
   { key: 'c4', align: 'center' },
   { key: 'c5', align: 'center' },
   { key: 'c6', align: 'center' },
-  { key: 'c7', align: 'center' },
 ];
 
 function SkeletonRows() {
@@ -658,7 +657,6 @@ export default function FullReportPage() {
                   <col className="w-32" />
                   <col className="w-36" />
                   <col className="w-36" />
-                  <col className="w-24" />
                   <col className="w-28" />
                 </colgroup>
                 <thead className="sticky top-0 z-10">
@@ -680,7 +678,7 @@ export default function FullReportPage() {
                     {/* Top Tools — non-sortable */}
                     <th
                       scope="col"
-                      className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400"
+                      className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400"
                     >
                       Top Tools
                     </th>
@@ -709,14 +707,6 @@ export default function FullReportPage() {
                       align="center"
                     />
                     <SortableHeader
-                      label="Events"
-                      sortKey="events"
-                      current={sortKey}
-                      dir={sortDir}
-                      onSort={handleSort}
-                      align="center"
-                    />
-                    <SortableHeader
                       label="Duration"
                       sortKey="duration"
                       current={sortKey}
@@ -732,7 +722,7 @@ export default function FullReportPage() {
                   {!isLoading && sorted.length === 0 && (
                     <tr>
                       <td
-                        colSpan={8}
+                        colSpan={7}
                         className="px-4 py-8 text-center text-sm text-gray-500 dark:text-gray-500"
                       >
                         {sessions.length === 0 ? 'No sessions yet.' : 'No sessions match the current filters.'}
@@ -798,11 +788,6 @@ export default function FullReportPage() {
                         {/* Output Tokens */}
                         <td className="px-4 py-3 text-center text-sm tabular-nums text-gray-600 dark:text-gray-400">
                           {formatNum(session.outputTokens)}
-                        </td>
-
-                        {/* Events */}
-                        <td className="px-4 py-3 text-center text-sm tabular-nums text-gray-600 dark:text-gray-400">
-                          {formatNum(session.events)}
                         </td>
 
                         {/* Duration */}
