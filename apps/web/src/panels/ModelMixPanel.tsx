@@ -56,16 +56,18 @@ export function ModelMixPanel({ since = 'all' }: ModelMixPanelProps) {
         <>
           <ModelMixBar data={data.byModel} height={240} />
           {badgeItems.length > 0 && (
-            <div className="mt-4 flex flex-wrap gap-2" aria-label="Model legend">
+            <ul className="mt-4 flex flex-wrap gap-2" aria-label="Model legend">
               {badgeItems.map((m) => {
                 const pct = totalCost > 0 ? ((m.costUsd / totalCost) * 100).toFixed(0) : '0';
                 return (
-                  <Badge key={m.modelFamily} variant="default" title={`$${m.costUsd.toFixed(3)}`}>
-                    {m.modelFamily} {pct}%
-                  </Badge>
+                  <li key={m.modelFamily}>
+                    <Badge variant="default" title={`$${m.costUsd.toFixed(3)}`}>
+                      {m.modelFamily} {pct}%
+                    </Badge>
+                  </li>
                 );
               })}
-            </div>
+            </ul>
           )}
         </>
       )}

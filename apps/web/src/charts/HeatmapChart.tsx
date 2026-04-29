@@ -6,17 +6,18 @@
  * `new Date(point.date).getDay()`.
  *
  * Layout: 7 rows (Sun→Sat, top to bottom) × 24 columns (hours 0→23).
- * Color scale: 5-step monochrome-gray + blue ramp matching the project's
- * primary-blue design tokens.
+ * Color scale: single-hue opacity ramp on blue-500 — reads clearly as
+ * "amount of activity" without chaotic multi-tone contrast jumps.
  *
- * Y-axis labels: Mon, Wed, Fri only (GitHub-style sparse labels).
- * X-axis labels: 12a, 6a, 12p, 6p (every 6 hours).
- * Tooltip: native `title` attribute — no third-party dependency.
+ * Y-axis labels: Mon, Wed, Fri only (GitHub-style sparse labels), bolder weight.
+ * X-axis labels: 12a, 6a, 12p, 6p (every 6 hours), text-xs for legibility.
+ * Tooltip: lightweight custom floating tooltip (useState), native title fallback.
  * Legend: "Less / More" swatch row, bottom-right.
+ * Week boundaries: thin border above Mon and Sat rows.
  */
 
 import type { HeatmapPoint } from '@tokenomix/shared';
-import { useMemo } from 'react';
+import { useMemo, useRef, useState } from 'react';
 
 // ---------------------------------------------------------------------------
 // Types & constants
@@ -47,31 +48,38 @@ const LABELED_DAYS: ReadonlySet<number> = new Set([1, 3, 5]); // Mon=1, Wed=3, F
 /** Hours that show a visible label in the top axis. */
 const LABELED_HOURS: ReadonlySet<number> = new Set([0, 6, 12, 18]); // 12a, 6a, 12p, 6p
 
+/**
+ * Rows where a thin top border is drawn to mark week boundaries.
+ * Mon=1 separates Sun from the weekday block; Sat=6 opens the weekend block.
+ */
+const WEEK_BOUNDARY_ROWS: ReadonlySet<number> = new Set([1, 6]);
+
 // ---------------------------------------------------------------------------
-// Color level → Tailwind class mapping (light + dark counterparts)
+// Color level → Tailwind class mapping (single-hue opacity ramp)
 // ---------------------------------------------------------------------------
 
 /**
  * Returns the combined Tailwind class string for the given activity level.
- * level 0 = no activity (gray base); levels 1-4 = blue ramp (light → dark).
+ * level 0 = no activity (gray base); levels 1-4 = single-hue blue opacity ramp.
  *
- * Data-viz convention: light blue = light usage, dark blue = heavy usage.
+ * Single-hue ramp reads as "amount of activity" without the chaotic contrast
+ * jumps of a multi-tone blue palette. opacity-[0.15] → opacity-[0.35] → 60 → 85 → 100.
  *
- * Light: level0=gray-100, level1=blue-200, level2=blue-400, level3=blue-600, level4=blue-800
- * Dark:  level0=gray-800, level1=blue-300, level2=blue-500, level3=blue-700, level4=blue-900
+ * Light: level0=gray-100, levels 1-4=blue-500 at increasing opacity
+ * Dark:  level0=gray-800, levels 1-4=blue-400 at increasing opacity
  */
 function levelClass(level: 0 | 1 | 2 | 3 | 4): string {
   switch (level) {
     case 0:
       return 'bg-gray-100 dark:bg-gray-800';
     case 1:
-      return 'bg-blue-200 dark:bg-blue-300';
+      return 'bg-blue-500/15 dark:bg-blue-400/20';
     case 2:
-      return 'bg-blue-400 dark:bg-blue-500';
+      return 'bg-blue-500/35 dark:bg-blue-400/40';
     case 3:
-      return 'bg-blue-600 dark:bg-blue-700';
+      return 'bg-blue-500/65 dark:bg-blue-400/65';
     case 4:
-      return 'bg-blue-800 dark:bg-blue-900';
+      return 'bg-blue-500 dark:bg-blue-400';
   }
 }
 
@@ -122,32 +130,73 @@ function toLevel(value: number, max: number): 0 | 1 | 2 | 3 | 4 {
 }
 
 // ---------------------------------------------------------------------------
+// Tooltip state type
+// ---------------------------------------------------------------------------
+
+interface TooltipState {
+  dayOfWeek: number;
+  hour: number;
+  value: number;
+  /** rect of the cell relative to the grid container — for positioning */
+  top: number;
+  left: number;
+  cellWidth: number;
+}
+
+// ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
 
-/** A single heatmap cell with a native title tooltip. */
+/** A single heatmap cell with a custom hover tooltip and native title fallback. */
 function HeatmapCell({
   dayOfWeek,
   hour,
   value,
   level,
+  onHover,
+  onLeave,
 }: {
   dayOfWeek: number;
   hour: number;
   value: number;
   level: 0 | 1 | 2 | 3 | 4;
+  onHover: (state: TooltipState) => void;
+  onLeave: () => void;
 }) {
+  const tdRef = useRef<HTMLTableCellElement>(null);
   const dayLabel = DAY_LABELS[dayOfWeek];
   const hourLabel = ALL_HOUR_LABELS[hour];
   const tooltipText = `${dayLabel} ${hourLabel}: $${value.toFixed(4)}`;
 
+  function handleMouseEnter() {
+    if (!tdRef.current) return;
+    const rect = tdRef.current.getBoundingClientRect();
+    const parent = tdRef.current.closest<HTMLElement>('[data-heatmap-grid]');
+    if (!parent) return;
+    const parentRect = parent.getBoundingClientRect();
+    onHover({
+      dayOfWeek,
+      hour,
+      value,
+      top: rect.top - parentRect.top,
+      left: rect.left - parentRect.left,
+      cellWidth: rect.width,
+    });
+  }
+
   return (
-    <td style={{ padding: 0 }}>
+    <td
+      ref={tdRef}
+      style={{ padding: 0 }}
+      aria-label={tooltipText}
+      title={tooltipText}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={onLeave}
+      onFocus={handleMouseEnter}
+      onBlur={onLeave}
+    >
       <div
-        role="gridcell"
-        tabIndex={0}
-        aria-label={tooltipText}
-        title={tooltipText}
+        aria-hidden="true"
         className={[
           // design-lint-disable border-radius — 14px cells require <8px radius for visual integrity
           'rounded', // 4px — smallest non-banned radius; cells are 14px so 4px reads correctly
@@ -167,7 +216,7 @@ function LegendStrip() {
   const LEVELS: Array<0 | 1 | 2 | 3 | 4> = [0, 1, 2, 3, 4];
   return (
     <div className="flex items-center gap-1.5 select-none">
-      <span className="text-[10px] text-gray-500 dark:text-gray-400 leading-none">Less</span>
+      <span className="text-xs text-gray-500 dark:text-gray-400 leading-none">Less</span>
       {LEVELS.map((level) => (
         <div
           key={level}
@@ -179,7 +228,7 @@ function LegendStrip() {
           ].join(' ')}
         />
       ))}
-      <span className="text-[10px] text-gray-500 dark:text-gray-400 leading-none">More</span>
+      <span className="text-xs text-gray-500 dark:text-gray-400 leading-none">More</span>
     </div>
   );
 }
@@ -195,6 +244,8 @@ export function HeatmapChart({ data, height = 200 }: HeatmapChartProps) {
     return { buckets: b, max: maxBucketValue(b) };
   }, [data]);
 
+  const [tooltip, setTooltip] = useState<TooltipState | null>(null);
+
   /*
    * Layout structure:
    *
@@ -205,7 +256,7 @@ export function HeatmapChart({ data, height = 200 }: HeatmapChartProps) {
    */
 
   return (
-    <div className="w-full" style={{ minHeight: `${height}px` }}>
+    <div className="w-full overflow-hidden" style={{ minHeight: `${height}px` }}>
       {/* ── Main layout: day-label column + hour grid ── */}
       <div className="flex items-start gap-1.5">
         {/* Day label column */}
@@ -221,7 +272,7 @@ export function HeatmapChart({ data, height = 200 }: HeatmapChartProps) {
               style={{ height: '14px' }}
             >
               {LABELED_DAYS.has(dayIndex) ? (
-                <span className="text-[10px] leading-none text-gray-500 dark:text-gray-400 pr-1 whitespace-nowrap">
+                <span className="text-xs leading-none font-medium text-gray-600 dark:text-gray-400 pr-1 whitespace-nowrap">
                   {DAY_LABELS[dayIndex]}
                 </span>
               ) : null}
@@ -229,8 +280,8 @@ export function HeatmapChart({ data, height = 200 }: HeatmapChartProps) {
           ))}
         </div>
 
-        {/* Hour grid + hour labels */}
-        <div className="flex-1 min-w-0">
+        {/* Hour grid + hour labels — position:relative anchor for tooltip */}
+        <div className="flex-1 min-w-0 relative" data-heatmap-grid="">
           {/* Hour labels row */}
           <div
             className="grid"
@@ -244,7 +295,7 @@ export function HeatmapChart({ data, height = 200 }: HeatmapChartProps) {
             {Array.from({ length: 24 }, (_, hour) => (
               <div
                 key={ALL_HOUR_LABELS[hour]}
-                className="text-[10px] leading-none text-gray-500 dark:text-gray-400"
+                className="text-xs leading-none text-gray-600 dark:text-gray-400"
                 style={{ height: '14px', display: 'flex', alignItems: 'center' }}
               >
                 {LABELED_HOURS.has(hour) ? ALL_HOUR_LABELS[hour] : null}
@@ -272,6 +323,11 @@ export function HeatmapChart({ data, height = 200 }: HeatmapChartProps) {
                     display: 'grid',
                     gridTemplateColumns: 'repeat(24, minmax(0, 1fr))',
                     gap: '3px',
+                    // week-boundary hint: thin top border above Mon (1) and Sat (6)
+                    borderTop: WEEK_BOUNDARY_ROWS.has(dayIndex)
+                      ? '1px solid color-mix(in oklch, oklch(0.87 0 0) 30%, transparent)'
+                      : undefined,
+                    paddingTop: WEEK_BOUNDARY_ROWS.has(dayIndex) ? '3px' : undefined,
                   }}
                 >
                   {Array.from({ length: 24 }, (_, hour) => {
@@ -284,6 +340,8 @@ export function HeatmapChart({ data, height = 200 }: HeatmapChartProps) {
                         hour={hour}
                         value={value}
                         level={level}
+                        onHover={setTooltip}
+                        onLeave={() => setTooltip(null)}
                       />
                     );
                   })}
@@ -291,6 +349,23 @@ export function HeatmapChart({ data, height = 200 }: HeatmapChartProps) {
               ))}
             </tbody>
           </table>
+
+          {/* Custom floating tooltip */}
+          {tooltip !== null && (
+            <div
+              role="tooltip"
+              aria-live="polite"
+              className="pointer-events-none absolute z-10 px-2 py-1 rounded-lg text-xs font-medium bg-gray-900 dark:bg-gray-50 text-gray-50 dark:text-gray-900 shadow-sm whitespace-nowrap"
+              style={{
+                // Position above the cell, centered horizontally
+                top: tooltip.top - 32,
+                left: tooltip.left + tooltip.cellWidth / 2,
+                transform: 'translateX(-50%)',
+              }}
+            >
+              {DAY_LABELS[tooltip.dayOfWeek]} {ALL_HOUR_LABELS[tooltip.hour]}: ${tooltip.value.toFixed(4)}
+            </div>
+          )}
         </div>
       </div>
 

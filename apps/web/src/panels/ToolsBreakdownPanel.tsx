@@ -63,20 +63,18 @@ export function ToolsBreakdownPanel({ since = '30d' }: ToolsBreakdownPanelProps)
       {data && (
         <>
           <ToolMixBar data={data.byTool} height={240} />
-          <div className="mt-4 flex flex-wrap gap-2" aria-label="Tool legend">
+          <ul className="mt-4 flex flex-wrap gap-2" aria-label="Tool legend">
             {badgeItems.map((t) => {
               const pct = totalCount > 0 ? ((t.count / totalCount) * 100).toFixed(0) : '0';
               return (
-                <Badge
-                  key={t.toolName}
-                  variant="default"
-                  title={`${t.count.toLocaleString()} calls`}
-                >
-                  {t.toolName} {pct}%
-                </Badge>
+                <li key={t.toolName}>
+                  <Badge variant="default" title={`${t.count.toLocaleString()} calls`}>
+                    {t.toolName} {pct}%
+                  </Badge>
+                </li>
               );
             })}
-          </div>
+          </ul>
         </>
       )}
     </Card>

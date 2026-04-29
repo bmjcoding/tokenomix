@@ -140,10 +140,13 @@ export function ModelMixBar({ data, height = 240 }: ModelMixBarProps) {
           label: { show: false },
           labelLine: { show: false },
           emphasis: {
-            scaleSize: 4,
+            scale: false,
+            focus: 'self',
             itemStyle: {
-              shadowBlur: 6,
-              shadowColor: isDark ? 'oklch(0.10 0 0 / 60%)' : 'oklch(0.70 0 0 / 30%)',
+              shadowBlur: 8,
+              shadowColor: isDark ? 'oklch(0.10 0 0 / 60%)' : 'oklch(0.70 0 0 / 40%)',
+              borderColor: isDark ? 'oklch(0.24 0 0)' : 'oklch(0.87 0 0)',
+              borderWidth: 1,
             },
           },
         },
@@ -151,5 +154,5 @@ export function ModelMixBar({ data, height = 240 }: ModelMixBarProps) {
     };
   }, [data, isDark]);
 
-  return <ReactECharts option={option} style={{ height: `${height}px`, width: '100%' }} notMerge />;
+  return <ReactECharts option={option} style={{ height: `${height}px`, width: '100%' }} />;
 }

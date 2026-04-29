@@ -1,26 +1,23 @@
 /**
- * OverviewPage — main dashboard view.
+ * OverviewPage — main dashboard view, broken into 4 navigable tabs.
  *
  * Architecture:
  * - Owns the single useQuery call for MetricSummary (since='all').
  * - Passes MetricSummary down as props to all prop-driven panels:
- *   HeroSpend, KpiRow, KpiRow2, AreaChartPanel.
- * - HeatmapPanel, ModelMixPanel, ToolsBreakdownPanel, SubagentLeaderboard,
- *   TopSessionsTable, and TopExpensiveTurnsTable self-fetch via their own
- *   useQuery calls — they receive no data prop (except KpiRow2 which is
- *   prop-driven like KpiRow).
+ *   HeroSpend, CostDriversPanel, KpiRow, KpiRow2, OptimizationOpportunitiesPanel,
+ *   OptimizationSignalsPanel, AreaChartPanel.
+ * - Self-fetching panels (HeatmapPanel, ModelMixPanel, ToolsBreakdownPanel,
+ *   SubagentLeaderboard, TopSessionsTable, TopExpensiveTurnsTable) mount only
+ *   when their tab is active — their useQuery hooks do not fire on inactive tabs.
  * - useServerEvents() SSE hook is mounted here for live cache invalidation.
  * - Period state is lifted to this page and passed to AreaChartPanel.
+ * - Hash sync via Tabs: reloading with #recommendations lands on that tab.
  *
- * Layout (top to bottom):
- *   1. HeroSpend              — full-width hero, Current Spend (MTD)
- *   2. KpiRow                 — TOKENS · 30D w/ delta, Cost/Output Token, Turn P90 Cost, Cost WoW Delta
- *   3. KpiRow2                — Projects Touched, Avg Cost/Turn; optional Worst-Tool Error (hidden when none)
- *   3a. OptimizationSignals   — P90 Session Duration; optional Subagent Success Rate + Top Project
- *   4. AreaChartPanel         — spend-over-time chart with period switcher + actions
- *   5. Three-column grid: HeatmapPanel + ModelMixPanel + ToolsBreakdownPanel (hidden when no tool data)
- *   6. TopSessionsTable (top 10 by cost)
- *   7. Two-column grid: SubagentLeaderboard + TopExpensiveTurnsTable (Agent & Turn Breakdown)
+ * Tab structure:
+ *   overview        — HeroSpend → CostDriversPanel → AreaChartPanel → KpiRow
+ *   recommendations — OptimizationOpportunitiesPanel → OptimizationSignalsPanel → KpiRow2
+ *   activity        — 3-col grid: HeatmapPanel + ModelMixPanel + ToolsBreakdownPanel
+ *   sessions        — TopSessionsTable → 2-col grid: SubagentLeaderboard + TopExpensiveTurnsTable
  */
 
 import { useQuery } from '@tanstack/react-query';
@@ -43,23 +40,109 @@ import { SubagentLeaderboard } from '../panels/SubagentLeaderboard.js';
 import { ToolsBreakdownPanel } from '../panels/ToolsBreakdownPanel.js';
 import { TopExpensiveTurnsTable } from '../panels/TopExpensiveTurnsTable.js';
 import { TopSessionsTable } from '../panels/TopSessionsTable.js';
+import type { TabItem } from '../ui/Tabs.js';
+import { Tabs } from '../ui/Tabs.js';
+
+// ---------------------------------------------------------------------------
+// Tab content components — each rendered only when its tab is active.
+// Using separate components ensures clean unmount/mount lifecycle when
+// switching tabs and avoids prop-drilling the MetricSummary through
+// the Tabs abstraction.
+// ---------------------------------------------------------------------------
+
+interface OverviewTabProps {
+  data: MetricSummary;
+  period: DashboardPeriod;
+  onPeriodChange: (next: DashboardPeriod) => void;
+}
+
+function OverviewTabContent({ data, period, onPeriodChange }: OverviewTabProps) {
+  return (
+    <div className="space-y-6 pt-6">
+      {/* 1. Hero — Current Spend (MTD) */}
+      <HeroSpend data={data} />
+
+      {/* 2. Cost drivers — explains what is driving spend */}
+      <CostDriversPanel data={data} />
+
+      {/* 3. Spend over time — moved up per user request */}
+      <AreaChartPanel data={data} period={period} onPeriodChange={onPeriodChange} />
+
+      {/* 4. Key Metrics — moved up to sit with the overview data */}
+      <KpiRow data={data} />
+    </div>
+  );
+}
+
+interface RecommendationsTabProps {
+  data: MetricSummary;
+}
+
+function RecommendationsTabContent({ data }: RecommendationsTabProps) {
+  return (
+    <div className="space-y-6 pt-6">
+      {/* 1. Ranked optimization experiments */}
+      <OptimizationOpportunitiesPanel data={data} />
+
+      {/* 2. Optimization Signals — P90 duration, subagent success, top project */}
+      <OptimizationSignalsPanel data={data} />
+
+      {/* 3. Usage Insights — Projects Touched / Avg Cost per Turn / Worst Tool Error */}
+      <KpiRow2 data={data} />
+    </div>
+  );
+}
+
+function ActivityTabContent() {
+  return (
+    <div className="pt-6">
+      {/* 3-column grid of activity charts — stacked on small viewports */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <HeatmapPanel />
+        <ModelMixPanel />
+        <ToolsBreakdownPanel since="30d" />
+      </div>
+    </div>
+  );
+}
+
+function SessionsTabContent() {
+  return (
+    <div className="space-y-6 pt-6">
+      {/* Top sessions by cost */}
+      <TopSessionsTable limit={10} />
+
+      {/* Agent & Turn Breakdown — two-column grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <SubagentLeaderboard since="30d" />
+        <TopExpensiveTurnsTable limit={10} since="30d" />
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// OverviewPage
+// ---------------------------------------------------------------------------
 
 export default function OverviewPage() {
   // SSE live refresh — invalidates TanStack Query cache on 'updated' events.
   useServerEvents();
 
-  // Single source of truth for the chart period switcher.
+  // Period state lifted here so it persists across tab switches within the
+  // session (but is not hashed — only the tab key is hashed).
   const [period, setPeriod] = useState<DashboardPeriod>('30d');
 
-  // Single useQuery for MetricSummary — all prop-driven panels share this result.
+  // Single source of truth for MetricSummary — prop-driven panels share this.
   const { data, isLoading, isError } = useQuery<MetricSummary>({
     queryKey: queryKeys.metrics({ since: 'all' }),
     queryFn: () => fetchMetrics({ since: 'all' }),
   });
 
-  const containerCls = 'space-y-6 py-6 px-4 sm:px-6 lg:px-8 max-w-screen-xl';
+  const containerCls = 'py-6 px-4 sm:px-6 lg:px-8 max-w-screen-xl';
 
-  // Loading state — inline spinner text matching ModelsPage convention.
+  // Loading state — show the tab shell immediately so chrome appears before data.
+  // The tab content areas render the loading indicator inline.
   if (isLoading || !data) {
     return (
       <div className={containerCls}>
@@ -70,7 +153,7 @@ export default function OverviewPage() {
     );
   }
 
-  // Error state — inline error message matching ModelsPage convention.
+  // Error state.
   if (isError) {
     return (
       <div className={containerCls}>
@@ -83,44 +166,37 @@ export default function OverviewPage() {
     );
   }
 
+  // ── Tab definitions ─────────────────────────────────────────────────────────
+  // Each content block is a component call — inactive tabs are not rendered so
+  // their useQuery hooks (HeatmapPanel, TopSessionsTable, etc.) don't fire.
+  const tabItems: TabItem[] = [
+    {
+      key: 'overview',
+      label: 'Overview',
+      content: (
+        <OverviewTabContent data={data} period={period} onPeriodChange={setPeriod} />
+      ),
+    },
+    {
+      key: 'recommendations',
+      label: 'Recommendations',
+      content: <RecommendationsTabContent data={data} />,
+    },
+    {
+      key: 'activity',
+      label: 'Activity',
+      content: <ActivityTabContent />,
+    },
+    {
+      key: 'sessions',
+      label: 'Sessions',
+      content: <SessionsTabContent />,
+    },
+  ];
+
   return (
     <div className={containerCls}>
-      {/* 1. Hero — Current Spend (MTD) */}
-      <HeroSpend data={data} />
-
-      {/* 1a. Cost drivers — explains what is actually driving spend */}
-      <CostDriversPanel data={data} />
-
-      {/* 1b. Ranked optimization experiments */}
-      <OptimizationOpportunitiesPanel data={data} />
-
-      {/* 2. KPI row — TOKENS · 30D / Cost per Output Token / Turn P90 Cost / Cost WoW Delta */}
-      <KpiRow data={data} />
-
-      {/* 3. KPI row 2 — Projects Touched / Avg Cost per Turn / Worst-Tool Error (conditional) */}
-      <KpiRow2 data={data} />
-
-      {/* 3a. Optimization Signals — P90 session duration, subagent success rate, top project */}
-      <OptimizationSignalsPanel data={data} />
-
-      {/* 4. Area chart with period switcher, Export, and View full report */}
-      <AreaChartPanel data={data} period={period} onPeriodChange={setPeriod} />
-
-      {/* 5. Heatmap + Model mix + Tools breakdown — three-column grid (stacked on small viewports) */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <HeatmapPanel />
-        <ModelMixPanel />
-        <ToolsBreakdownPanel since="30d" />
-      </div>
-
-      {/* 6. Top 10 sessions by cost */}
-      <TopSessionsTable limit={10} />
-
-      {/* 7. Agent & Turn Breakdown — two-column grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <SubagentLeaderboard since="30d" />
-        <TopExpensiveTurnsTable limit={10} since="30d" />
-      </div>
+      <Tabs items={tabItems} defaultKey="overview" syncWithHash />
     </div>
   );
 }

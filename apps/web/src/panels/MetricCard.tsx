@@ -6,18 +6,31 @@
  *   Row 2: value (large)
  *   Row 3: pill + sparkline in a flex row with items-end so their BOTTOM
  *           edges share the same Y baseline (resolves CLAUD-013, CLAUD-014).
+ *           This row is ONLY rendered when there is real content: a finite
+ *           deltaPercent, a sparkline with >1 points, or both.
  *   Row 4: context line (optional)
  *
- * When an icon prop is provided it is pinned to the top-right of the card via
- * a wrapper div that uses `absolute` positioning (card surface is `relative`).
+ * When an icon prop is provided it is rendered inline at the start of the label
+ * row, before the label text.
  *
  * Props:
  *   - label        — card heading (screen-reader label for the article)
  *   - value        — pre-formatted headline string (e.g. "15.8M", "78.4%", "1,234")
  *   - sparklineData — raw number array fed to SparklineChart (optional)
- *   - deltaPercent  — percentage change vs prior period; null → render em-dash
+ *   - deltaPercent  — percentage change vs prior period.
+ *                     Pass a finite number to show the colored trend pill.
+ *                     Pass null when a delta cannot be computed (e.g. fewer than
+ *                     2 weeks of data, or a zero-denominator). When null AND no
+ *                     sparklineData is provided, the trend row is suppressed
+ *                     entirely — no pill, no em-dash placeholder.
  *   - context      — optional muted sub-line below the trend row
  *   - icon         — optional ReactNode pinned top-right
+ *
+ * Middle-row rendering contract:
+ *   hasDelta && hasSpark  → pill on left, sparkline on right
+ *   hasDelta && !hasSpark → pill only (no empty right placeholder)
+ *   !hasDelta && hasSpark → sparkline only, justify-end (right-aligned)
+ *   !hasDelta && !hasSpark → row not rendered
  *
  * Token reference:
  * - Label: text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400
@@ -43,14 +56,14 @@ interface MetricCardProps {
   context?: string;
   /**
    * Percentage delta vs prior period (e.g. +12.3 or -5.1).
-   * Pass null to render an em-dash — used when a delta cannot be computed
-   * (e.g. COST WoW DELTA when fewer than 2 weeks of data exist, or when the
-   * previous-period denominator is zero).
+   * Pass null when a delta cannot be computed (e.g. fewer than 2 weeks of
+   * data, or a zero-denominator). null does NOT render an em-dash placeholder;
+   * the trend row is suppressed entirely unless sparklineData is also provided.
    */
   deltaPercent: number | null;
   /** Optional spark data; if provided a SparklineChart is rendered on the right. */
   sparklineData?: number[];
-  /** Optional icon slot rendered in top-right corner. */
+  /** Optional icon rendered inline at the start of the label row, before the label text. */
   icon?: ReactNode;
   /** Optional hover/focus explanation for why the metric matters. */
   tooltip?: ReactNode;
@@ -87,8 +100,9 @@ export function MetricCard({
           ? 'favorable'
           : 'unfavorable';
 
-  // Render the pill+sparkline row only when at least one is present.
-  const showMiddleRow = hasDelta || deltaPercent === null || hasSpark;
+  // Render the pill+sparkline row only when there is real content to show.
+  // null delta with no sparkline → row is suppressed (no em-dash placeholder).
+  const showMiddleRow = hasDelta || hasSpark;
 
   return (
     <Card as="article" aria-label={label} className="relative flex flex-col">
@@ -108,12 +122,28 @@ export function MetricCard({
         Middle row: pill (left) + sparkline (right).
         `items-end` bottom-aligns both children so the sparkline's bottom edge
         sits exactly at the same Y as the trend pill's bottom edge (CLAUD-014).
-        `justify-between` pushes them to opposing ends.
+        Row is suppressed entirely when neither hasDelta nor hasSpark is true
+        (e.g. deltaPercent={null} with no sparklineData).
+
+        Cases:
+          hasDelta && hasSpark  → pill left, sparkline right (justify-between)
+          hasDelta && !hasSpark → pill only (justify-start, no empty placeholder)
+          !hasDelta && hasSpark → sparkline only, right-aligned (justify-end)
+          !hasDelta && !hasSpark → row not rendered (showMiddleRow is false)
       */}
       {showMiddleRow && (
-        <div className="flex items-end justify-between gap-2 mt-2">
-          {/* Left: trend pill or em-dash placeholder */}
-          {hasDelta ? (
+        <div
+          className={[
+            'flex items-end gap-2 mt-2',
+            hasDelta && hasSpark
+              ? 'justify-between'
+              : !hasDelta && hasSpark
+                ? 'justify-end'
+                : 'justify-start',
+          ].join(' ')}
+        >
+          {/* Left: trend pill — rendered only when delta is a finite number */}
+          {hasDelta && (
             <span
               className={[
                 'inline-flex items-center gap-1 px-2 py-0.5 rounded-full',
@@ -125,7 +155,7 @@ export function MetricCard({
                     ? 'text-green-600 dark:text-green-400'
                     : 'text-red-600 dark:text-red-400',
               ].join(' ')}
-              aria-label={`${isPositive ? 'Up' : 'Down'} ${Math.abs(deltaPercent).toFixed(1)}%${
+              title={`${isPositive ? 'Up' : 'Down'} ${Math.abs(deltaPercent).toFixed(1)}%${
                 deltaTone === 'neutral'
                   ? ''
                   : deltaTone === 'favorable'
@@ -133,30 +163,27 @@ export function MetricCard({
                     : ', unfavorable'
               }`}
             >
+              <span className="sr-only">
+                {isPositive ? 'Up' : 'Down'} {Math.abs(deltaPercent).toFixed(1)}%
+                {deltaTone === 'neutral'
+                  ? ''
+                  : deltaTone === 'favorable'
+                    ? ', favorable'
+                    : ', unfavorable'}
+              </span>
               {/* Arrow icon: ↗ for positive, ↘ for negative */}
               <span aria-hidden="true">{isPositive ? '↗' : '↘'}</span>
-              <span>{Math.abs(deltaPercent).toFixed(1)}%</span>
-            </span>
-          ) : (
-            /* Em-dash rendered when delta is null (no comparable period data) */
-            <span
-              className="inline-flex items-center px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-xs font-medium text-gray-500 dark:text-gray-400"
-              aria-label="No comparison data"
-            >
-              {'—'}
+              <span aria-hidden="true">{Math.abs(deltaPercent).toFixed(1)}%</span>
             </span>
           )}
 
           {/* Right: sparkline container — proportional width (CLAUD-013).
               flex-[0_0_45%] gives ~45% of card width; max-w-[180px] caps it
-              on very wide cards. */}
-          {hasSpark ? (
+              on very wide cards. Rendered only when sparklineData has >1 points. */}
+          {hasSpark && (
             <div className="flex-[0_0_45%] max-w-[180px]">
               <SparklineChart data={sparklineData} height={48} />
             </div>
-          ) : (
-            // Empty placeholder when sparkline is absent so pill still renders.
-            <div aria-hidden="true" />
           )}
         </div>
       )}

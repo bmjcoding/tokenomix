@@ -77,8 +77,7 @@ export default function ModelsPage() {
 
         {!isLoading && !isError && (
           <div className="overflow-x-auto scrollbar-hide">
-            {/* biome-ignore lint/a11y/useSemanticElements: role=grid on <table> adds interactive grid semantics for sortable data; converting to a native grid element would replace the entire table layout system */}
-            <table className="w-full text-sm" role="grid">
+            <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-200 dark:border-gray-800">
                   {(['Model', 'Cost', 'Input', 'Output', 'Cache', 'Events'] as const).map((col) => (

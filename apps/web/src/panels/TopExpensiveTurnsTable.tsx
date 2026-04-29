@@ -57,7 +57,11 @@ interface SortHeaderProps {
 function SortHeader({ label, sortKey, current, dir, onSort }: SortHeaderProps) {
   const active = current === sortKey;
   return (
-    <th scope="col" className="px-4 py-2 text-left">
+    <th
+      scope="col"
+      className="px-4 py-2 text-left"
+      aria-sort={active ? (dir === 'desc' ? 'descending' : 'ascending') : 'none'}
+    >
       <button
         type="button"
         onClick={() => onSort(sortKey)}
@@ -69,7 +73,6 @@ function SortHeader({ label, sortKey, current, dir, onSort }: SortHeaderProps) {
             ? 'text-gray-950 dark:text-white'
             : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300',
         ].join(' ')}
-        aria-sort={active ? (dir === 'desc' ? 'descending' : 'ascending') : 'none'}
       >
         {label}
         {active ? (dir === 'desc' ? ' ↓' : ' ↑') : ''}
@@ -130,8 +133,7 @@ export function TopExpensiveTurnsTable({ limit = 10, since = '30d' }: TopExpensi
 
       {!isLoading && !isError && (
         <div className="overflow-x-auto scrollbar-hide">
-          {/* biome-ignore lint/a11y/useSemanticElements: role=grid on <table> adds interactive grid semantics for sortable data; converting to a native grid element would replace the entire table layout system */}
-          <table className="w-full text-sm" role="grid">
+          <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900">
                 <th

@@ -106,7 +106,11 @@ function SortableHeader({
 }: SortableHeaderProps) {
   const active = current === sortKey;
   return (
-    <th scope="col" className={`px-4 py-3 text-left ${className}`}>
+    <th
+      scope="col"
+      className={`px-4 py-3 text-left ${className}`}
+      aria-sort={active ? (dir === 'desc' ? 'descending' : 'ascending') : 'none'}
+    >
       <button
         type="button"
         onClick={() => onSort(sortKey)}
@@ -119,7 +123,6 @@ function SortableHeader({
             ? 'text-gray-950 dark:text-white'
             : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300',
         ].join(' ')}
-        aria-sort={active ? (dir === 'desc' ? 'descending' : 'ascending') : 'none'}
       >
         {label}
         {active &&
@@ -248,8 +251,7 @@ export default function FullReportPage() {
 
         {!isError && (
           <div className="overflow-x-auto">
-            {/* biome-ignore lint/a11y/useSemanticElements: role=grid on <table> adds interactive grid semantics for sortable data; converting to a native grid element would replace the entire table layout system */}
-            <table className="w-full text-sm" role="grid">
+            <table className="w-full text-sm">
               <thead className="sticky top-0 z-10">
                 <tr className="border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900">
                   <th

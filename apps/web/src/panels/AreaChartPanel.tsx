@@ -44,25 +44,19 @@ const FIELD_OPTIONS: { value: AreaField; label: string }[] = [
  * Builds a synthetic DailyBucket[] from getLast24hSeries output.
  *
  * Each hourly point becomes a DailyBucket whose `date` field is an ISO
- * timestamp string `YYYY-MM-DDTHH:00`. AreaChart uses these strings as the
+ * timestamp string `YYYY-MM-DDTHH:00:00`. AreaChart uses these strings as the
  * x-axis category data; the xAxisLabelFormat prop then slices `HH:00` via
  * `raw.slice(11, 16)` so each tick shows a different hour label.
  *
  * Non-cost token fields are zero because heatmapData only carries costUsd.
  */
-function buildSyntheticDailyBuckets(
-  heatmapData: MetricSummary['heatmapData'],
-  today: string
-): DailyBucket[] {
+function buildSyntheticDailyBuckets(heatmapData: MetricSummary['heatmapData']): DailyBucket[] {
   const hourPoints = getLast24hSeries(heatmapData);
-  return hourPoints.map(({ hour, costUsd }) => {
-    // Produce YYYY-MM-DDTHH:00 — we use `today` (YYYY-MM-DD) as the date
-    // portion. For the last 24h we accept that hour wrap across midnight may
-    // attribute all points to today's date; this is a display approximation
-    // consistent with the heatmapData that already collapsed to (date, hour).
+  return hourPoints.map(({ date, hour, costUsd }) => {
+    // Preserve the heatmap bucket date so 24h windows crossing midnight stay chronological.
     const hourStr = String(hour).padStart(2, '0');
     return {
-      date: `${today}T${hourStr}:00`,
+      date: `${date}T${hourStr}:00:00`,
       costUsd,
       inputTokens: 0,
       outputTokens: 0,
@@ -72,17 +66,6 @@ function buildSyntheticDailyBuckets(
   });
 }
 
-/**
- * Returns today as a YYYY-MM-DD string (local time — matches heatmapData date convention).
- */
-function todayDateString(): string {
-  const d = new Date();
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
-}
-
 // ---------------------------------------------------------------------------
 // Period → filtered series
 // ---------------------------------------------------------------------------
@@ -90,7 +73,7 @@ function todayDateString(): string {
 function filterSeries(data: MetricSummary, period: DashboardPeriod): DailyBucket[] {
   switch (period) {
     case '24h':
-      return buildSyntheticDailyBuckets(data.heatmapData, todayDateString());
+      return buildSyntheticDailyBuckets(data.heatmapData);
     case '7d':
       return data.dailySeries.slice(-7);
     case '30d':

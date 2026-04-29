@@ -43,17 +43,19 @@ export function OptimizationOpportunitiesPanel({ data }: OptimizationOpportuniti
   return (
     <Card as="section" className="p-0 overflow-hidden" aria-label="Optimization opportunities">
       <div className="px-5 py-4 border-b border-gray-200 dark:border-gray-800">
-        <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center justify-between gap-4 flex-wrap">
           <h2 className="text-base font-semibold text-gray-950 dark:text-white">
             Optimization Opportunities
           </h2>
+          {/* Badge precedes HelpTooltip so the tooltip's left-0 anchor sits further
+              from the viewport right edge, keeping the popover within the card. */}
           <div className="flex items-center gap-2">
+            <Badge variant="accent">{formatCurrency(data.costUsd30d)} 30d spend</Badge>
             <HelpTooltip label="Explain optimization opportunity scoring">
               Scores are deterministic rule weights from local session data, not LLM inference and
               not probabilities. Higher means the observed signal is cleaner and more directly tied
               to the proposed experiment.
             </HelpTooltip>
-            <Badge variant="accent">{formatCurrency(data.costUsd30d)} 30d spend</Badge>
           </div>
         </div>
       </div>
@@ -66,6 +68,14 @@ export function OptimizationOpportunitiesPanel({ data }: OptimizationOpportuniti
       ) : (
         <div className="overflow-x-auto scrollbar-hide">
           <table className="w-full text-sm">
+            {/* Explicit column proportions prevent the AREA cell from overflowing
+                into adjacent columns on constrained viewport widths. */}
+            <colgroup>
+              <col style={{ width: '20%' }} />
+              <col style={{ width: '50%' }} />
+              <col style={{ width: '15%' }} />
+              <col style={{ width: '15%' }} />
+            </colgroup>
             <thead>
               <tr className="border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900">
                 <th className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
@@ -77,7 +87,8 @@ export function OptimizationOpportunitiesPanel({ data }: OptimizationOpportuniti
                 <th className="px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
                   Impact
                 </th>
-                <th className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                {/* Right-aligned to match the Impact column for visual symmetry. */}
+                <th className="px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
                   Rule Score
                 </th>
               </tr>
@@ -88,10 +99,14 @@ export function OptimizationOpportunitiesPanel({ data }: OptimizationOpportuniti
                   key={opportunity.id}
                   className="border-b border-gray-100 dark:border-gray-800 align-top"
                 >
-                  <td className="px-4 py-3 whitespace-nowrap">
+                  {/* whitespace-nowrap removed so long titles wrap within the cell
+                      rather than pushing into the Recommendation column. */}
+                  <td className="px-4 py-3">
                     <div className="space-y-1">
                       <Badge variant="default">{categoryLabel(opportunity.category)}</Badge>
-                      <p className="max-w-[180px] text-sm font-semibold text-gray-950 dark:text-white">
+                      {/* break-words ensures single long words (e.g. project slugs)
+                          also wrap instead of overflowing. */}
+                      <p className="text-sm font-semibold text-gray-950 dark:text-white break-words whitespace-normal">
                         {opportunity.title}
                       </p>
                     </div>
@@ -107,9 +122,10 @@ export function OptimizationOpportunitiesPanel({ data }: OptimizationOpportuniti
                   <td className="px-4 py-3 text-right font-semibold tabular-nums text-gray-950 dark:text-white whitespace-nowrap">
                     {formatCurrency(opportunity.impactUsd30d)}
                   </td>
-                  <td className="px-4 py-3 whitespace-nowrap">
+                  {/* Right-aligned cell to match Impact column and header. */}
+                  <td className="px-4 py-3 text-right whitespace-nowrap">
                     <Badge variant={opportunity.confidence >= 0.7 ? 'accent' : 'default'}>
-                      {confidenceLabel(opportunity.confidence)} rule -{' '}
+                      {confidenceLabel(opportunity.confidence)} -{' '}
                       {(opportunity.confidence * 100).toFixed(0)}%
                     </Badge>
                   </td>

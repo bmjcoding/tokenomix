@@ -1,5 +1,5 @@
-import { Outlet, createRootRoute, createRoute, createRouter } from '@tanstack/react-router';
-import { Suspense, lazy } from 'react';
+import { createRootRoute, createRoute, createRouter, Outlet } from '@tanstack/react-router';
+import { lazy, Suspense } from 'react';
 import { RootLayout } from './layout/RootLayout.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
