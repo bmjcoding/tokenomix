@@ -37,8 +37,10 @@ import type {
   RawUsage,
   RawUsageEventParsed,
   SessionBucket,
+  SessionDetail,
   SessionDurationStats,
   SessionSummary,
+  SessionTurnRow,
   SubagentBucket,
   SystemTurnDurationEventParsed,
   TokenRow,
@@ -1723,6 +1725,7 @@ function computeSessionSummaries(rows: TokenRow[], query: MetricsQuery): Session
     {
       sessionId: string;
       project: string;
+      projectName: string;
       costUsd: number;
       inputTokens: number;
       outputTokens: number;
@@ -1732,6 +1735,9 @@ function computeSessionSummaries(rows: TokenRow[], query: MetricsQuery): Session
       isSubagent: boolean;
     }
   >();
+
+  // Parallel accumulator: sessionId → toolName → { count, errorCount }
+  const toolAccumulator = new Map<string, Map<string, { count: number; errorCount: number }>>();
 
   for (const row of rows) {
     if (query.project && !row.project.includes(query.project)) continue;
@@ -1752,6 +1758,7 @@ function computeSessionSummaries(rows: TokenRow[], query: MetricsQuery): Session
       sessionMap.set(row.sessionId, {
         sessionId: row.sessionId,
         project: row.project,
+        projectName: row.projectName,
         costUsd: row.costUsd,
         inputTokens: row.inputTokens,
         outputTokens: row.outputTokens,
@@ -1761,9 +1768,55 @@ function computeSessionSummaries(rows: TokenRow[], query: MetricsQuery): Session
         isSubagent: row.isSubagent,
       });
     }
+
+    // Accumulate tool uses and errors for this session.
+    let sessionTools = toolAccumulator.get(row.sessionId);
+    if (!sessionTools) {
+      sessionTools = new Map<string, { count: number; errorCount: number }>();
+      toolAccumulator.set(row.sessionId, sessionTools);
+    }
+    const uses = row.toolUses ?? {};
+    const errors = row.toolErrors ?? {};
+    for (const [toolName, count] of Object.entries(uses)) {
+      const existing2 = sessionTools.get(toolName);
+      if (existing2) {
+        existing2.count += count;
+      } else {
+        sessionTools.set(toolName, { count, errorCount: 0 });
+      }
+    }
+    for (const [toolName, errCount] of Object.entries(errors)) {
+      const existing2 = sessionTools.get(toolName);
+      if (existing2) {
+        existing2.errorCount += errCount;
+      } else {
+        sessionTools.set(toolName, { count: 0, errorCount: errCount });
+      }
+    }
   }
 
-  return [...sessionMap.values()].sort((a, b) => b.costUsd - a.costUsd);
+  // Build final SessionSummary[] with topTools and toolNamesCount.
+  const result: SessionSummary[] = [];
+  for (const entry of sessionMap.values()) {
+    const sessionTools = toolAccumulator.get(entry.sessionId);
+    let topTools: ToolBucket[] = [];
+    let toolNamesCount = 0;
+    if (sessionTools && sessionTools.size > 0) {
+      toolNamesCount = sessionTools.size;
+      topTools = [...sessionTools.entries()]
+        .sort((a, b) => b[1].count - a[1].count)
+        .slice(0, 3)
+        .map(([toolName, { count, errorCount }]) => ({
+          toolName,
+          count,
+          errorCount,
+          errorRate: count > 0 ? errorCount / count : 0,
+        }));
+    }
+    result.push({ ...entry, topTools, toolNamesCount });
+  }
+
+  return result.sort((a, b) => b.costUsd - a.costUsd);
 }
 
 // ---------------------------------------------------------------------------
@@ -2317,6 +2370,125 @@ export class IndexStore extends EventEmitter {
     // Sort by costUsd descending (most expensive turn first).
     result.sort((a, b) => b.costUsd - a.costUsd);
     return result.slice(0, Math.min(limit, 50));
+  }
+
+  /**
+   * Return the full SessionDetail for a given sessionId, or null when no rows
+   * exist for that session. Aggregates token/cost totals, derives a full
+   * ToolBucket array (all tools, not capped at 3), and builds a per-turn array
+   * sorted ascending by timestamp (oldest first).
+   *
+   * firstTs and lastTs are read from the private sessionTimes map; they are
+   * returned as null when the entry has been evicted (50K-entry LRU cap).
+   */
+  getSessionDetail(sessionId: string): SessionDetail | null {
+    const sessionRows: TokenRow[] = [];
+    for (const row of this.rows.values()) {
+      if (row.sessionId === sessionId) sessionRows.push(row);
+    }
+    if (sessionRows.length === 0) return null;
+
+    // Aggregate totals.
+    let costUsd = 0;
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let cacheCreationTokens = 0;
+    let cacheReadTokens = 0;
+    let webSearchRequests = 0;
+    let isSubagent = false;
+    let project = '';
+    let projectName = '';
+
+    // Full tool accumulator (not capped).
+    const toolAcc = new Map<string, { count: number; errorCount: number }>();
+
+    for (const row of sessionRows) {
+      costUsd += row.costUsd;
+      inputTokens += row.inputTokens;
+      outputTokens += row.outputTokens;
+      cacheCreationTokens += row.cacheCreation5m + row.cacheCreation1h;
+      cacheReadTokens += row.cacheReadTokens;
+      webSearchRequests += row.webSearchRequests;
+      if (row.isSubagent) isSubagent = true;
+      // Use the first row's project/projectName (consistent within a session).
+      if (!project) {
+        project = row.project;
+        projectName = row.projectName;
+      }
+
+      const uses = row.toolUses ?? {};
+      const errors = row.toolErrors ?? {};
+      for (const [toolName, count] of Object.entries(uses)) {
+        const e = toolAcc.get(toolName);
+        if (e) {
+          e.count += count;
+        } else {
+          toolAcc.set(toolName, { count, errorCount: 0 });
+        }
+      }
+      for (const [toolName, errCount] of Object.entries(errors)) {
+        const e = toolAcc.get(toolName);
+        if (e) {
+          e.errorCount += errCount;
+        } else {
+          toolAcc.set(toolName, { count: 0, errorCount: errCount });
+        }
+      }
+    }
+
+    // Build byTool (all tools, sorted by count desc).
+    const byTool: ToolBucket[] = [...toolAcc.entries()]
+      .sort((a, b) => b[1].count - a[1].count)
+      .map(([toolName, { count, errorCount }]) => ({
+        toolName,
+        count,
+        errorCount,
+        errorRate: count > 0 ? errorCount / count : 0,
+      }));
+
+    // Build turns array sorted ascending by date+hour (oldest first).
+    const turns: SessionTurnRow[] = sessionRows
+      .slice()
+      .sort((a, b) => {
+        const aKey = `${a.date}:${String(a.hour).padStart(2, '0')}`;
+        const bKey = `${b.date}:${String(b.hour).padStart(2, '0')}`;
+        return aKey < bKey ? -1 : aKey > bKey ? 1 : 0;
+      })
+      .map((row) => ({
+        timestamp: formatLocalHourIso(row.date, row.hour),
+        modelId: row.modelId,
+        modelFamily: row.modelFamily,
+        inputTokens: row.inputTokens,
+        outputTokens: row.outputTokens,
+        cacheReadTokens: row.cacheReadTokens,
+        costUsd: row.costUsd,
+        durationMs: row.turnDurationMs ?? null,
+        toolUses: row.toolUses ?? {},
+        toolErrors: row.toolErrors ?? {},
+      }));
+
+    // Read first/last timestamps from sessionTimes (null when evicted).
+    const times = this.sessionTimes.get(sessionId);
+    const firstTs = times ? new Date(times.firstTs).toISOString() : null;
+    const lastTs = times ? new Date(times.lastTs).toISOString() : null;
+
+    return {
+      sessionId,
+      project,
+      projectName,
+      costUsd,
+      inputTokens,
+      outputTokens,
+      cacheCreationTokens,
+      cacheReadTokens,
+      webSearchRequests,
+      events: sessionRows.length,
+      isSubagent,
+      firstTs,
+      lastTs,
+      byTool,
+      turns,
+    };
   }
 
   isReady(): boolean {
