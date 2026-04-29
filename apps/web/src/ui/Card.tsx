@@ -2,7 +2,7 @@
  * Card — surface primitive.
  *
  * Design decisions:
- * - rounded-2xl (--radius-card) to match alt-central card pattern
+ * - rounded-2xl (--radius-card) to match existing dashboard card pattern
  * - border-only separation: no shadow beyond shadow-sm (and shadow-sm is not
  *   applied here — Card is a plain surface, not an elevated panel)
  * - bg-gray-50 / dark:bg-gray-900 as the canonical card surface
@@ -53,7 +53,7 @@ export function Card({ as, className, children, ...rest }: CardProps) {
     <Tag
       className={cx(
         // Surface colour — light and dark.
-        // Per alt-central convention: raw gray-50/900 are used in place of the
+        // Per existing dashboard convention: raw gray-50/900 are used in place of the
         // semantic bg-surface/bg-surface-dark tokens because the numeric OKLCH
         // values are identical in this project's @theme block. This keeps Card
         // consistent with direct Tailwind class usage across the codebase while
@@ -61,7 +61,7 @@ export function Card({ as, className, children, ...rest }: CardProps) {
         'bg-gray-50 dark:bg-gray-900',
         // Border — the only visual separator; no shadow
         'border border-gray-200 dark:border-gray-800',
-        // Radius — alt-central card rule: always rounded-2xl
+        // Radius — existing dashboard card rule: always rounded-2xl
         'rounded-2xl',
         // Default padding — callers can override by including p-* in className
         'p-5',

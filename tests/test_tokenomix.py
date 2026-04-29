@@ -79,7 +79,7 @@ def test_claude_usage(r: TestResult) -> None:
     with tempfile.TemporaryDirectory() as td:
         # Synthesize a Claude Code conversation log layout.
         projects_dir = Path(td) / "projects"
-        proj = projects_dir / "-Users-bmj-test-project"
+        proj = projects_dir / "-Users-example-test-project"
         proj.mkdir(parents=True)
         session = proj / "test-session-uuid.jsonl"
 

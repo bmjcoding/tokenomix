@@ -69,6 +69,60 @@ export const RawUsageSchema = z
   .passthrough();
 
 // ---------------------------------------------------------------------------
+// Message content sub-schemas
+// ---------------------------------------------------------------------------
+
+/**
+ * Restricted tool input copied out of `message.content[]` tool_use blocks.
+ *
+ * PRIVACY INVARIANT: only scalar path-like fields are retained. Command
+ * strings, grep patterns, prompts, file contents, and arbitrary tool inputs are
+ * stripped here before the parser yields the event.
+ */
+export const ToolInputPathSchema = z
+  .object({
+    file_path: z.string().optional(),
+    path: z.string().optional(),
+    planFilePath: z.string().optional(),
+  })
+  .strip();
+
+/** Stripped assistant content block for `tool_use` entries. */
+export const ToolUseContentSchema = z
+  .object({
+    type: z.literal('tool_use'),
+    id: z.string().optional(),
+    name: z.string().optional(),
+    input: ToolInputPathSchema.optional().default({}),
+  })
+  .strip();
+
+/** Stripped user content block for `tool_result` entries. */
+export const ToolResultContentSchema = z
+  .object({
+    type: z.literal('tool_result'),
+    tool_use_id: z.string().optional(),
+    is_error: z.boolean().optional(),
+  })
+  .strip();
+
+/**
+ * Non-tool content is reduced to its block type. This preserves enough shape
+ * to count text/thinking/image blocks in future diagnostics without retaining
+ * user text, assistant text, screenshots, or tool output.
+ */
+const RedactedContentBlockSchema = z
+  .object({
+    type: z.string().optional(),
+  })
+  .strip();
+
+export const MessageContentSchema = z.union([
+  z.string(),
+  z.array(z.union([ToolUseContentSchema, ToolResultContentSchema, RedactedContentBlockSchema])),
+]);
+
+// ---------------------------------------------------------------------------
 // AssistantEventSchema — assistant turn with usage data (original schema)
 // ---------------------------------------------------------------------------
 
@@ -79,8 +133,8 @@ export const RawUsageSchema = z
  * are relevant for cost computation — the server/parser filters on those
  * conditions before calling computeCost.
  *
- * The `message.content` array is intentionally excluded from this schema
- * (and must not be stored) since it can contain user data.
+ * The `message.content` array is accepted only through MessageContentSchema,
+ * which preserves tool metadata and strips user/tool text payloads.
  *
  * Uses a broad z.string() for `type` so that RawUsageEventParsed (aliased to
  * AssistantEventParsed) remains backward compatible with the existing server
@@ -105,6 +159,7 @@ export const AssistantEventSchema = z
         type: z.string().optional(),
         role: z.string().optional(),
         stop_reason: z.string().nullable().optional(),
+        content: MessageContentSchema.optional(),
         usage: RawUsageSchema.optional(),
       })
       .passthrough()
@@ -119,15 +174,15 @@ export const AssistantEventSchema = z
 /**
  * Zod schema for a `tool_use` event in the JSONL stream.
  *
- * PRIVACY INVARIANT: Only `input.file_path` (a single string scalar) is
- * extracted from the tool input object. No other fields from `input` are
- * captured or stored. This is the enforcement point of the project's
- * tool-event ingestion privacy policy (see docs/adr/0002-*).
+ * PRIVACY INVARIANT: Only scalar path-like fields are extracted from the
+ * tool input object. No command text, search patterns, file contents, or tool
+ * outputs are captured or stored. This is the enforcement point of the
+ * project's tool-event ingestion privacy policy (see docs/adr/0002-*).
  *
- * Using z.object({ file_path: ... }) with NO .passthrough() on the input
- * sub-object intentionally strips all other input fields during parse.
- * This prevents accidental persistence of command arguments, file contents,
- * search queries, or other potentially sensitive tool parameters.
+ * Using z.object(...) with NO .passthrough() on the input sub-object
+ * intentionally strips all other input fields during parse. This prevents
+ * accidental persistence of command arguments, file contents, search queries,
+ * or other potentially sensitive tool parameters.
  */
 export const ToolUseEventSchema = z
   .object({
@@ -141,18 +196,20 @@ export const ToolUseEventSchema = z
     /** Tool name as emitted by Claude Code (e.g. "Bash", "Read", "Write", "Edit"). */
     toolName: z.string(),
     /**
-     * Restricted tool input — only file_path is captured.
+     * Restricted tool input: only path-like scalar fields are captured.
      * All other input fields are intentionally stripped at parse time.
      * Do NOT add .passthrough() here: that would allow arbitrary input fields
      * through and violate the privacy invariant.
      */
     input: z.object({
       file_path: z.string().optional(),
+      path: z.string().optional(),
+      planFilePath: z.string().optional(),
     }),
   })
   // Outer .passthrough() is safe — extra top-level event fields (uuid, parentUuid,
   // gitBranch, etc.) are never persisted. The privacy invariant lives on `input`
-  // (no .passthrough() above), which strips all keys except file_path at parse time.
+  // (no .passthrough() above), which strips all non-path keys at parse time.
   .passthrough();
 
 // ---------------------------------------------------------------------------
@@ -231,17 +288,19 @@ export const SystemTurnDurationSchema = z
  * and future system event subtypes may reuse the "system" type literal — a plain
  * z.union avoids potential ambiguity at the cost of slightly slower validation.
  *
- * Order: assistant first (most frequent), then tool_use, tool_result, system.
+ * Order: exact structured event types first, then the broad assistant/user
+ * compatibility schema. The broad schema accepts any string `type`, so it must
+ * come last or it would bypass input stripping for top-level tool events.
  *
  * Events with unknown types (human, summary, etc.) will not match any branch
  * and will produce a schema-mismatch log entry in the parser. Those event
  * types carry no data the store needs, so the warning is intentional.
  */
 export const RawUsageEventSchema = z.union([
-  AssistantEventSchema,
   ToolUseEventSchema,
   ToolResultEventSchema,
   SystemTurnDurationSchema,
+  AssistantEventSchema,
 ]);
 
 // ---------------------------------------------------------------------------
@@ -260,6 +319,12 @@ export type ToolUseEventParsed = z.infer<typeof ToolUseEventSchema>;
 
 /** Inferred type of a validated tool_result event line. */
 export type ToolResultEventParsed = z.infer<typeof ToolResultEventSchema>;
+
+/** Inferred type of a stripped message.content[] tool_use block. */
+export type ToolUseContentParsed = z.infer<typeof ToolUseContentSchema>;
+
+/** Inferred type of a stripped message.content[] tool_result block. */
+export type ToolResultContentParsed = z.infer<typeof ToolResultContentSchema>;
 
 /** Inferred type of a validated system/turn_duration event line. */
 export type SystemTurnDurationEventParsed = z.infer<typeof SystemTurnDurationSchema>;

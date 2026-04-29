@@ -67,6 +67,7 @@ function buildMetricSummaryFixture(overrides: Partial<MetricSummary> = {}): Metr
     weeklySeries: [],
     byModel: [],
     byProject: [],
+    byProject30d: [],
     bySession: [],
     heatmapData: [],
     byTool: [],
@@ -75,6 +76,68 @@ function buildMetricSummaryFixture(overrides: Partial<MetricSummary> = {}): Metr
     avgCostPerTurn30d: 0,
     avgCostPerTurnPrev30d: 0,
     toolErrorRate30d: 0,
+    costComponents30d: {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      webSearchRequests: 0,
+      inputCostUsd: 0,
+      outputCostUsd: 0,
+      cacheCreationCostUsd: 0,
+      cacheReadCostUsd: 0,
+      webSearchCostUsd: 0,
+    },
+    turnCostTop1PctShare30d: 0,
+    turnCostTop5PctShare30d: 0,
+    mainSessionCostUsd30d: 0,
+    subagentCostUsd30d: 0,
+    agentToolCalls30d: 0,
+    opusToSonnetSavings30d: 0,
+    optimizationOpportunities: [],
+    pricingAudit: {
+      catalog: {
+        catalogVersion: 'test',
+        billingCurrency: 'USD',
+        sourceUrl: 'test',
+        sourceLastChecked: '2026-04-28',
+        precision: 'micro-usd',
+        pricingProvider: 'anthropic_1p',
+        costBasis: 'estimated_from_jsonl_usage_static_anthropic_catalog',
+      },
+      provider: 'anthropic_1p',
+      bedrockRegion: null,
+      bedrockEndpointScope: 'unknown',
+      bedrockServiceTier: 'standard',
+      bedrockEndpointScopeSource: 'unknown',
+      totalCostUsdMicros: 0,
+      fallbackPricedRows: 0,
+      fallbackPricedCostUsd: 0,
+      fallbackPricedCostUsdMicros: 0,
+      fallbackPricedModelIds: [],
+      zeroUsageUnknownModelRows: 0,
+      internalGatewayRatedRows: 0,
+      internalGatewayUnratedRows: 0,
+      warnings: [],
+    },
+    ingestionAudit: {
+      filesDiscovered: 0,
+      filesAttempted: 0,
+      filesWithParseWarnings: 0,
+      invalidJsonLines: 0,
+      schemaMismatchLines: 0,
+      fileOpenErrors: 0,
+      assistantUsageEvents: 0,
+      assistantEventsWithoutUsage: 0,
+      missingDedupIdRows: 0,
+      duplicateRowsSkipped: 0,
+      duplicateRowsReplaced: 0,
+      tokenRowsRejected: 0,
+      rowsIndexed: 0,
+      ingestErrors: 0,
+      lastIndexedAt: null,
+      warnings: [],
+    },
     turnCostP50_30d: 0,
     turnCostP90_30d: 0,
     turnCostP99_30d: 0,
@@ -204,7 +267,7 @@ function truncateProject(name: string): string {
 }
 
 function derivePanel(data: MetricSummary) {
-  const { monthlyRollup, bySubagent, byProject, costUsd30d } = data;
+  const { monthlyRollup, bySubagent, byProject30d, costUsd30d } = data;
   const { p90Minutes, medianMinutes, totalCounted } = monthlyRollup.current.sessionDuration;
 
   // Card 1 — always present
@@ -213,7 +276,7 @@ function derivePanel(data: MetricSummary) {
   const p50ContextStr = `P50: ${totalCounted === 0 ? '—' : formatDurationMinutes(medianMinutes)}`;
   const sessionCountStr =
     totalCounted === 1 ? '1 session' : `${totalCounted.toLocaleString('en-US')} sessions`;
-  const p90FullContext = `${p50ContextStr} · ${sessionCountStr}`;
+  const p90FullContext = `${p50ContextStr} · ${sessionCountStr}; context risk`;
 
   // Card 2 — conditional
   const showSubagentCard = bySubagent.length > 0;
@@ -224,15 +287,15 @@ function derivePanel(data: MetricSummary) {
     const weightedSum = bySubagent.reduce((sum, s) => sum + s.dispatches * s.successRate, 0);
     const weightedRate = totalDispatches > 0 ? weightedSum / totalDispatches : null;
     subagentRateStr = weightedRate !== null ? `${(weightedRate * 100).toFixed(1)}%` : '—';
-    subagentContext = `${totalDispatches.toLocaleString('en-US')} dispatch${totalDispatches === 1 ? '' : 'es'} total`;
+    subagentContext = `${totalDispatches.toLocaleString('en-US')} subagent turn${totalDispatches === 1 ? '' : 's'} total; pair with spend`;
   }
 
   // Card 3 — conditional
-  const showProjectCard = byProject.length > 0;
+  const showProjectCard = byProject30d.length > 0;
   let topProjectName = '';
   let topProjectContext: string | undefined;
   if (showProjectCard) {
-    const sorted = [...byProject].sort((a, b) => b.costUsd - a.costUsd);
+    const sorted = [...byProject30d].sort((a, b) => b.costUsd - a.costUsd);
     const top = sorted[0];
     // Apply basename before truncation, consistent with OptimizationSignalsPanel.tsx.
     // Narrow explicitly to satisfy lint/style/noNonNullAssertion.
@@ -242,7 +305,7 @@ function derivePanel(data: MetricSummary) {
         costUsd30d > 0
           ? `${((top.costUsd / costUsd30d) * 100).toFixed(1)}% of 30d spend`
           : '— of 30d spend';
-      topProjectContext = shareStr;
+      topProjectContext = `${shareStr}; start here`;
     }
   }
 
@@ -297,7 +360,7 @@ describe('OptimizationSignalsPanel — empty state (bySubagent=[] && byProject=[
 
   it('p90FullContext includes "0 sessions" when totalCounted is 0', () => {
     const { p90FullContext } = derivePanel(data);
-    expect(p90FullContext).toBe('P50: — · 0 sessions');
+    expect(p90FullContext).toBe('P50: — · 0 sessions; context risk');
   });
 });
 
@@ -326,8 +389,8 @@ describe('OptimizationSignalsPanel — populated state (both bySubagent and byPr
         successRate: 0.95,
       },
     ],
-    byProject: [
-      { project: 'tokenomix', costUsd: 120, inputTokens: 1000, outputTokens: 500, events: 50 },
+    byProject30d: [
+      { project: 'primary-app', costUsd: 120, inputTokens: 1000, outputTokens: 500, events: 50 },
       { project: 'other-proj', costUsd: 80, inputTokens: 600, outputTokens: 300, events: 30 },
     ],
     monthlyRollup: {
@@ -388,7 +451,7 @@ describe('OptimizationSignalsPanel — populated state (both bySubagent and byPr
   it('p90FullContext includes session count when totalCounted > 0', () => {
     const { p90FullContext } = derivePanel(data);
     // totalCounted = 5, medianMinutes = 8.5 → "8m 30s"
-    expect(p90FullContext).toBe('P50: 8m 30s · 5 sessions');
+    expect(p90FullContext).toBe('P50: 8m 30s · 5 sessions; context risk');
   });
 
   it('subagentRateStr computes weighted success rate correctly', () => {
@@ -398,20 +461,20 @@ describe('OptimizationSignalsPanel — populated state (both bySubagent and byPr
     expect(subagentRateStr).toBe('93.3%');
   });
 
-  it('subagentContext shows total dispatch count', () => {
+  it('subagentContext shows total subagent turn count', () => {
     const { subagentContext } = derivePanel(data);
-    expect(subagentContext).toBe('30 dispatches total');
+    expect(subagentContext).toBe('30 subagent turns total; pair with spend');
   });
 
   it('topProjectName is the project with highest costUsd', () => {
     const { topProjectName } = derivePanel(data);
-    expect(topProjectName).toBe('tokenomix');
+    expect(topProjectName).toBe('primary-app');
   });
 
   it('topProjectContext shows correct share of 30d spend', () => {
     const { topProjectContext } = derivePanel(data);
     // 120 / 200 * 100 = 60.0%
-    expect(topProjectContext).toBe('60.0% of 30d spend');
+    expect(topProjectContext).toBe('60.0% of 30d spend; start here');
   });
 });
 
@@ -444,7 +507,7 @@ describe('OptimizationSignalsPanel — project name truncation', () => {
     const longProjectName = 'my-super-long-project-name-over-limit';
     const data = buildMetricSummaryFixture({
       costUsd30d: 50,
-      byProject: [
+      byProject30d: [
         {
           project: longProjectName,
           costUsd: 50,
@@ -468,29 +531,29 @@ describe('OptimizationSignalsPanel — cost share computation', () => {
   it('renders em-dash share when costUsd30d is zero (no division by zero)', () => {
     const data = buildMetricSummaryFixture({
       costUsd30d: 0,
-      byProject: [
+      byProject30d: [
         { project: 'myproject', costUsd: 10, inputTokens: 100, outputTokens: 50, events: 5 },
       ],
     });
     const { topProjectContext } = derivePanel(data);
-    expect(topProjectContext).toBe('— of 30d spend');
+    expect(topProjectContext).toBe('— of 30d spend; start here');
   });
 
   it('renders 100.0% when the top project accounts for all 30d spend', () => {
     const data = buildMetricSummaryFixture({
       costUsd30d: 75,
-      byProject: [
+      byProject30d: [
         { project: 'myproject', costUsd: 75, inputTokens: 100, outputTokens: 50, events: 5 },
       ],
     });
     const { topProjectContext } = derivePanel(data);
-    expect(topProjectContext).toBe('100.0% of 30d spend');
+    expect(topProjectContext).toBe('100.0% of 30d spend; start here');
   });
 
   it('picks the most expensive project regardless of byProject array order', () => {
     const data = buildMetricSummaryFixture({
       costUsd30d: 100,
-      byProject: [
+      byProject30d: [
         { project: 'cheap', costUsd: 20, inputTokens: 100, outputTokens: 50, events: 5 },
         { project: 'expensive', costUsd: 80, inputTokens: 500, outputTokens: 200, events: 20 },
         { project: 'mid', costUsd: 0, inputTokens: 0, outputTokens: 0, events: 0 },
@@ -498,7 +561,7 @@ describe('OptimizationSignalsPanel — cost share computation', () => {
     });
     const { topProjectName, topProjectContext } = derivePanel(data);
     expect(topProjectName).toBe('expensive');
-    expect(topProjectContext).toBe('80.0% of 30d spend');
+    expect(topProjectContext).toBe('80.0% of 30d spend; start here');
   });
 });
 
@@ -630,9 +693,9 @@ describe('OptimizationSignalsPanel — top project basename', () => {
   it('extracts the last path segment from a full cwd path', () => {
     const data = buildMetricSummaryFixture({
       costUsd30d: 100,
-      byProject: [
+      byProject30d: [
         {
-          project: '/Users/bmj/.claude/projects/my-project',
+          project: '/Users/example/work/my-project',
           costUsd: 100,
           inputTokens: 1000,
           outputTokens: 500,
@@ -647,7 +710,7 @@ describe('OptimizationSignalsPanel — top project basename', () => {
   it('falls back to original string when no slash is present', () => {
     const data = buildMetricSummaryFixture({
       costUsd30d: 100,
-      byProject: [
+      byProject30d: [
         { project: 'plain-name', costUsd: 100, inputTokens: 1000, outputTokens: 500, events: 10 },
       ],
     });
@@ -657,11 +720,11 @@ describe('OptimizationSignalsPanel — top project basename', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Subagent: single dispatch (singular "dispatch" label)
+// Subagent: single turn label
 // ---------------------------------------------------------------------------
 
-describe('OptimizationSignalsPanel — subagent single dispatch label', () => {
-  it('uses singular "dispatch" when totalDispatches is 1', () => {
+describe('OptimizationSignalsPanel — subagent turn label', () => {
+  it('uses singular "turn" when totalDispatches is 1', () => {
     const data = buildMetricSummaryFixture({
       bySubagent: [
         {
@@ -675,10 +738,10 @@ describe('OptimizationSignalsPanel — subagent single dispatch label', () => {
       ],
     });
     const { subagentContext } = derivePanel(data);
-    expect(subagentContext).toBe('1 dispatch total');
+    expect(subagentContext).toBe('1 subagent turn total; pair with spend');
   });
 
-  it('uses plural "dispatches" when totalDispatches is > 1', () => {
+  it('uses plural "turns" when totalDispatches is > 1', () => {
     const data = buildMetricSummaryFixture({
       bySubagent: [
         {
@@ -692,6 +755,6 @@ describe('OptimizationSignalsPanel — subagent single dispatch label', () => {
       ],
     });
     const { subagentContext } = derivePanel(data);
-    expect(subagentContext).toBe('5 dispatches total');
+    expect(subagentContext).toBe('5 subagent turns total; pair with spend');
   });
 });

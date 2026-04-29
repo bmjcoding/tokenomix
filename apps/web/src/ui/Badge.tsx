@@ -4,7 +4,7 @@
  * Design decisions:
  * - Three variants only (constraint from subtask spec):
  *     default  → neutral gray surface, secondary text
- *     accent   → Chase-blue tinted fill, primary blue text (active states)
+ *     accent   → primary-blue tinted fill, primary blue text (active states)
  *     muted    → low-emphasis label, no background
  * - rounded-full for pill shape
  * - px-2 py-0.5 text-xs font-medium per spec
@@ -30,7 +30,7 @@ function cx(...classes: (string | undefined | false | null)[]): string {
 const variantClasses = {
   /** Neutral — achromatic gray surface, secondary text. */
   default: 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400',
-  /** Accent — Chase-blue tinted fill, primary blue text. */
+  /** Accent — primary-blue tinted fill, primary blue text. */
   accent: 'bg-primary/10 dark:bg-primary-light/10 text-primary dark:text-primary-light',
   /** Muted — no background, muted text both modes. */
   muted: 'text-gray-500 dark:text-gray-500',
@@ -46,7 +46,7 @@ export interface BadgeProps extends HTMLAttributes<HTMLSpanElement> {
   /**
    * Visual variant.
    * - `default` (neutral gray) — period labels, model family tags
-   * - `accent` (Chase blue) — active state, primary badges
+   * - `accent` (primary blue) — active state, primary badges
    * - `muted` (low-emphasis) — secondary information labels
    * Defaults to `default`.
    */

@@ -50,16 +50,15 @@ import { MetricCard } from './MetricCard.js';
  * Falls back to the original string when no "/" is present.
  *
  * Examples:
- *   "/Users/bmj/.claude/projects/my-project" → "my-project"
- *   "my-project"                              → "my-project"
- *   "/trailing/"                              → "trailing"
+ *   "/Users/example/work/my-project" → "my-project"
+ *   "my-project"                     → "my-project"
+ *   "/trailing/"                     → "trailing"
  */
 function basename(path: string): string {
-  const trimmed = path.endsWith('/') ? path.slice(0, -1) : path;
-  const idx = trimmed.lastIndexOf('/');
-  if (idx === -1) return path;
-  const segment = trimmed.slice(idx + 1);
-  return segment.length > 0 ? segment : path;
+  const trimmed = path.trim().replace(/[\\/]+$/, '');
+  if (!trimmed) return path;
+  const parts = trimmed.split(/[\\/]+/);
+  return parts[parts.length - 1] || path;
 }
 
 /**
@@ -81,7 +80,7 @@ interface OptimizationSignalsPanelProps {
 }
 
 export function OptimizationSignalsPanel({ data }: OptimizationSignalsPanelProps) {
-  const { monthlyRollup, bySubagent, byProject, costUsd30d } = data;
+  const { monthlyRollup, bySubagent, byProject30d, costUsd30d } = data;
   const { p90Minutes, medianMinutes, totalCounted } = monthlyRollup.current.sessionDuration;
 
   // ── Card 1 — P90 SESSION DURATION ─────────────────────────────────────────
@@ -109,25 +108,25 @@ export function OptimizationSignalsPanel({ data }: OptimizationSignalsPanelProps
     const weightedSum = bySubagent.reduce((sum, s) => sum + s.dispatches * s.successRate, 0);
     const weightedRate = totalDispatches > 0 ? weightedSum / totalDispatches : null;
     subagentRateStr = weightedRate !== null ? `${(weightedRate * 100).toFixed(1)}%` : '—';
-    subagentContextStr = `${totalDispatches.toLocaleString('en-US')} dispatch${totalDispatches === 1 ? '' : 'es'} total`;
+    subagentContextStr = `${totalDispatches.toLocaleString('en-US')} subagent turn${totalDispatches === 1 ? '' : 's'} total`;
   }
 
   // ── Card 3 — TOP EXPENSIVE PROJECT (conditional) ──────────────────────────
-  // Show only when byProject[] is non-empty.
+  // Show only when byProject30d[] is non-empty.
   // Sort descending by costUsd; use entry at index 0.
   // Share of 30d spend: guard divide-by-zero with em-dash when costUsd30d === 0.
-  const showProjectCard = byProject.length > 0;
+  const showProjectCard = byProject30d.length > 0;
 
   let topProjectName = '';
   let topProjectContextStr: string | undefined;
 
   if (showProjectCard) {
-    const sorted = [...byProject].sort((a, b) => b.costUsd - a.costUsd);
+    const sorted = [...byProject30d].sort((a, b) => b.costUsd - a.costUsd);
     const top = sorted[0];
-    // sorted is non-empty (byProject.length > 0), so top is always defined.
+    // sorted is non-empty (byProject30d.length > 0), so top is always defined.
     // Narrow explicitly with an early-return guard to satisfy the lint rule.
     // Extract the basename (last path segment) before truncation so raw cwd
-    // paths like "/Users/bmj/.claude/projects/my-project" display as "my-project",
+    // paths like "/Users/example/work/my-project" display as "my-project",
     // consistent with how TokenRow.projectName is derived on ingest.
     if (top) {
       topProjectName = truncateProject(basename(top.project));
@@ -150,9 +149,10 @@ export function OptimizationSignalsPanel({ data }: OptimizationSignalsPanelProps
       <MetricCard
         label="P90 SESSION DURATION"
         value={p90Str}
-        context={`${p50ContextStr} · ${sessionCountStr}`}
+        context={`${p50ContextStr} · ${sessionCountStr}; context risk`}
         deltaPercent={null}
         icon={<Clock size={14} aria-hidden="true" className="shrink-0" />}
+        tooltip="Long sessions usually accumulate more context, cache reads, and model state. If P90 is much higher than P50, the expensive tail is likely coming from marathon sessions where earlier /compact, /clear, or project memory could reduce spend."
       />
 
       {/* Card 2 — SUBAGENT SUCCESS RATE (conditional) */}
@@ -160,9 +160,12 @@ export function OptimizationSignalsPanel({ data }: OptimizationSignalsPanelProps
         <MetricCard
           label="SUBAGENT SUCCESS RATE"
           value={subagentRateStr}
-          {...(subagentContextStr !== undefined ? { context: subagentContextStr } : {})}
+          {...(subagentContextStr !== undefined
+            ? { context: `${subagentContextStr}; pair with spend` }
+            : {})}
           deltaPercent={null}
           icon={<Activity size={14} aria-hidden="true" className="shrink-0" />}
+          tooltip="This is tool-error success across subagent turns, not business outcome success. A high value is good only when subagents also reduce main-session time or rework. A low value means delegated work may be creating retries and extra context."
         />
       )}
 
@@ -171,9 +174,12 @@ export function OptimizationSignalsPanel({ data }: OptimizationSignalsPanelProps
         <MetricCard
           label="TOP EXPENSIVE PROJECT"
           value={topProjectName}
-          {...(topProjectContextStr !== undefined ? { context: topProjectContextStr } : {})}
+          {...(topProjectContextStr !== undefined
+            ? { context: `${topProjectContextStr}; start here` }
+            : {})}
           deltaPercent={null}
           icon={<Award size={14} aria-hidden="true" className="shrink-0" />}
+          tooltip="This is the project with the largest 30-day spend share. It should be the first place to run controlled optimization trials because concentrated spend produces measurable before/after signal faster than spreading experiments across many small projects."
         />
       )}
     </Section>

@@ -29,7 +29,7 @@ Build a pnpm monorepo with three packages:
 - `packages/shared` — Zod schemas, shared types, pricing module ported
   exactly from `bin/claude-usage.py` with locked-in test values.
 
-Design language: Chase blue OKLCH palette matching the existing Python
+Design language: primary blue OKLCH palette matching the existing Python
 dashboard (`oklch(0.49 0.16 255)` light / `oklch(0.58 0.12 255)` dark),
 monochromatic gray scale.
 
@@ -38,7 +38,7 @@ Apache ECharts was chosen over Recharts because the heatmap requirement
 
 Tailwind v4 CSS-native `@theme` was chosen over v3 + config because it
 removes the build-time config file and keeps design tokens in a single CSS
-layer, consistent with the alt-central design language.
+layer, consistent with the existing dashboard design language.
 
 The server binds `127.0.0.1` and has no authentication because the app is
 single-user and never exposed beyond localhost.

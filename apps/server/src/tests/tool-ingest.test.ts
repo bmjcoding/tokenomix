@@ -155,6 +155,119 @@ function systemTurnDurationLine(opts: {
   });
 }
 
+function nestedToolAssistantLine(opts: {
+  requestId: string;
+  messageId: string;
+  assistantUuid: string;
+  sessionId: string;
+  cwd: string;
+  timestampIso: string;
+  toolUseId: string;
+  toolName: string;
+  filePath?: string;
+}): string {
+  return JSON.stringify({
+    type: 'assistant',
+    uuid: opts.assistantUuid,
+    requestId: opts.requestId,
+    timestamp: opts.timestampIso,
+    sessionId: opts.sessionId,
+    cwd: opts.cwd,
+    message: {
+      id: opts.messageId,
+      model: 'claude-sonnet-4-6',
+      role: 'assistant',
+      stop_reason: 'tool_use',
+      content: [
+        {
+          type: 'tool_use',
+          id: opts.toolUseId,
+          name: opts.toolName,
+          input: {
+            ...(opts.filePath ? { file_path: opts.filePath } : {}),
+            command: 'must be stripped',
+          },
+        },
+      ],
+      usage: {
+        input_tokens: 100,
+        output_tokens: 50,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        service_tier: 'standard',
+      },
+    },
+  });
+}
+
+function nestedToolResultUserLine(opts: {
+  userUuid: string;
+  parentUuid: string;
+  sessionId: string;
+  cwd: string;
+  timestampIso: string;
+  toolUseId: string;
+  isError?: boolean;
+}): string {
+  return JSON.stringify({
+    type: 'user',
+    uuid: opts.userUuid,
+    parentUuid: opts.parentUuid,
+    timestamp: opts.timestampIso,
+    sessionId: opts.sessionId,
+    cwd: opts.cwd,
+    message: {
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: opts.toolUseId,
+          is_error: opts.isError,
+          content: 'must be stripped',
+        },
+      ],
+    },
+  });
+}
+
+function stopHookSummaryLine(opts: {
+  uuid: string;
+  parentUuid: string;
+  sessionId: string;
+  cwd: string;
+  timestampIso: string;
+}): string {
+  return JSON.stringify({
+    type: 'system',
+    subtype: 'stop_hook_summary',
+    uuid: opts.uuid,
+    parentUuid: opts.parentUuid,
+    timestamp: opts.timestampIso,
+    sessionId: opts.sessionId,
+    cwd: opts.cwd,
+  });
+}
+
+function systemTurnDurationWithoutRequestLine(opts: {
+  uuid: string;
+  parentUuid: string;
+  sessionId: string;
+  cwd: string;
+  timestampIso: string;
+  durationMs: number;
+}): string {
+  return JSON.stringify({
+    type: 'system',
+    subtype: 'turn_duration',
+    uuid: opts.uuid,
+    parentUuid: opts.parentUuid,
+    timestamp: opts.timestampIso,
+    sessionId: opts.sessionId,
+    cwd: opts.cwd,
+    durationMs: opts.durationMs,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Fixture JSONL: one session with mixed event types
 //
@@ -349,6 +462,91 @@ describe('tool-ingest — TokenRow fields from new event types', () => {
         expect(row2.turnDurationMs).toBe(2500);
       }
     }
+  });
+
+  it('extracts nested message.content tool_use/tool_result blocks from real Claude Code shape', async () => {
+    const content = [
+      nestedToolAssistantLine({
+        requestId: 'req_nested_001',
+        messageId: 'msg_nested_001',
+        assistantUuid: 'uuid-assistant-nested-001',
+        sessionId: SESSION_ID,
+        cwd: CWD,
+        timestampIso: TURN1_TS,
+        toolUseId: 'toolu_nested_read',
+        toolName: 'Read',
+        filePath: 'src/nested.ts',
+      }),
+      nestedToolResultUserLine({
+        userUuid: 'uuid-user-result-nested-001',
+        parentUuid: 'uuid-assistant-nested-001',
+        sessionId: SESSION_ID,
+        cwd: CWD,
+        timestampIso: TURN1_TS,
+        toolUseId: 'toolu_nested_read',
+        isError: true,
+      }),
+      stopHookSummaryLine({
+        uuid: 'uuid-stop-nested-001',
+        parentUuid: 'uuid-assistant-nested-001',
+        sessionId: SESSION_ID,
+        cwd: CWD,
+        timestampIso: TURN1_TS,
+      }),
+      systemTurnDurationWithoutRequestLine({
+        uuid: 'uuid-duration-nested-001',
+        parentUuid: 'uuid-stop-nested-001',
+        sessionId: SESSION_ID,
+        cwd: CWD,
+        timestampIso: TURN1_TS,
+        durationMs: 3456,
+      }),
+    ].join('\n');
+    const filePath = await writeFixture('nested-content-session.jsonl', content);
+
+    const store = new IndexStore();
+    await store.ingestFile(filePath);
+
+    const row = [...(store.rows as Map<string, TokenRow>).values()][0];
+    expect(row).toBeDefined();
+    expect(row?.toolUses?.Read).toBe(1);
+    expect(row?.toolErrors?.Read).toBe(1);
+    expect(row?.filesTouched).toEqual(['src/nested.ts']);
+    expect(row?.turnDurationMs).toBe(3456);
+  });
+
+  it('keeps the latest duplicate assistant usage row for a request/message pair', async () => {
+    const content = [
+      assistantLine({
+        requestId: 'req_duplicate_final',
+        messageId: 'msg_duplicate_final',
+        sessionId: SESSION_ID,
+        cwd: CWD,
+        timestampIso: '2026-04-27T12:00:00.000Z',
+        inputTokens: 100,
+        outputTokens: 50,
+      }),
+      assistantLine({
+        requestId: 'req_duplicate_final',
+        messageId: 'msg_duplicate_final',
+        sessionId: SESSION_ID,
+        cwd: CWD,
+        timestampIso: '2026-04-27T12:00:02.000Z',
+        inputTokens: 100,
+        outputTokens: 200,
+      }),
+    ].join('\n');
+    const filePath = await writeFixture('duplicate-final-usage.jsonl', content);
+
+    const store = new IndexStore();
+    await store.ingestFile(filePath);
+
+    expect(store.indexedRows).toBe(1);
+    const row = [...(store.rows as Map<string, TokenRow>).values()][0];
+    expect(row?.inputTokens).toBe(100);
+    expect(row?.outputTokens).toBe(200);
+    expect(row?.costUsdMicros).toBe(3300);
+    expect(row?.costUsd).toBe(0.0033);
   });
 });
 
@@ -593,6 +791,47 @@ describe('tool-ingest — MetricSummary aggregate fields', () => {
     if (metrics.toolErrorRate30d !== undefined) {
       expect(metrics.toolErrorRate30d).toBe(0);
     }
+  });
+
+  it('cost-driver fields and optimization opportunities are derived from 30d rows', () => {
+    const store = new IndexStore();
+    const rows = store.rows as Map<string, TokenRow>;
+
+    rows.set(
+      'req_driver_a:msg_driver_a',
+      makeTokenRow({
+        date: '2026-04-27',
+        modelFamily: 'opus',
+        modelId: 'claude-opus-4-6',
+        inputTokens: 1_000,
+        outputTokens: 1_000_000,
+        cacheCreation5m: 1_000_000,
+        cacheReadTokens: 100_000_000,
+        costUsd: 100,
+        inputCostUsd: 1,
+        outputCostUsd: 10,
+        cacheCreationCostUsd: 20,
+        cacheReadCostUsd: 69,
+        webSearchCostUsd: 0,
+        toolUses: { Bash: 150, Agent: 2 },
+      })
+    );
+
+    const metrics = store.getMetrics();
+
+    expect(metrics.byProject30d).toHaveLength(1);
+    expect(metrics.costComponents30d.outputCostUsd).toBe(10);
+    expect(metrics.costComponents30d.cacheCreationCostUsd).toBe(20);
+    expect(metrics.costComponents30d.cacheReadCostUsd).toBe(69);
+    expect(metrics.turnCostTop5PctShare30d).toBe(1);
+    expect(metrics.agentToolCalls30d).toBe(2);
+    const opportunities = metrics.optimizationOpportunities;
+    expect(opportunities.map((o) => o.id)).toContain('context-cache-pressure');
+    expect(opportunities.map((o) => o.id)).toContain('rtk-bash-output');
+    expect(opportunities.find((o) => o.id === 'context-cache-pressure')?.recommendation).toContain(
+      'Graphify'
+    );
+    expect(opportunities.find((o) => o.id === 'rtk-bash-output')?.recommendation).toContain('RTK');
   });
 });
 

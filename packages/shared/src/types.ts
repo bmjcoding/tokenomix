@@ -111,6 +111,36 @@ export interface TokenRow {
   webSearchRequests: number;
   /** Computed USD cost for this row (token cost × multiplier + web search add-on). */
   costUsd: number;
+  /**
+   * Computed cost in micro-USD (1 USD = 1,000,000 micro-USD).
+   * This is the audit-preferred integer representation; costUsd is retained
+   * for chart/UI compatibility.
+   */
+  costUsdMicros?: number;
+  /** Token-pricing multiplier applied to this row, excluding additive web-search charges. */
+  pricingMultiplier?: number;
+  /** Pricing status for this row. Fallback or unrated rows are estimates, not authoritative. */
+  pricingStatus?: PricingStatus;
+  /** USD cost from raw input tokens after pricing multipliers. */
+  inputCostUsd?: number;
+  /** Micro-USD cost from raw input tokens after pricing multipliers. */
+  inputCostUsdMicros?: number;
+  /** USD cost from output tokens after pricing multipliers. */
+  outputCostUsd?: number;
+  /** Micro-USD cost from output tokens after pricing multipliers. */
+  outputCostUsdMicros?: number;
+  /** USD cost from cache creation tokens after pricing multipliers. */
+  cacheCreationCostUsd?: number;
+  /** Micro-USD cost from cache creation tokens after pricing multipliers. */
+  cacheCreationCostUsdMicros?: number;
+  /** USD cost from cache read tokens after pricing multipliers. */
+  cacheReadCostUsd?: number;
+  /** Micro-USD cost from cache read tokens after pricing multipliers. */
+  cacheReadCostUsdMicros?: number;
+  /** Additive USD cost from server-side web search requests. */
+  webSearchCostUsd?: number;
+  /** Additive micro-USD cost from server-side web search requests. */
+  webSearchCostUsdMicros?: number;
   isSubagent: boolean;
 
   // ── Fields populated by the tool/duration ingest branches ──────────────────
@@ -137,8 +167,8 @@ export interface TokenRow {
 
   /**
    * Unique file paths touched by tool_use events within this turn.
-   * Populated from input.file_path on tool_use events only — no other input
-   * fields are extracted (privacy invariant).
+   * Populated from scalar path-like fields on tool_use events only; command
+   * strings, patterns, file contents, and tool output are never stored.
    * Undefined when no file-touching tool uses occurred within this turn.
    */
   filesTouched?: string[];
@@ -234,6 +264,121 @@ export interface ToolBucket {
   errorCount: number;
   /** errorCount / count (0..1). 0 when count is 0. */
   errorRate: number;
+}
+
+/** Cost and token contribution by billing component for a window. */
+export interface CostComponentSummary {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  webSearchRequests: number;
+  inputCostUsd: number;
+  outputCostUsd: number;
+  cacheCreationCostUsd: number;
+  cacheReadCostUsd: number;
+  webSearchCostUsd: number;
+}
+
+/** Versioned source metadata for the static pricing catalog used in calculations. */
+export interface PricingCatalogMetadata {
+  catalogVersion: string;
+  billingCurrency: 'USD';
+  sourceUrl: string;
+  sourceLastChecked: string;
+  precision: 'micro-usd';
+  pricingProvider: PricingProvider;
+  costBasis:
+    | 'estimated_from_jsonl_usage_static_anthropic_catalog'
+    | 'estimated_from_jsonl_usage_static_bedrock_catalog'
+    | 'rated_internal_gateway_cost'
+    | 'estimated_from_jsonl_usage_without_gateway_rated_cost';
+}
+
+export type PricingProvider = 'anthropic_1p' | 'aws_bedrock' | 'internal_gateway';
+
+export type BedrockEndpointScope =
+  | 'in_region'
+  | 'global_cross_region'
+  | 'geographic_cross_region'
+  | 'unknown';
+
+export type BedrockServiceTier = 'standard' | 'batch' | 'provisioned' | 'reserved' | 'unknown';
+
+/** Pricing status for one row. */
+export type PricingStatus =
+  | 'catalog'
+  | 'bedrock_catalog'
+  | 'internal_gateway_rated'
+  | 'internal_gateway_unrated_estimate'
+  | 'fallback_sonnet'
+  | 'zero_usage_unknown_model';
+
+/** Audit metadata returned with metrics so reports can disclose pricing quality. */
+export interface PricingAuditSummary {
+  catalog: PricingCatalogMetadata;
+  provider: PricingProvider;
+  bedrockRegion: string | null;
+  bedrockEndpointScope: BedrockEndpointScope;
+  bedrockServiceTier: BedrockServiceTier;
+  bedrockEndpointScopeSource: 'model_id' | 'env' | 'unknown';
+  totalCostUsdMicros: number;
+  fallbackPricedRows: number;
+  fallbackPricedCostUsd: number;
+  fallbackPricedCostUsdMicros: number;
+  fallbackPricedModelIds: string[];
+  zeroUsageUnknownModelRows: number;
+  internalGatewayRatedRows: number;
+  internalGatewayUnratedRows: number;
+  warnings: string[];
+}
+
+/** Ingestion/completeness metadata for audit workflows. */
+export interface IngestionAuditSummary {
+  /** JSONL files discovered during startup scan. */
+  filesDiscovered: number;
+  /** JSONL files parsed at least once in the current server process. */
+  filesAttempted: number;
+  /** Files with at least one parse or schema warning. */
+  filesWithParseWarnings: number;
+  /** Lines skipped because JSON.parse failed. */
+  invalidJsonLines: number;
+  /** Lines skipped because they did not match the accepted event schema. */
+  schemaMismatchLines: number;
+  /** Files that could not be opened/read by the parser. */
+  fileOpenErrors: number;
+  /** Assistant events containing a usage block before row-level filters. */
+  assistantUsageEvents: number;
+  /** Assistant events without usage, useful for understanding non-billable transcript volume. */
+  assistantEventsWithoutUsage: number;
+  /** Rows skipped because requestId or message.id was absent. */
+  missingDedupIdRows: number;
+  /** Rows skipped because the dedup key was already indexed. */
+  duplicateRowsSkipped: number;
+  /** Duplicate rows that replaced an earlier retained row because they were newer/fuller usage. */
+  duplicateRowsReplaced: number;
+  /** Assistant usage events rejected by row construction, usually invalid timestamp/usage shape. */
+  tokenRowsRejected: number;
+  /** Rows retained after parsing and deduplication. */
+  rowsIndexed: number;
+  /** File-level ingestion exceptions caught outside normal parse skips. */
+  ingestErrors: number;
+  /** Last time any file audit was refreshed, as ISO-8601. */
+  lastIndexedAt: string | null;
+  warnings: string[];
+}
+
+/** High-level optimization recommendation derived from observed usage. */
+export interface OptimizationOpportunity {
+  id: string;
+  category: 'context' | 'model' | 'tooling' | 'workflow' | 'project';
+  title: string;
+  recommendation: string;
+  evidence: string;
+  impactUsd30d: number;
+  /** Deterministic rule score from server heuristics; not an LLM probability. */
+  confidence: number;
+  project?: string;
 }
 
 /**
@@ -446,6 +591,8 @@ export interface MetricSummary {
   weeklySeries: WeeklyBucket[];
   byModel: ModelBucket[];
   byProject: ProjectBucket[];
+  /** Per-project rollup for the absolute 30-day window, sorted by cost. */
+  byProject30d: ProjectBucket[];
   /** Top N sessions by cost. */
   bySession: SessionBucket[];
   /** Raw per-(date, hour) entries; NOT pre-aggregated by dayOfWeek. */
@@ -501,6 +648,56 @@ export interface MetricSummary {
    * 0..1 range. 0 when no tool invocations exist in the window.
    */
   toolErrorRate30d: number;
+
+  /**
+   * Pricing-source and precision metadata for this response. The numeric
+   * costUsd fields remain display-oriented USD numbers; this object carries
+   * integer micro-USD totals and fallback warnings for audit workflows.
+   */
+  pricingAudit: PricingAuditSummary;
+
+  /**
+   * Parser and indexing completeness metadata. This makes malformed files,
+   * skipped rows, and dedup losses visible to the dashboard instead of only
+   * existing in server logs.
+   */
+  ingestionAudit: IngestionAuditSummary;
+
+  // ── Cost-driver diagnostics (30-day absolute window) ─────────────────────
+
+  /**
+   * Billing-component breakdown for the 30-day absolute window.
+   * This is the primary source for "what is actually driving spend?"
+   */
+  costComponents30d: CostComponentSummary;
+
+  /** Share of 30d spend captured by the top 1% most expensive turns. */
+  turnCostTop1PctShare30d: number;
+
+  /** Share of 30d spend captured by the top 5% most expensive turns. */
+  turnCostTop5PctShare30d: number;
+
+  /** Cost from non-subagent rows in the 30-day absolute window. */
+  mainSessionCostUsd30d: number;
+
+  /** Cost from subagent rows in the 30-day absolute window. */
+  subagentCostUsd30d: number;
+
+  /** Number of `Agent` tool invocations observed in the 30-day window. */
+  agentToolCalls30d: number;
+
+  /**
+   * Estimated 30d savings if all Opus-priced rows had been priced as Sonnet.
+   * This is a routing hypothesis, not a recommendation by itself.
+   */
+  opusToSonnetSavings30d: number;
+
+  /**
+   * Ranked, heuristic optimization opportunities. Values are derived from
+   * observed local session data and should be treated as candidates for
+   * controlled before/after experiments, not guaranteed savings.
+   */
+  optimizationOpportunities: OptimizationOpportunity[];
 
   // ── Turn-cost percentiles (30-day absolute window) ────────────────────────
   //

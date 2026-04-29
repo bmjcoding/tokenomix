@@ -13,10 +13,15 @@ import type { TokenRow } from '@tokenomix/shared';
 import { describe, expect, it } from 'vitest';
 import {
   MODEL_PRICES,
+  PRICING_CATALOG_METADATA,
   WEB_SEARCH_USD_PER_REQUEST,
   computeCost,
+  computeCostWithFamily,
   costForRow,
+  inferBedrockEndpointScope,
+  isKnownPricingModelId,
   model_family,
+  pricing_status_for_usage,
   resolveCacheTokens,
 } from '../pricing.js';
 
@@ -41,6 +46,20 @@ describe('opus 4.7 locked cost', () => {
 
   it('model_family("claude-opus-4-7") is "opus"', () => {
     expect(model_family('claude-opus-4-7')).toBe('opus');
+  });
+
+  it('legacy Anthropic model ID order maps claude-3-opus to legacy opus pricing', () => {
+    expect(model_family('claude-3-opus-20240229')).toBe('opus_legacy');
+    expect(model_family('claude-3-5-haiku-20241022')).toBe('haiku_3_5');
+    expect(model_family('claude-3-7-sonnet-20250219')).toBe('sonnet');
+    expect(model_family('claude-opus-4-20250514')).toBe('opus_legacy');
+    expect(model_family('claude-sonnet-4-20250514')).toBe('sonnet');
+  });
+
+  it('Bedrock Anthropic model IDs are normalized before model-family mapping', () => {
+    expect(model_family('anthropic.claude-3-7-sonnet-20250219-v1:0')).toBe('sonnet');
+    expect(model_family('us.anthropic.claude-sonnet-4-5-20250929-v1:0')).toBe('sonnet');
+    expect(model_family('global.anthropic.claude-opus-4-7-20260420-v1:0')).toBe('opus');
   });
 
   it('MODEL_PRICES.opus has correct rates', () => {
@@ -177,6 +196,154 @@ describe('costForRow', () => {
 describe('WEB_SEARCH_USD_PER_REQUEST', () => {
   it('equals $0.01', () => {
     expect(WEB_SEARCH_USD_PER_REQUEST).toBeCloseTo(0.01, 10);
+  });
+});
+
+describe('pricing audit helpers', () => {
+  it('computes micro-USD totals for locked Opus case', () => {
+    const breakdown = computeCostWithFamily(
+      {
+        input_tokens: 1000,
+        output_tokens: 500,
+        cache_read_input_tokens: 100_000,
+        cache_creation_input_tokens: 0,
+      },
+      'claude-opus-4-7',
+      'opus'
+    );
+    expect(breakdown.totalCostUsdMicros).toBe(67_500);
+    expect(breakdown.totalCostUsd).toBe(0.0675);
+    expect(breakdown.pricingStatus).toBe('catalog');
+  });
+
+  it('flags billable unknown model IDs as Sonnet fallback estimates', () => {
+    const usage = { input_tokens: 1000, output_tokens: 0 };
+    expect(isKnownPricingModelId('claude-custom-model')).toBe(false);
+    expect(pricing_status_for_usage('claude-custom-model', usage)).toBe('fallback_sonnet');
+
+    const breakdown = computeCostWithFamily(usage, 'claude-custom-model', 'sonnet');
+    expect(breakdown.totalCostUsdMicros).toBe(3000);
+    expect(breakdown.pricingStatus).toBe('fallback_sonnet');
+  });
+
+  it('flags nested-only cache writes on unknown model IDs as billable fallback estimates', () => {
+    const usage = {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+      cache_creation: {
+        ephemeral_5m_input_tokens: 1_000_000,
+        ephemeral_1h_input_tokens: 0,
+      },
+    };
+
+    expect(pricing_status_for_usage('claude-custom-model', usage)).toBe('fallback_sonnet');
+
+    const breakdown = computeCostWithFamily(usage, 'claude-custom-model', 'sonnet');
+    expect(breakdown.totalCostUsdMicros).toBe(3_750_000);
+    expect(breakdown.totalCostUsd).toBe(3.75);
+    expect(breakdown.pricingStatus).toBe('fallback_sonnet');
+  });
+
+  it('exposes versioned static catalog source metadata', () => {
+    expect(PRICING_CATALOG_METADATA.sourceUrl).toBe(
+      'https://platform.claude.com/docs/en/about-claude/pricing'
+    );
+    expect(PRICING_CATALOG_METADATA.precision).toBe('micro-usd');
+    expect(PRICING_CATALOG_METADATA.pricingProvider).toBe('anthropic_1p');
+    expect(PRICING_CATALOG_METADATA.costBasis).toBe(
+      'estimated_from_jsonl_usage_static_anthropic_catalog'
+    );
+  });
+
+  it('marks Bedrock catalog rows separately from Anthropic 1P catalog rows', () => {
+    const breakdown = computeCostWithFamily(
+      { input_tokens: 1000, output_tokens: 0 },
+      'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+      'sonnet',
+      { pricingProvider: 'aws_bedrock' }
+    );
+    expect(breakdown.totalCostUsdMicros).toBe(3300);
+    expect(breakdown.pricingStatus).toBe('bedrock_catalog');
+  });
+
+  it('applies Bedrock regional endpoint premium only for in-scope models and endpoint scopes', () => {
+    const usage = { input_tokens: 1_000_000, output_tokens: 0 };
+
+    const global = computeCostWithFamily(
+      usage,
+      'global.anthropic.claude-sonnet-4-5-20250929-v1:0',
+      'sonnet',
+      { pricingProvider: 'aws_bedrock', bedrockEndpointScope: 'global_cross_region' }
+    );
+    const geographic = computeCostWithFamily(
+      usage,
+      'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+      'sonnet',
+      { pricingProvider: 'aws_bedrock', bedrockEndpointScope: 'geographic_cross_region' }
+    );
+    const inRegion = computeCostWithFamily(
+      usage,
+      'anthropic.claude-haiku-4-5-20251001-v1:0',
+      'haiku',
+      { pricingProvider: 'aws_bedrock', bedrockEndpointScope: 'in_region' }
+    );
+    const legacy = computeCostWithFamily(
+      usage,
+      'us.anthropic.claude-sonnet-4-20250514-v1:0',
+      'sonnet',
+      { pricingProvider: 'aws_bedrock', bedrockEndpointScope: 'geographic_cross_region' }
+    );
+
+    expect(global.totalCostUsdMicros).toBe(3_000_000);
+    expect(global.pricingMultiplier).toBe(1);
+    expect(geographic.totalCostUsdMicros).toBe(3_300_000);
+    expect(geographic.pricingMultiplier).toBe(1.1);
+    expect(inRegion.totalCostUsdMicros).toBe(1_100_000);
+    expect(inRegion.pricingMultiplier).toBe(1.1);
+    expect(legacy.totalCostUsdMicros).toBe(3_000_000);
+    expect(legacy.pricingMultiplier).toBe(1);
+  });
+
+  it('uses externally rated internal gateway cost when provided', () => {
+    const breakdown = computeCostWithFamily(
+      { input_tokens: 1000, output_tokens: 1000 },
+      'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+      'sonnet',
+      {
+        pricingProvider: 'internal_gateway',
+        externallyRated: true,
+        externalCostUsdMicros: 12_345,
+      }
+    );
+    expect(breakdown.totalCostUsdMicros).toBe(12_345);
+    expect(breakdown.totalCostUsd).toBe(0.012345);
+    expect(breakdown.inputCostUsdMicros + breakdown.outputCostUsdMicros).toBe(12_345);
+    expect(breakdown.inputCostUsdMicros).toBeGreaterThan(0);
+    expect(breakdown.outputCostUsdMicros).toBeGreaterThan(0);
+    expect(breakdown.pricingStatus).toBe('internal_gateway_rated');
+  });
+
+  it('marks internal gateway rows as estimates when no rated cost is provided', () => {
+    const breakdown = computeCostWithFamily(
+      { input_tokens: 1000, output_tokens: 0 },
+      'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+      'sonnet',
+      { pricingProvider: 'internal_gateway' }
+    );
+    expect(breakdown.totalCostUsdMicros).toBe(3300);
+    expect(breakdown.pricingStatus).toBe('internal_gateway_unrated_estimate');
+  });
+
+  it('infers Bedrock endpoint scope from Bedrock model ID prefixes', () => {
+    expect(inferBedrockEndpointScope('global.anthropic.claude-sonnet-4-5-v1:0')).toBe(
+      'global_cross_region'
+    );
+    expect(inferBedrockEndpointScope('us.anthropic.claude-sonnet-4-5-v1:0')).toBe(
+      'geographic_cross_region'
+    );
+    expect(inferBedrockEndpointScope('anthropic.claude-sonnet-4-5-v1:0')).toBe('in_region');
   });
 });
 

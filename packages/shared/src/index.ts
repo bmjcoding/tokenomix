@@ -21,6 +21,15 @@ export type {
   HeatmapPoint,
   // New analytics bucket types
   ToolBucket,
+  CostComponentSummary,
+  PricingAuditSummary,
+  IngestionAuditSummary,
+  PricingCatalogMetadata,
+  PricingProvider,
+  BedrockEndpointScope,
+  BedrockServiceTier,
+  PricingStatus,
+  OptimizationOpportunity,
   SubagentBucket,
   TurnBucket,
   FileTouchBucket,
@@ -50,6 +59,10 @@ export {
   ToolUseEventSchema,
   ToolResultEventSchema,
   SystemTurnDurationSchema,
+  ToolInputPathSchema,
+  ToolUseContentSchema,
+  ToolResultContentSchema,
+  MessageContentSchema,
   // Union schema (replaces the old single-object schema at the same export name)
   RawUsageEventSchema,
 } from './schemas.js';
@@ -63,6 +76,8 @@ export type {
   ToolUseEventParsed,
   ToolResultEventParsed,
   SystemTurnDurationEventParsed,
+  ToolUseContentParsed,
+  ToolResultContentParsed,
   // Union parsed type (unchanged name — drop-in for existing consumers)
   RawUsageEventParsed,
 } from './schemas.js';
@@ -70,11 +85,21 @@ export type {
 // Pricing
 export {
   WEB_SEARCH_USD_PER_REQUEST,
+  PRICING_CATALOG_METADATA,
+  ANTHROPIC_1P_PRICING_CATALOG_METADATA,
+  AWS_BEDROCK_PRICING_CATALOG_METADATA,
   MODEL_PRICES,
+  MICRO_USD_PER_USD,
   model_family,
+  isKnownPricingModelId,
+  inferBedrockEndpointScope,
+  pricing_status_for_usage,
   pricing_multiplier_for_usage,
   resolveCacheTokens,
   computeCost,
+  computeCostMicros,
+  computeCostWithFamily,
+  microsToUsd,
 } from './pricing.js';
 
 export type { PriceTable } from './pricing.js';

@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RawUsageEventSchema } from '@tokenomix/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { buildTokenRow } from '../index-store.js';
+import { PROJECTS_DIR, buildTokenRow } from '../index-store.js';
 import { parseJSONLFile } from '../parser.js';
 
 // ---------------------------------------------------------------------------
@@ -692,5 +692,53 @@ describe('buildTokenRow cache branching', () => {
     const subRow = buildTokenRow(event, '/project/session/subagents/agent-01.jsonl');
     expect(mainRow?.isSubagent).toBe(false);
     expect(subRow?.isSubagent).toBe(true);
+  });
+
+  it('uses gateway-rated cost fields when internal gateway pricing is configured', () => {
+    const previousProvider = process.env.TOKENOMIX_PRICING_PROVIDER;
+    process.env.TOKENOMIX_PRICING_PROVIDER = 'internal_gateway';
+
+    try {
+      const event = RawUsageEventSchema.parse({
+        ...baseRaw,
+        gatewayCostUsdMicros: 12_345,
+        message: {
+          id: 'msg_gateway_cost',
+          model: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+          usage: { input_tokens: 1000, output_tokens: 1000 },
+        },
+      });
+      const row = buildTokenRow(event, '/test/file.jsonl');
+      expect(row?.costUsdMicros).toBe(12_345);
+      expect(row?.costUsd).toBe(0.012345);
+      expect((row?.inputCostUsdMicros ?? 0) + (row?.outputCostUsdMicros ?? 0)).toBe(12_345);
+      expect(row?.inputCostUsdMicros).toBeGreaterThan(0);
+      expect(row?.outputCostUsdMicros).toBeGreaterThan(0);
+      expect(row?.pricingStatus).toBe('internal_gateway_rated');
+    } finally {
+      if (previousProvider === undefined) {
+        process.env.TOKENOMIX_PRICING_PROVIDER = undefined;
+      } else {
+        process.env.TOKENOMIX_PRICING_PROVIDER = previousProvider;
+      }
+    }
+  });
+
+  it('falls back to the Claude project directory name when cwd is missing', () => {
+    const event = RawUsageEventSchema.parse({
+      ...baseRaw,
+      cwd: undefined,
+      message: {
+        id: 'msg_no_cwd',
+        model: 'claude-sonnet-4-6',
+        usage: { input_tokens: 10, output_tokens: 5 },
+      },
+    });
+    const row = buildTokenRow(
+      event,
+      join(PROJECTS_DIR, '-Users-example-work-portable', 'session.jsonl')
+    );
+    expect(row?.project).toBe('/Users/example/work/portable');
+    expect(row?.projectName).toBe('portable');
   });
 });

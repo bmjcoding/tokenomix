@@ -131,18 +131,24 @@ export function KpiRow({ data }: KpiRowProps) {
       <MetricCard
         label="TOKENS · 30D"
         value={formatTokenCount(tokens30d)}
+        context="volume signal; not efficiency by itself"
         sparklineData={tokensSparkline}
         deltaPercent={tokensDelta}
+        deltaPolarity="neutral"
         icon={<Cpu size={14} aria-hidden="true" className="shrink-0" />}
+        tooltip="This counts only input and output tokens, excluding cache tokens. More tokens can mean more work completed or more waste; judge it with spend, error rate, rework, and completed outcomes rather than treating the direction as good or bad."
       />
 
       {/* Card 2 — COST / OUTPUT TOKEN (30D) */}
       <MetricCard
         label="COST / OUTPUT TOKEN (30D)"
         value={costPerTokenStr}
+        context="lower is better only if quality is stable"
         {...(costPerTokenSparkline.length > 1 ? { sparklineData: costPerTokenSparkline } : {})}
         deltaPercent={costPerTokenDelta}
+        deltaPolarity="lower-better"
         icon={<DollarSign size={14} aria-hidden="true" className="shrink-0" />}
+        tooltip="This is total 30-day cost divided by generated output tokens. It is useful for tracking pricing/model mix and cache overhead, but it can be gamed by producing unnecessary output. Pair it with task success and review quality."
       />
 
       {/* Card 3 — TURN P90 COST (30D) */}
@@ -152,6 +158,7 @@ export function KpiRow({ data }: KpiRowProps) {
         deltaPercent={null}
         context={turnCostContext}
         icon={<BarChart2 size={14} aria-hidden="true" className="shrink-0" />}
+        tooltip="P90 means 90% of turns cost this amount or less. If P90 is far above P50, a minority of expensive turns is driving spend. Those turns are where drilldowns, context pruning, and tool-output controls usually pay off first."
       />
 
       {/* Card 4 — COST WoW DELTA */}
@@ -159,8 +166,10 @@ export function KpiRow({ data }: KpiRowProps) {
         label="COST WoW DELTA"
         value={wowValueStr}
         deltaPercent={wowDelta}
+        deltaPolarity="lower-better"
         {...(wowContext !== undefined ? { context: wowContext } : {})}
         icon={<TrendingUp size={14} aria-hidden="true" className="shrink-0" />}
+        tooltip="This is spend velocity: current week compared with the prior week. Lower is favorable only if throughput and quality did not drop. Rising spend should be explained by a project, model mix, subagent use, or expensive-turn outliers."
       />
     </Section>
   );

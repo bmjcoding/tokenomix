@@ -1,7 +1,7 @@
 /**
  * SubagentLeaderboard — sortable table of subagent activity by agent type.
  *
- * Columns: Agent Type, Dispatches, Total Tokens, Total Cost, Avg Duration, Success Rate.
+ * Columns: Agent Type, Turns, Total Tokens, Total Cost, Avg Duration, Success Rate.
  * Self-fetches MetricSummary; renders data from MetricSummary.bySubagent.
  * Default sort: Dispatches descending.
  */
@@ -121,7 +121,7 @@ export function SubagentLeaderboard({ since }: SubagentLeaderboardProps) {
                   Agent Type
                 </th>
                 <SortHeader
-                  label="Dispatches"
+                  label="Turns"
                   sortKey="dispatches"
                   current={sortKey}
                   dir={sortDir}

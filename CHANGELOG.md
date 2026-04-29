@@ -152,7 +152,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sparklines, smooth gradient area chart (7d/30d/all toggle), day-of-week ×
   hour-of-day activity heatmap, top-sessions table, and model-mix stacked
   bar. Three pages: Overview, Sessions, Models.
-- Tailwind v4 with CSS-native `@theme` block: Chase blue OKLCH accent
+- Tailwind v4 with CSS-native `@theme` block: primary blue OKLCH accent
   (`oklch(0.49 0.16 255)` light / `oklch(0.58 0.12 255)` dark), achromatic
   gray scale, dark mode toggle persisted to `localStorage:tokenomix:theme`.
 - Apache ECharts 5 for all chart primitives (area, heatmap, stacked bar).
@@ -247,7 +247,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `bin/usage-dashboard.py` — self-contained HTML dashboard with Chart.js
   visualisations. Pulls data from the two sibling scripts and embeds JSON
   inline so the file opens via `file://` without a server. Design system uses
-  OKLCH tokens, a Chase blue accent, monochromatic discipline, platform-density
+  OKLCH tokens, a primary blue accent, monochromatic discipline, platform-density
   spacing, and Lucide icons on every card and panel header.
 - `tests/test_tokenomix.py` — smoke tests for all three scripts: synthetic
   conversation log generation, dedup verification, subagent inclusion,

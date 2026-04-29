@@ -86,18 +86,21 @@ export function KpiRow2({ data }: KpiRow2Props) {
       <MetricCard
         label="PROJECTS TOUCHED"
         value={projectsTouchedValue}
-        context="unique projects"
+        context="breadth of AI-assisted work"
         deltaPercent={null}
         icon={<FolderOpen size={14} aria-hidden="true" className="shrink-0" />}
+        tooltip="This is the number of distinct project basenames seen in Claude Code logs. It is not inherently good or bad. High breadth means optimization experiments need project-level segmentation because one global average can hide the real cost driver."
       />
 
       {/* Card 2 — Avg Cost / Turn */}
       <MetricCard
         label="AVG COST / TURN (30D)"
         value={costPerTurnValue}
-        context="vs prev 30 days"
+        context="mean turn cost; check P90 for tail risk"
         deltaPercent={costPerTurnDelta}
+        deltaPolarity="lower-better"
         icon={<TrendingUp size={14} aria-hidden="true" className="shrink-0" />}
+        tooltip={`This answers what a typical assistant turn costs on average. Your current ${costPerTurnValue} is good only relative to your prior 30 days and outcomes: favorable if it falls while completion quality, test pass rate, and rework stay stable; bad if it falls because work is being split into more failed or repeated turns.`}
       />
 
       {/* Card 3 — Worst Tool Error (conditional: only when a tool has errorRate > 0) */}
@@ -108,6 +111,7 @@ export function KpiRow2({ data }: KpiRow2Props) {
           context={worstTool.toolName}
           deltaPercent={null}
           icon={<AlertTriangle size={14} aria-hidden="true" className="shrink-0" />}
+          tooltip="This shows the highest error rate among observed tools. It matters when the tool is common: failed tool calls often create retry loops, extra context, and extra spend. High error tools are candidates for better command templates, safer defaults, or output filtering."
         />
       )}
     </Section>

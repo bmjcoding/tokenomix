@@ -7,7 +7,7 @@
  *
  * Layout: 7 rows (Sun→Sat, top to bottom) × 24 columns (hours 0→23).
  * Color scale: 5-step monochrome-gray + blue ramp matching the project's
- * Chase-blue design tokens.
+ * primary-blue design tokens.
  *
  * Y-axis labels: Mon, Wed, Fri only (GitHub-style sparse labels).
  * X-axis labels: 12a, 6a, 12p, 6p (every 6 hours).

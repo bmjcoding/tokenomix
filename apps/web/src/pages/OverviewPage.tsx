@@ -30,11 +30,13 @@ import { fetchMetrics } from '../lib/api.js';
 import { queryKeys } from '../lib/query-keys.js';
 import { useServerEvents } from '../lib/useServerEvents.js';
 import { AreaChartPanel } from '../panels/AreaChartPanel.js';
+import { CostDriversPanel } from '../panels/CostDriversPanel.js';
 import { HeatmapPanel } from '../panels/HeatmapPanel.js';
 import { HeroSpend } from '../panels/HeroSpend.js';
 import { KpiRow } from '../panels/KpiRow.js';
 import { KpiRow2 } from '../panels/KpiRow2.js';
 import { ModelMixPanel } from '../panels/ModelMixPanel.js';
+import { OptimizationOpportunitiesPanel } from '../panels/OptimizationOpportunitiesPanel.js';
 import { OptimizationSignalsPanel } from '../panels/OptimizationSignalsPanel.js';
 import type { DashboardPeriod } from '../panels/PeriodSwitcher.js';
 import { SubagentLeaderboard } from '../panels/SubagentLeaderboard.js';
@@ -85,6 +87,12 @@ export default function OverviewPage() {
     <div className={containerCls}>
       {/* 1. Hero — Current Spend (MTD) */}
       <HeroSpend data={data} />
+
+      {/* 1a. Cost drivers — explains what is actually driving spend */}
+      <CostDriversPanel data={data} />
+
+      {/* 1b. Ranked optimization experiments */}
+      <OptimizationOpportunitiesPanel data={data} />
 
       {/* 2. KPI row — TOKENS · 30D / Cost per Output Token / Turn P90 Cost / Cost WoW Delta */}
       <KpiRow data={data} />

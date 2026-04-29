@@ -28,12 +28,13 @@
  * - Context: text-xs text-gray-500 dark:text-gray-400
  *
  * NOTE: accentColor prop has been removed. All sparklines use --color-primary
- * (Chase blue, as configured in SparklineChart via primaryColor()).
+ * (primary blue, as configured in SparklineChart via primaryColor()).
  */
 
 import type { ReactNode } from 'react';
 import { SparklineChart } from '../charts/SparklineChart.js';
 import { Card } from '../ui/Card.js';
+import { HelpTooltip } from '../ui/HelpTooltip.js';
 
 interface MetricCardProps {
   label: string;
@@ -51,6 +52,15 @@ interface MetricCardProps {
   sparklineData?: number[];
   /** Optional icon slot rendered in top-right corner. */
   icon?: ReactNode;
+  /** Optional hover/focus explanation for why the metric matters. */
+  tooltip?: ReactNode;
+  /**
+   * How to color the delta pill.
+   * - higher-better: positive green, negative red
+   * - lower-better: negative green, positive red
+   * - neutral: gray regardless of direction
+   */
+  deltaPolarity?: 'higher-better' | 'lower-better' | 'neutral';
 }
 
 export function MetricCard({
@@ -60,10 +70,22 @@ export function MetricCard({
   deltaPercent,
   sparklineData,
   icon,
+  tooltip,
+  deltaPolarity = 'higher-better',
 }: MetricCardProps) {
   const hasDelta = deltaPercent !== null && Number.isFinite(deltaPercent);
   const hasSpark = sparklineData !== undefined && sparklineData.length > 1;
   const isPositive = hasDelta && deltaPercent >= 0;
+  const deltaTone =
+    !hasDelta || deltaPolarity === 'neutral'
+      ? 'neutral'
+      : deltaPolarity === 'lower-better'
+        ? deltaPercent <= 0
+          ? 'favorable'
+          : 'unfavorable'
+        : deltaPercent >= 0
+          ? 'favorable'
+          : 'unfavorable';
 
   // Render the pill+sparkline row only when at least one is present.
   const showMiddleRow = hasDelta || deltaPercent === null || hasSpark;
@@ -73,7 +95,8 @@ export function MetricCard({
       {/* Label */}
       <p className="inline-flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">
         {icon !== undefined && icon}
-        {label}
+        <span>{label}</span>
+        {tooltip !== undefined && <HelpTooltip label={`Explain ${label}`}>{tooltip}</HelpTooltip>}
       </p>
 
       {/* Value */}
@@ -96,11 +119,19 @@ export function MetricCard({
                 'inline-flex items-center gap-1 px-2 py-0.5 rounded-full',
                 'bg-gray-100 dark:bg-gray-800',
                 'text-xs font-medium',
-                isPositive
-                  ? 'text-green-600 dark:text-green-400'
-                  : 'text-red-600 dark:text-red-400',
+                deltaTone === 'neutral'
+                  ? 'text-gray-500 dark:text-gray-400'
+                  : deltaTone === 'favorable'
+                    ? 'text-green-600 dark:text-green-400'
+                    : 'text-red-600 dark:text-red-400',
               ].join(' ')}
-              aria-label={`${isPositive ? 'Up' : 'Down'} ${Math.abs(deltaPercent).toFixed(1)}%`}
+              aria-label={`${isPositive ? 'Up' : 'Down'} ${Math.abs(deltaPercent).toFixed(1)}%${
+                deltaTone === 'neutral'
+                  ? ''
+                  : deltaTone === 'favorable'
+                    ? ', favorable'
+                    : ', unfavorable'
+              }`}
             >
               {/* Arrow icon: ↗ for positive, ↘ for negative */}
               <span aria-hidden="true">{isPositive ? '↗' : '↘'}</span>

@@ -3,7 +3,7 @@
  *
  * Design decisions:
  * - Three variants:
- *     primary   → Chase-blue bg, white text (calls to action, period selectors)
+ *     primary   → primary-blue bg, white text (calls to action, period selectors)
  *     secondary → Elevated surface, border, primary text (neutral actions)
  *     ghost     → No bg, secondary text, hover surface (low-emphasis actions)
  * - Two sizes: sm (px-2.5 py-1.5) | md (px-3 py-2)
@@ -63,7 +63,7 @@ export type LucideIcon = ComponentType<SVGProps<SVGSVGElement> & { size?: number
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   /**
    * Visual variant.
-   * - `primary` — Chase-blue fill (calls to action)
+   * - `primary` — primary-blue fill (calls to action)
    * - `secondary` — Bordered elevated surface (neutral actions)
    * - `ghost` — Text only with hover background (low-emphasis)
    * Defaults to `primary`.

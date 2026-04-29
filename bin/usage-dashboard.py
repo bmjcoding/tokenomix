@@ -122,7 +122,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
   /* Color system uses organization-dashboard density and OKLCH tokens.
-     Monochromatic discipline: 1 chromatic accent (Chase blue) + status semantics.
+     Monochromatic discipline: 1 chromatic accent (primary blue) + status semantics.
      Anti-busy compliant (max 3 non-gray colors visible). */
   :root {
     /* Page surfaces (Radix gray steps 1-5, dark mode) */
@@ -141,7 +141,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     --text-muted:     oklch(0.55 0 0);          /* deemphasized text */
     --text-soft:      oklch(0.43 0 0);          /* faintest readable */
 
-    /* Accent: Chase blue hue */
+    /* Accent: primary blue hue */
     --primary:        oklch(0.58 0.12 255);     /* main accent */
     --primary-hover:  oklch(0.65 0.13 255);     /* hover state */
     --primary-soft:   oklch(0.58 0.12 255 / 0.15);  /* 15% fill for chart areas */
@@ -704,7 +704,7 @@ Chart.defaults.font.size = 11;
 Chart.defaults.scale.grid.color = cssVar('--border-subtle');
 
 // Monochromatic-with-accent palette (per design-authority/charts.md):
-//   primary series = accent (Chase blue)
+//   primary series = accent (primary blue)
 //   secondary series = gray-400 (--text-secondary, oklch(0.77 0 0))
 //   tertiary series = gray-500 (--text-muted, oklch(0.55 0 0))
 // Status colors used ONLY when semantic (success/warning).

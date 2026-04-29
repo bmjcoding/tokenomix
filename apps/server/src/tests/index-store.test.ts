@@ -15,6 +15,9 @@
  *   - cacheReadTokens30d: sum of cacheReadTokens for rows in the same 30d window.
  */
 
+import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { MetricSummary, TokenRow } from '@tokenomix/shared';
 import { describe, expect, it } from 'vitest';
 import { IndexStore } from '../index-store.js';
@@ -197,7 +200,7 @@ describe('buildPeriodRollup — DST-safe day indexing', () => {
 
 describe('aggregate() — totalProjectsTouched basename dedup', () => {
   /**
-   * Two TokenRows share the same projectName basename ('alt-central') but have
+   * Two TokenRows share the same projectName basename ('existing dashboard') but have
    * different full cwd project paths. aggregate() must count them as one project
    * in totalProjectsTouched (Set<projectName>.size = 1).
    *
@@ -208,12 +211,12 @@ describe('aggregate() — totalProjectsTouched basename dedup', () => {
     const store = new IndexStore();
     const rows = store.rows as Map<string, TokenRow>;
 
-    // Two rows: different full paths, same basename 'alt-central'.
+    // Two rows: different full paths, same basename 'existing dashboard'.
     rows.set(
       'req_dup_a:msg_dup_a',
       makeRow({
-        project: '/foo/alt-central',
-        projectName: 'alt-central',
+        project: '/foo/existing dashboard',
+        projectName: 'existing dashboard',
         sessionId: 'sess-dup-a',
         costUsd: 0.01,
       })
@@ -221,8 +224,8 @@ describe('aggregate() — totalProjectsTouched basename dedup', () => {
     rows.set(
       'req_dup_b:msg_dup_b',
       makeRow({
-        project: '/bar/alt-central',
-        projectName: 'alt-central',
+        project: '/bar/existing dashboard',
+        projectName: 'existing dashboard',
         sessionId: 'sess-dup-b',
         costUsd: 0.01,
       })
@@ -563,5 +566,270 @@ describe('aggregate() — prev-30d window (days 31–60 from today)', () => {
     expect(metrics.inputTokensPrev30d).toBe(400);
     expect(metrics.outputTokensPrev30d).toBe(200);
     expect(metrics.costUsd30dPrev).toBeCloseTo(0.04, 10);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Optimization opportunity portability
+// ---------------------------------------------------------------------------
+
+describe('aggregate() — optimization opportunities portability', () => {
+  it('keeps generated suggestion text free of absolute project paths', () => {
+    const store = new IndexStore();
+    const rows = store.rows as Map<string, TokenRow>;
+
+    rows.set(
+      'portable_top:msg1',
+      makeRow({
+        date: daysAgo(1),
+        project: '/Users/example/work/portable-app',
+        projectName: 'portable-app',
+        sessionId: 'sess-portable-top',
+        costUsd: 100,
+      })
+    );
+    rows.set(
+      'portable_other:msg2',
+      makeRow({
+        date: daysAgo(1),
+        project: '/Users/example/work/other-app',
+        projectName: 'other-app',
+        sessionId: 'sess-portable-other',
+        costUsd: 10,
+      })
+    );
+
+    const metrics = store.getMetrics();
+    const projectOpportunity = metrics.optimizationOpportunities.find(
+      (opportunity) => opportunity.category === 'project'
+    );
+
+    expect(projectOpportunity).toBeDefined();
+    expect(projectOpportunity?.id).toBe('top-project-concentration');
+    expect(projectOpportunity?.project).toBe('/Users/example/work/portable-app');
+    expect(projectOpportunity?.title).toContain('portable-app');
+    expect(projectOpportunity?.evidence).toContain('portable-app');
+
+    const returnedSuggestionText = [
+      projectOpportunity?.id,
+      projectOpportunity?.title,
+      projectOpportunity?.recommendation,
+      projectOpportunity?.evidence,
+    ].join('\n');
+    expect(returnedSuggestionText).not.toContain('/Users/example');
+  });
+});
+
+describe('aggregate() — pricing audit metadata', () => {
+  it('sums integer micro-USD totals and reports fallback-priced rows', () => {
+    const store = new IndexStore();
+    const rows = store.rows as Map<string, TokenRow>;
+
+    rows.set(
+      'priced:msg1',
+      makeRow({
+        date: daysAgo(1),
+        modelId: 'claude-sonnet-4-6',
+        costUsd: 0.0015,
+        costUsdMicros: 1500,
+        pricingStatus: 'catalog',
+      })
+    );
+    rows.set(
+      'fallback:msg2',
+      makeRow({
+        date: daysAgo(1),
+        modelId: 'claude-custom-model',
+        costUsd: 0.003,
+        costUsdMicros: 3000,
+        pricingStatus: 'fallback_sonnet',
+      })
+    );
+
+    const metrics = store.getMetrics();
+
+    expect(metrics.pricingAudit.totalCostUsdMicros).toBe(4500);
+    expect(metrics.pricingAudit.fallbackPricedRows).toBe(1);
+    expect(metrics.pricingAudit.fallbackPricedCostUsdMicros).toBe(3000);
+    expect(metrics.pricingAudit.fallbackPricedCostUsd).toBe(0.003);
+    expect(metrics.pricingAudit.fallbackPricedModelIds).toEqual(['claude-custom-model']);
+    expect(metrics.pricingAudit.provider).toBe('anthropic_1p');
+    expect(metrics.pricingAudit.warnings.join('\n')).toContain('Sonnet fallback pricing');
+  });
+
+  it('reports internal gateway rated and unrated rows separately', () => {
+    const previousProvider = process.env.TOKENOMIX_PRICING_PROVIDER;
+    const previousRegion = process.env.TOKENOMIX_BEDROCK_REGION;
+    const previousScope = process.env.TOKENOMIX_BEDROCK_ENDPOINT_SCOPE;
+    process.env.TOKENOMIX_PRICING_PROVIDER = 'internal_gateway';
+    process.env.TOKENOMIX_BEDROCK_REGION = 'us-east-1';
+    process.env.TOKENOMIX_BEDROCK_ENDPOINT_SCOPE = undefined;
+
+    try {
+      const store = new IndexStore();
+      const rows = store.rows as Map<string, TokenRow>;
+
+      rows.set(
+        'gateway-rated:msg1',
+        makeRow({
+          date: daysAgo(1),
+          modelId: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+          costUsd: 0.012345,
+          costUsdMicros: 12_345,
+          pricingStatus: 'internal_gateway_rated',
+        })
+      );
+      rows.set(
+        'gateway-unrated:msg2',
+        makeRow({
+          date: daysAgo(1),
+          modelId: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+          costUsd: 0.003,
+          costUsdMicros: 3000,
+          pricingStatus: 'internal_gateway_unrated_estimate',
+        })
+      );
+
+      const metrics = store.getMetrics();
+
+      expect(metrics.pricingAudit.provider).toBe('internal_gateway');
+      expect(metrics.pricingAudit.catalog.pricingProvider).toBe('internal_gateway');
+      expect(metrics.pricingAudit.catalog.costBasis).toBe(
+        'estimated_from_jsonl_usage_without_gateway_rated_cost'
+      );
+      expect(metrics.pricingAudit.bedrockRegion).toBe('us-east-1');
+      expect(metrics.pricingAudit.bedrockEndpointScope).toBe('geographic_cross_region');
+      expect(metrics.pricingAudit.bedrockEndpointScopeSource).toBe('model_id');
+      expect(metrics.pricingAudit.totalCostUsdMicros).toBe(15_345);
+      expect(metrics.pricingAudit.internalGatewayRatedRows).toBe(1);
+      expect(metrics.pricingAudit.internalGatewayUnratedRows).toBe(1);
+      expect(metrics.pricingAudit.warnings.join('\n')).toContain(
+        'no gateway-rated cost feed is ingested'
+      );
+      expect(metrics.pricingAudit.warnings.join('\n')).not.toContain('static public pricing');
+    } finally {
+      if (previousProvider === undefined) {
+        process.env.TOKENOMIX_PRICING_PROVIDER = undefined;
+      } else {
+        process.env.TOKENOMIX_PRICING_PROVIDER = previousProvider;
+      }
+      if (previousRegion === undefined) {
+        process.env.TOKENOMIX_BEDROCK_REGION = undefined;
+      } else {
+        process.env.TOKENOMIX_BEDROCK_REGION = previousRegion;
+      }
+      if (previousScope === undefined) {
+        process.env.TOKENOMIX_BEDROCK_ENDPOINT_SCOPE = undefined;
+      } else {
+        process.env.TOKENOMIX_BEDROCK_ENDPOINT_SCOPE = previousScope;
+      }
+    }
+  });
+
+  it('marks the catalog as gateway-rated when all internal gateway rows carry rated cost', () => {
+    const previousProvider = process.env.TOKENOMIX_PRICING_PROVIDER;
+    process.env.TOKENOMIX_PRICING_PROVIDER = 'internal_gateway';
+
+    try {
+      const store = new IndexStore();
+      const rows = store.rows as Map<string, TokenRow>;
+
+      rows.set(
+        'gateway-rated-only:msg1',
+        makeRow({
+          date: daysAgo(1),
+          modelId: 'global.anthropic.claude-opus-4-7-20260420-v1:0',
+          costUsd: 0.012345,
+          costUsdMicros: 12_345,
+          pricingStatus: 'internal_gateway_rated',
+        })
+      );
+
+      const metrics = store.getMetrics();
+
+      expect(metrics.pricingAudit.catalog.costBasis).toBe('rated_internal_gateway_cost');
+      expect(metrics.pricingAudit.internalGatewayRatedRows).toBe(1);
+      expect(metrics.pricingAudit.internalGatewayUnratedRows).toBe(0);
+    } finally {
+      if (previousProvider === undefined) {
+        process.env.TOKENOMIX_PRICING_PROVIDER = undefined;
+      } else {
+        process.env.TOKENOMIX_PRICING_PROVIDER = previousProvider;
+      }
+    }
+  });
+});
+
+describe('aggregate() — ingestion audit metadata', () => {
+  it('reports malformed lines, schema skips, dedup skips, and retained rows', async () => {
+    const dir = join(tmpdir(), `tokenomix-ingestion-audit-${process.pid}-${Date.now()}`);
+    await mkdir(dir, { recursive: true });
+    const filePath = join(dir, 'session.jsonl');
+
+    const validAssistant = {
+      type: 'assistant',
+      requestId: 'req_ingest_1',
+      timestamp: '2026-04-27T18:00:00.000Z',
+      sessionId: 'session-ingest',
+      cwd: '/test/project',
+      message: {
+        id: 'msg_ingest_1',
+        model: 'claude-sonnet-4-6',
+        usage: { input_tokens: 100, output_tokens: 50 },
+      },
+    };
+    const missingDedupId = {
+      type: 'assistant',
+      timestamp: '2026-04-27T18:00:00.000Z',
+      sessionId: 'session-ingest',
+      cwd: '/test/project',
+      message: {
+        id: 'msg_missing_req',
+        model: 'claude-sonnet-4-6',
+        usage: { input_tokens: 10, output_tokens: 5 },
+      },
+    };
+    const assistantWithoutUsage = {
+      type: 'assistant',
+      requestId: 'req_no_usage',
+      timestamp: '2026-04-27T18:00:00.000Z',
+      sessionId: 'session-ingest',
+      cwd: '/test/project',
+      message: { id: 'msg_no_usage', model: 'claude-sonnet-4-6' },
+    };
+    try {
+      await writeFile(
+        filePath,
+        [
+          JSON.stringify(validAssistant),
+          JSON.stringify(validAssistant),
+          JSON.stringify(missingDedupId),
+          JSON.stringify(assistantWithoutUsage),
+          JSON.stringify([]),
+          '{ not valid json',
+        ].join('\n'),
+        'utf-8'
+      );
+
+      const store = new IndexStore();
+      await store.ingestFile(filePath);
+      const audit = store.getMetrics().ingestionAudit;
+
+      expect(audit.filesAttempted).toBe(1);
+      expect(audit.filesWithParseWarnings).toBe(1);
+      expect(audit.invalidJsonLines).toBe(1);
+      expect(audit.schemaMismatchLines).toBe(1);
+      expect(audit.assistantUsageEvents).toBe(3);
+      expect(audit.assistantEventsWithoutUsage).toBe(1);
+      expect(audit.rowsIndexed).toBe(1);
+      expect(audit.duplicateRowsSkipped).toBe(1);
+      expect(audit.duplicateRowsReplaced).toBe(0);
+      expect(audit.missingDedupIdRows).toBe(1);
+      expect(audit.warnings.join('\n')).toContain('not valid JSON');
+      expect(audit.warnings.join('\n')).toContain('accepted event schema');
+      expect(audit.warnings.join('\n')).toContain('requestId or message.id');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

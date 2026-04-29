@@ -78,6 +78,10 @@ Environment variables:
 - `TOKENOMIX_PROJECTS_DIR`
 - `TOKENOMIX_EXCLUDE_CWD_PREFIXES` (`:`-separated on macOS/Linux)
 - `TOKENOMIX_RETRO_HISTORY_PATHS` (`:`-separated on macOS/Linux)
+- `TOKENOMIX_PRICING_PROVIDER` (`anthropic_1p`, `aws_bedrock`, or `internal_gateway`)
+- `TOKENOMIX_BEDROCK_REGION` (for Bedrock or internal-gateway deployments)
+- `TOKENOMIX_BEDROCK_ENDPOINT_SCOPE` (`in_region`, `global_cross_region`, or `geographic_cross_region`)
+- `TOKENOMIX_BEDROCK_SERVICE_TIER` (`standard`, `batch`, `provisioned`, `reserved`, or `unknown`)
 
 Common examples:
 
@@ -130,6 +134,11 @@ subagent logs at `<session>/subagents/agent-XXX.jsonl`), extracts each event's
   requests (`$10 / 1,000`), Batch API token discount (`0.5x`), fast mode token
   premium (`6x`), and US-only inference token premium (`1.1x`) for current
   eligible model IDs.
+- **Discloses pricing quality in the API and dashboard.** The TypeScript
+  dashboard returns `pricingAudit`, including provider, static catalog source,
+  integer micro-USD totals, fallback-priced rows, Bedrock region/scope metadata,
+  gateway-rated row counts, and warnings when values are estimates rather than
+  rated internal gateway cost.
 - **UTC → local timezone conversion** for daily and weekly buckets. Anthropic
   logs are UTC; the script converts each timestamp to system-local time
   before bucketing, so "Apr 27" in the dashboard means *your* Apr 27, not
@@ -180,7 +189,7 @@ and renders Chart.js visualizations. The output is fully self-contained
 
 **Design system:**
 - OKLCH color space throughout (no hex)
-- Single chromatic accent (Chase blue, `oklch(0.58 0.12 255)`) + grayscale
+- Single chromatic accent (primary blue, `oklch(0.58 0.12 255)`) + grayscale
 - Anti-busy compliant (≤3 non-gray families on screen)
 - Platform-density spacing (gap-3, p-5)
 - Tabular numerals on all numeric columns
@@ -205,6 +214,47 @@ surface; the TypeScript app is the new interactive surface.
 See [docs/adr/0001-typescript-dashboard.md](docs/adr/0001-typescript-dashboard.md)
 for the architecture decision record.
 
+MCP integration is intentionally scoped as a read-only integration surface, not
+as the pricing authority. See
+[docs/adr/0005-mcp-integration-boundary.md](docs/adr/0005-mcp-integration-boundary.md).
+
+### Pricing Data Quality
+
+By default the dashboard estimates cost from Claude Code JSONL usage and the
+static public Anthropic catalog. For Amazon Bedrock deployments, set:
+
+```bash
+TOKENOMIX_PRICING_PROVIDER=aws_bedrock
+TOKENOMIX_BEDROCK_REGION=us-east-1
+TOKENOMIX_BEDROCK_ENDPOINT_SCOPE=geographic_cross_region
+```
+
+For firms routing Claude through an internal LLM Gateway on Bedrock, set:
+
+```bash
+TOKENOMIX_PRICING_PROVIDER=internal_gateway
+TOKENOMIX_BEDROCK_REGION=us-east-1
+```
+
+Internal gateway mode is only penny-accurate when the ingested JSONL rows
+include a gateway-rated cost field. Recognized top-level fields are
+`costUsdMicros`, `cost_usd_micros`, `gatewayCostUsdMicros`,
+`internalCostUsdMicros`, `chargebackCostUsdMicros`, or the corresponding USD
+fields `costUsd`, `cost_usd`, `gatewayCostUsd`, `internalCostUsd`,
+`chargebackCostUsd`. Rows without one of those fields are marked
+`internal_gateway_unrated_estimate` and the dashboard shows a pricing-quality
+warning.
+
+Static catalog verification:
+
+```bash
+pnpm verify:pricing
+```
+
+This verifies the committed Anthropic pricing table against Anthropic's current
+public pricing page. It intentionally does not live-mutate application pricing
+at runtime.
+
 ### Quick start
 
 ```bash
@@ -227,7 +277,7 @@ pnpm start:full
 | Web bundler | Vite 6 |
 | UI | React 18, TanStack Router, TanStack Query |
 | Charting | Apache ECharts 5 |
-| Styling | Tailwind v4 (CSS-native `@theme` block, Chase blue OKLCH palette) |
+| Styling | Tailwind v4 (CSS-native `@theme` block, primary blue OKLCH palette) |
 | Shared | Zod schemas, shared types, pricing module |
 | Linter | Biome |
 | Tests | Vitest |

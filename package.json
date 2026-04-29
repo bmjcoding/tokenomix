@@ -15,7 +15,8 @@
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
     "test": "vitest run",
-    "typecheck": "pnpm -r run typecheck"
+    "typecheck": "pnpm -r run typecheck",
+    "verify:pricing": "pnpm --filter @tokenomix/server verify:pricing"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",

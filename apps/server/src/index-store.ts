@@ -19,13 +19,20 @@ import { readdir as readdirFn } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as nodePath from 'node:path';
 import type {
+  BedrockEndpointScope,
+  BedrockServiceTier,
+  CostComponentSummary,
   DailyBucket,
   HeatmapPoint,
+  IngestionAuditSummary,
   MetricSummary,
   MetricsQuery,
   ModelBucket,
+  OptimizationOpportunity,
   PeriodComparison,
   PeriodRollup,
+  PricingAuditSummary,
+  PricingProvider,
   ProjectBucket,
   RawUsage,
   RawUsageEventParsed,
@@ -40,12 +47,23 @@ import type {
 } from '@tokenomix/shared';
 import type {
   SystemTurnDurationEventParsed,
+  ToolResultContentParsed,
   ToolResultEventParsed,
+  ToolUseContentParsed,
   ToolUseEventParsed,
 } from '@tokenomix/shared';
 import { logEvent } from './logger.js';
 import { parseJSONLFile } from './parser.js';
-import { computeCost, model_family, resolveCacheTokens } from './pricing.js';
+import {
+  ANTHROPIC_1P_PRICING_CATALOG_METADATA,
+  AWS_BEDROCK_PRICING_CATALOG_METADATA,
+  MODEL_PRICES,
+  computeCostWithFamily,
+  inferBedrockEndpointScope,
+  microsToUsd,
+  model_family,
+  resolveCacheTokens,
+} from './pricing.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -62,6 +80,105 @@ const BATCH_SIZE = 50;
  * even under continuous high-volume ingest.
  */
 const MAX_SESSION_TIMES = 50_000;
+
+interface PricingRuntimeConfig {
+  provider: PricingProvider;
+  bedrockRegion: string | null;
+  bedrockEndpointScope: BedrockEndpointScope;
+  bedrockServiceTier: BedrockServiceTier;
+}
+
+interface FileIngestionAudit {
+  invalidJsonLines: number;
+  schemaMismatchLines: number;
+  fileOpenErrors: number;
+  assistantUsageEvents: number;
+  assistantEventsWithoutUsage: number;
+  missingDedupIdRows: number;
+  duplicateRowsSkipped: number;
+  duplicateRowsReplaced: number;
+  tokenRowsRejected: number;
+  rowsIndexed: number;
+  ingestErrors: number;
+  lastIndexedAt: string;
+}
+
+function emptyFileIngestionAudit(): FileIngestionAudit {
+  return {
+    invalidJsonLines: 0,
+    schemaMismatchLines: 0,
+    fileOpenErrors: 0,
+    assistantUsageEvents: 0,
+    assistantEventsWithoutUsage: 0,
+    missingDedupIdRows: 0,
+    duplicateRowsSkipped: 0,
+    duplicateRowsReplaced: 0,
+    tokenRowsRejected: 0,
+    rowsIndexed: 0,
+    ingestErrors: 0,
+    lastIndexedAt: new Date().toISOString(),
+  };
+}
+
+function normalizePricingProvider(value: string | undefined): PricingProvider {
+  if (value === 'aws_bedrock' || value === 'internal_gateway' || value === 'anthropic_1p') {
+    return value;
+  }
+  return 'anthropic_1p';
+}
+
+function normalizeBedrockEndpointScope(value: string | undefined): BedrockEndpointScope {
+  if (
+    value === 'in_region' ||
+    value === 'global_cross_region' ||
+    value === 'geographic_cross_region' ||
+    value === 'unknown'
+  ) {
+    return value;
+  }
+  return 'unknown';
+}
+
+function normalizeBedrockServiceTier(value: string | undefined): BedrockServiceTier {
+  if (
+    value === 'standard' ||
+    value === 'batch' ||
+    value === 'provisioned' ||
+    value === 'reserved' ||
+    value === 'unknown'
+  ) {
+    return value;
+  }
+  return 'standard';
+}
+
+function pricingRuntimeConfig(): PricingRuntimeConfig {
+  return {
+    provider: normalizePricingProvider(process.env.TOKENOMIX_PRICING_PROVIDER),
+    bedrockRegion: process.env.TOKENOMIX_BEDROCK_REGION ?? null,
+    bedrockEndpointScope: normalizeBedrockEndpointScope(
+      process.env.TOKENOMIX_BEDROCK_ENDPOINT_SCOPE
+    ),
+    bedrockServiceTier: normalizeBedrockServiceTier(process.env.TOKENOMIX_BEDROCK_SERVICE_TIER),
+  };
+}
+
+function pricingCatalogForConfig(
+  config: PricingRuntimeConfig,
+  internalGatewayCostBasis:
+    | 'rated_internal_gateway_cost'
+    | 'estimated_from_jsonl_usage_without_gateway_rated_cost' = 'estimated_from_jsonl_usage_without_gateway_rated_cost'
+) {
+  if (config.provider === 'aws_bedrock') return AWS_BEDROCK_PRICING_CATALOG_METADATA;
+  if (config.provider === 'internal_gateway') {
+    return {
+      ...AWS_BEDROCK_PRICING_CATALOG_METADATA,
+      pricingProvider: 'internal_gateway' as const,
+      costBasis: internalGatewayCostBasis,
+    };
+  }
+  return ANTHROPIC_1P_PRICING_CATALOG_METADATA;
+}
 
 // ---------------------------------------------------------------------------
 // Timestamp helpers (mirrors claude-usage.py parse_iso lines 316-339)
@@ -279,6 +396,526 @@ function computeDurationStatsForSessions(
   };
 }
 
+function emptyCostComponents(): CostComponentSummary {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 0,
+    webSearchRequests: 0,
+    inputCostUsd: 0,
+    outputCostUsd: 0,
+    cacheCreationCostUsd: 0,
+    cacheReadCostUsd: 0,
+    webSearchCostUsd: 0,
+  };
+}
+
+function fallbackCostComponentsForRow(row: TokenRow): {
+  inputCostUsd: number;
+  outputCostUsd: number;
+  cacheCreationCostUsd: number;
+  cacheReadCostUsd: number;
+  webSearchCostUsd: number;
+} {
+  const prices = MODEL_PRICES[row.modelFamily] ?? MODEL_PRICES.sonnet;
+  const multiplier = row.pricingMultiplier ?? 1;
+  return {
+    inputCostUsd: ((row.inputTokens * (prices?.input ?? 0)) / 1_000_000) * multiplier,
+    outputCostUsd: ((row.outputTokens * (prices?.output ?? 0)) / 1_000_000) * multiplier,
+    cacheCreationCostUsd:
+      ((row.cacheCreation5m * (prices?.cache_creation_5m ?? 0)) / 1_000_000 +
+        (row.cacheCreation1h * (prices?.cache_creation_1h ?? 0)) / 1_000_000) *
+      multiplier,
+    cacheReadCostUsd: ((row.cacheReadTokens * (prices?.cache_read ?? 0)) / 1_000_000) * multiplier,
+    webSearchCostUsd: row.webSearchRequests * 0.01,
+  };
+}
+
+function rowCostUsdMicros(row: TokenRow): number {
+  return row.costUsdMicros ?? Math.round(row.costUsd * 1_000_000);
+}
+
+function rowBillableTokenTotal(row: TokenRow): number {
+  return (
+    row.inputTokens +
+    row.outputTokens +
+    row.cacheCreation5m +
+    row.cacheCreation1h +
+    row.cacheReadTokens
+  );
+}
+
+function shouldReplaceDuplicateRow(args: {
+  existingRow: TokenRow;
+  existingTimestampMs: number | undefined;
+  candidateRow: TokenRow;
+  candidateTimestampMs: number | undefined;
+}): boolean {
+  const { existingRow, existingTimestampMs, candidateRow, candidateTimestampMs } = args;
+
+  if (candidateTimestampMs !== undefined && existingTimestampMs !== undefined) {
+    if (candidateTimestampMs > existingTimestampMs) return true;
+    if (candidateTimestampMs < existingTimestampMs) return false;
+  } else if (candidateTimestampMs !== undefined) {
+    return true;
+  } else if (existingTimestampMs !== undefined) {
+    return false;
+  }
+
+  const candidateMicros = rowCostUsdMicros(candidateRow);
+  const existingMicros = rowCostUsdMicros(existingRow);
+  if (candidateMicros > existingMicros) return true;
+  if (candidateMicros < existingMicros) return false;
+
+  return rowBillableTokenTotal(candidateRow) > rowBillableTokenTotal(existingRow);
+}
+
+function addCostComponents(acc: CostComponentSummary, row: TokenRow): void {
+  const fallback = fallbackCostComponentsForRow(row);
+  acc.inputTokens += row.inputTokens;
+  acc.outputTokens += row.outputTokens;
+  acc.cacheCreationTokens += row.cacheCreation5m + row.cacheCreation1h;
+  acc.cacheReadTokens += row.cacheReadTokens;
+  acc.webSearchRequests += row.webSearchRequests;
+  acc.inputCostUsd += row.inputCostUsd ?? fallback.inputCostUsd;
+  acc.outputCostUsd += row.outputCostUsd ?? fallback.outputCostUsd;
+  acc.cacheCreationCostUsd += row.cacheCreationCostUsd ?? fallback.cacheCreationCostUsd;
+  acc.cacheReadCostUsd += row.cacheReadCostUsd ?? fallback.cacheReadCostUsd;
+  acc.webSearchCostUsd += row.webSearchCostUsd ?? fallback.webSearchCostUsd;
+}
+
+function estimateOpusToSonnetSavings(row: TokenRow): number {
+  if (row.modelFamily !== 'opus' && row.modelFamily !== 'opus_legacy') return 0;
+  const sonnet = MODEL_PRICES.sonnet;
+  if (!sonnet) return 0;
+  const multiplier = row.pricingMultiplier ?? 1;
+  const sonnetCost =
+    ((row.inputTokens * sonnet.input) / 1_000_000 +
+      (row.outputTokens * sonnet.output) / 1_000_000 +
+      (row.cacheCreation5m * sonnet.cache_creation_5m) / 1_000_000 +
+      (row.cacheCreation1h * sonnet.cache_creation_1h) / 1_000_000 +
+      (row.cacheReadTokens * sonnet.cache_read) / 1_000_000) *
+      multiplier +
+    (row.webSearchCostUsd ?? row.webSearchRequests * 0.01);
+  return Math.max(0, row.costUsd - sonnetCost);
+}
+
+function shareOfTotal(value: number, total: number): number {
+  return total > 0 ? value / total : 0;
+}
+
+function displayPathSegment(pathLike: string): string {
+  const trimmed = pathLike.trim().replace(/[\\/]+$/, '');
+  if (!trimmed) return '';
+  const parts = trimmed.split(/[\\/]+/);
+  return parts[parts.length - 1] || trimmed;
+}
+
+function decodeClaudeProjectDirName(name: string): string {
+  if (!name.startsWith('-')) return name;
+  const sentinel = '\u0000';
+  return `/${name
+    .slice(1)
+    .replace(/--/g, `${sentinel}.`)
+    .replace(/-/g, '/')
+    .replaceAll(sentinel, '/')}`;
+}
+
+function projectPathFromJsonlPath(filePath: string): string {
+  const relative = nodePath.relative(PROJECTS_DIR, filePath);
+  if (relative.startsWith('..') || nodePath.isAbsolute(relative)) return '';
+  const projectDir = relative.split(/[\\/]+/)[0];
+  return projectDir ? decodeClaudeProjectDirName(projectDir) : '';
+}
+
+function projectLabelForDisplay(project: string): string {
+  return displayPathSegment(project) || 'current project';
+}
+
+function isSubagentFilePath(filePath: string): boolean {
+  return /(^|[\\/])subagents([\\/]|$)/.test(filePath);
+}
+
+function numberField(source: Record<string, unknown>, keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && value.trim() !== '') {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return undefined;
+}
+
+function externalCostUsdMicros(event: RawUsageEventParsed): number | undefined {
+  const raw = event as unknown as Record<string, unknown>;
+  const micros = numberField(raw, [
+    'costUsdMicros',
+    'cost_usd_micros',
+    'gatewayCostUsdMicros',
+    'internalCostUsdMicros',
+    'chargebackCostUsdMicros',
+  ]);
+  if (micros !== undefined) return Math.round(micros);
+
+  const usd = numberField(raw, [
+    'costUsd',
+    'cost_usd',
+    'gatewayCostUsd',
+    'internalCostUsd',
+    'chargebackCostUsd',
+  ]);
+  return usd !== undefined ? Math.round(usd * 1_000_000) : undefined;
+}
+
+function formatUsdCompact(value: number): string {
+  return `$${value.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+}
+
+function buildOptimizationOpportunities(args: {
+  costUsd30d: number;
+  components: CostComponentSummary;
+  byProject30d: ProjectBucket[];
+  bashToolCalls30d: number;
+  turnCostTop5PctShare30d: number;
+  mainSessionCostUsd30d: number;
+  subagentCostUsd30d: number;
+  agentToolCalls30d: number;
+  opusToSonnetSavings30d: number;
+}): OptimizationOpportunity[] {
+  // Rule scores are deterministic analyst heuristics, not LLM inference and
+  // not probabilities. They express how directly the observed metric supports
+  // the proposed experiment.
+  const opportunities: OptimizationOpportunity[] = [];
+  const {
+    costUsd30d,
+    components,
+    byProject30d,
+    bashToolCalls30d,
+    turnCostTop5PctShare30d,
+    mainSessionCostUsd30d,
+    subagentCostUsd30d,
+    agentToolCalls30d,
+    opusToSonnetSavings30d,
+  } = args;
+
+  const cacheUsd = components.cacheCreationCostUsd + components.cacheReadCostUsd;
+  const cacheShare = shareOfTotal(cacheUsd, costUsd30d);
+  if (cacheShare >= 0.45) {
+    opportunities.push({
+      id: 'context-cache-pressure',
+      category: 'context',
+      title: 'Context rereads dominate cost',
+      recommendation:
+        'Measure Graphify-assisted navigation, shorter sessions, earlier /clear or /compact policies, narrower file reads, and reusable project notes on the projects with the highest cache-read cost.',
+      evidence: `${formatUsdCompact(cacheUsd)} of 30d spend (${(cacheShare * 100).toFixed(0)}%) came from cache creation/read.`,
+      impactUsd30d: cacheUsd * 0.12,
+      confidence: 0.72,
+    });
+  }
+
+  if (opusToSonnetSavings30d >= Math.max(25, costUsd30d * 0.05)) {
+    opportunities.push({
+      id: 'opus-routing',
+      category: 'model',
+      title: 'Opus routing needs an audit',
+      recommendation:
+        'Run matched Sonnet trials for low-risk Opus-heavy workflows and compare task completion, rework, tests, and review defects before changing defaults.',
+      evidence: `A pure pricing counterfactual says Sonnet-priced Opus rows would cost about ${formatUsdCompact(opusToSonnetSavings30d)} less over 30d.`,
+      impactUsd30d: opusToSonnetSavings30d,
+      confidence: 0.52,
+    });
+  }
+
+  if (bashToolCalls30d >= 100) {
+    opportunities.push({
+      id: 'rtk-bash-output',
+      category: 'tooling',
+      title: 'Bash output is large enough for RTK trials',
+      recommendation:
+        'Enable RTK for a controlled Bash-heavy cohort, then compare tool-result token volume, failed-command recovery, and total session cost.',
+      evidence: `Observed ${bashToolCalls30d.toLocaleString('en-US')} Bash calls over 30d.`,
+      impactUsd30d: components.outputCostUsd * 0.08 + components.cacheReadCostUsd * 0.03,
+      confidence: 0.61,
+    });
+  }
+
+  if (turnCostTop5PctShare30d >= 0.2) {
+    opportunities.push({
+      id: 'expensive-turn-outliers',
+      category: 'workflow',
+      title: 'A small number of turns drive spend',
+      recommendation:
+        'Add a top-turn drilldown that shows token component, model, project, tools used, and preceding context size for the top 5% most expensive turns.',
+      evidence: `The top 5% most expensive turns account for ${(turnCostTop5PctShare30d * 100).toFixed(0)}% of 30d spend.`,
+      impactUsd30d: costUsd30d * turnCostTop5PctShare30d * 0.15,
+      confidence: 0.68,
+    });
+  }
+
+  const topProject = byProject30d[0];
+  if (topProject && costUsd30d > 0 && topProject.costUsd / costUsd30d >= 0.25) {
+    const projectName = projectLabelForDisplay(topProject.project);
+    opportunities.push({
+      id: 'top-project-concentration',
+      category: 'project',
+      title: `${projectName} is the first optimization target`,
+      recommendation:
+        'Run the first Graphify, RTK, and model-routing experiments here, because this project has enough spend concentration to produce a measurable signal quickly.',
+      evidence: `${projectName} accounts for ${((topProject.costUsd / costUsd30d) * 100).toFixed(0)}% of 30d spend.`,
+      impactUsd30d: topProject.costUsd * 0.1,
+      confidence: 0.66,
+      project: topProject.project,
+    });
+  }
+
+  const subagentShare = shareOfTotal(
+    subagentCostUsd30d,
+    mainSessionCostUsd30d + subagentCostUsd30d
+  );
+  if (subagentShare >= 0.3 && agentToolCalls30d > 0) {
+    opportunities.push({
+      id: 'subagent-cost-governance',
+      category: 'workflow',
+      title: 'Subagents are a major cost center',
+      recommendation:
+        'Track Agent-tool dispatches separately from subagent turns and require per-agent budgets, scope limits, and success criteria before broad dispatch.',
+      evidence: `Subagent rows account for ${(subagentShare * 100).toFixed(0)}% of 30d spend across ${agentToolCalls30d.toLocaleString('en-US')} Agent tool calls.`,
+      impactUsd30d: subagentCostUsd30d * 0.08,
+      confidence: 0.58,
+    });
+  }
+
+  return opportunities
+    .sort((a, b) => b.impactUsd30d * b.confidence - a.impactUsd30d * a.confidence)
+    .slice(0, 6);
+}
+
+function buildPricingAudit(rows: TokenRow[], config: PricingRuntimeConfig): PricingAuditSummary {
+  let totalCostUsdMicros = 0;
+  let fallbackPricedRows = 0;
+  let fallbackPricedCostUsdMicros = 0;
+  let zeroUsageUnknownModelRows = 0;
+  let internalGatewayRatedRows = 0;
+  let internalGatewayUnratedRows = 0;
+  const fallbackModelIds = new Set<string>();
+  const inferredBedrockScopes = new Set<BedrockEndpointScope>();
+
+  for (const row of rows) {
+    const rowMicros = rowCostUsdMicros(row);
+    totalCostUsdMicros += rowMicros;
+    const inferredScope = inferBedrockEndpointScope(row.modelId);
+    if (inferredScope !== 'unknown') inferredBedrockScopes.add(inferredScope);
+
+    if (row.pricingStatus === 'fallback_sonnet') {
+      fallbackPricedRows += 1;
+      fallbackPricedCostUsdMicros += rowMicros;
+      fallbackModelIds.add(row.modelId || '<missing>');
+    } else if (row.pricingStatus === 'zero_usage_unknown_model') {
+      zeroUsageUnknownModelRows += 1;
+    } else if (row.pricingStatus === 'internal_gateway_rated') {
+      internalGatewayRatedRows += 1;
+    } else if (row.pricingStatus === 'internal_gateway_unrated_estimate') {
+      internalGatewayUnratedRows += 1;
+    }
+  }
+
+  const bedrockEndpointScope =
+    config.bedrockEndpointScope !== 'unknown'
+      ? config.bedrockEndpointScope
+      : inferredBedrockScopes.size === 1
+        ? ([...inferredBedrockScopes][0] ?? 'unknown')
+        : 'unknown';
+  const bedrockEndpointScopeSource =
+    config.bedrockEndpointScope !== 'unknown'
+      ? 'env'
+      : inferredBedrockScopes.size === 1
+        ? 'model_id'
+        : 'unknown';
+
+  const warnings: string[] = [];
+  if (config.provider !== 'internal_gateway') {
+    warnings.push(
+      `Pricing provider is ${config.provider}; values are estimates from static public pricing, not internal LLM Gateway rated cost.`
+    );
+  }
+  if (config.provider === 'internal_gateway' && internalGatewayUnratedRows > 0) {
+    warnings.push(
+      `${internalGatewayUnratedRows.toLocaleString('en-US')} row(s) are marked internal-gateway estimates because no gateway-rated cost feed is ingested.`
+    );
+  }
+  if (config.provider === 'internal_gateway' && internalGatewayRatedRows > 0) {
+    warnings.push(
+      'Internal gateway rated rows use rated total cost; token-component breakdowns are proportional estimates unless gateway component costs are ingested.'
+    );
+  }
+  if (
+    (config.provider === 'aws_bedrock' || config.provider === 'internal_gateway') &&
+    !config.bedrockRegion
+  ) {
+    warnings.push(
+      'Bedrock region is not configured; regional price differences cannot be validated.'
+    );
+  }
+  if (
+    (config.provider === 'aws_bedrock' || config.provider === 'internal_gateway') &&
+    bedrockEndpointScope === 'unknown'
+  ) {
+    warnings.push(
+      'Bedrock endpoint scope is unknown; global/geographic/in-region endpoint pricing differences cannot be validated.'
+    );
+  }
+  if (inferredBedrockScopes.size > 1 && config.bedrockEndpointScope === 'unknown') {
+    warnings.push(
+      `Multiple Bedrock endpoint scopes were inferred from model IDs (${[...inferredBedrockScopes].sort().join(', ')}); configure TOKENOMIX_BEDROCK_ENDPOINT_SCOPE for authoritative grouping.`
+    );
+  }
+  if (
+    (config.provider === 'aws_bedrock' || config.provider === 'internal_gateway') &&
+    config.bedrockServiceTier !== 'standard'
+  ) {
+    warnings.push(
+      `Bedrock service tier is configured as ${config.bedrockServiceTier}; row pricing only applies modifiers present in JSONL usage unless gateway-rated cost is ingested.`
+    );
+  }
+  if (fallbackPricedRows > 0) {
+    warnings.push(
+      `${fallbackPricedRows.toLocaleString('en-US')} billable row(s) used Sonnet fallback pricing because the model ID was not recognized by the static catalog.`
+    );
+  }
+  if (zeroUsageUnknownModelRows > 0) {
+    warnings.push(
+      `${zeroUsageUnknownModelRows.toLocaleString('en-US')} zero-usage row(s) had unrecognized model IDs and did not affect cost.`
+    );
+  }
+
+  const internalGatewayCostBasis =
+    config.provider === 'internal_gateway' &&
+    internalGatewayRatedRows > 0 &&
+    internalGatewayUnratedRows === 0
+      ? 'rated_internal_gateway_cost'
+      : 'estimated_from_jsonl_usage_without_gateway_rated_cost';
+
+  return {
+    catalog: pricingCatalogForConfig(config, internalGatewayCostBasis),
+    provider: config.provider,
+    bedrockRegion: config.bedrockRegion,
+    bedrockEndpointScope,
+    bedrockServiceTier: config.bedrockServiceTier,
+    bedrockEndpointScopeSource,
+    totalCostUsdMicros,
+    fallbackPricedRows,
+    fallbackPricedCostUsd: microsToUsd(fallbackPricedCostUsdMicros),
+    fallbackPricedCostUsdMicros,
+    fallbackPricedModelIds: [...fallbackModelIds].sort(),
+    zeroUsageUnknownModelRows,
+    internalGatewayRatedRows,
+    internalGatewayUnratedRows,
+    warnings,
+  };
+}
+
+function buildIngestionAudit(args: {
+  rowsIndexed: number;
+  filesDiscovered: number;
+  fileAudits: Iterable<FileIngestionAudit>;
+}): IngestionAuditSummary {
+  let filesAttempted = 0;
+  let filesWithParseWarnings = 0;
+  let invalidJsonLines = 0;
+  let schemaMismatchLines = 0;
+  let fileOpenErrors = 0;
+  let assistantUsageEvents = 0;
+  let assistantEventsWithoutUsage = 0;
+  let missingDedupIdRows = 0;
+  let duplicateRowsSkipped = 0;
+  let duplicateRowsReplaced = 0;
+  let tokenRowsRejected = 0;
+  let ingestErrors = 0;
+  let lastIndexedAt: string | null = null;
+
+  for (const audit of args.fileAudits) {
+    filesAttempted += 1;
+    invalidJsonLines += audit.invalidJsonLines;
+    schemaMismatchLines += audit.schemaMismatchLines;
+    fileOpenErrors += audit.fileOpenErrors;
+    assistantUsageEvents += audit.assistantUsageEvents;
+    assistantEventsWithoutUsage += audit.assistantEventsWithoutUsage;
+    missingDedupIdRows += audit.missingDedupIdRows;
+    duplicateRowsSkipped += audit.duplicateRowsSkipped;
+    duplicateRowsReplaced += audit.duplicateRowsReplaced;
+    tokenRowsRejected += audit.tokenRowsRejected;
+    ingestErrors += audit.ingestErrors;
+    if (audit.invalidJsonLines > 0 || audit.schemaMismatchLines > 0 || audit.fileOpenErrors > 0) {
+      filesWithParseWarnings += 1;
+    }
+    if (lastIndexedAt === null || audit.lastIndexedAt > lastIndexedAt) {
+      lastIndexedAt = audit.lastIndexedAt;
+    }
+  }
+
+  const warnings: string[] = [];
+  if (filesAttempted < args.filesDiscovered) {
+    warnings.push(
+      `${(args.filesDiscovered - filesAttempted).toLocaleString('en-US')} discovered JSONL file(s) have not been parsed in this server process.`
+    );
+  }
+  if (invalidJsonLines > 0) {
+    warnings.push(
+      `${invalidJsonLines.toLocaleString('en-US')} line(s) were skipped because they were not valid JSON.`
+    );
+  }
+  if (schemaMismatchLines > 0) {
+    warnings.push(
+      `${schemaMismatchLines.toLocaleString('en-US')} line(s) were skipped because they did not match the accepted event schema.`
+    );
+  }
+  if (fileOpenErrors > 0) {
+    warnings.push(`${fileOpenErrors.toLocaleString('en-US')} file(s) could not be opened or read.`);
+  }
+  if (missingDedupIdRows > 0) {
+    warnings.push(
+      `${missingDedupIdRows.toLocaleString('en-US')} assistant usage row(s) were skipped because requestId or message.id was missing.`
+    );
+  }
+  if (duplicateRowsSkipped + duplicateRowsReplaced > 0) {
+    warnings.push(
+      `${(duplicateRowsSkipped + duplicateRowsReplaced).toLocaleString('en-US')} duplicate assistant usage row(s) shared a requestId/message.id; ${duplicateRowsReplaced.toLocaleString('en-US')} replaced earlier rows and ${duplicateRowsSkipped.toLocaleString('en-US')} were skipped as older or lower-usage rows.`
+    );
+  }
+  if (tokenRowsRejected > 0) {
+    warnings.push(
+      `${tokenRowsRejected.toLocaleString('en-US')} assistant usage event(s) could not be converted to token rows.`
+    );
+  }
+  if (ingestErrors > 0) {
+    warnings.push(
+      `${ingestErrors.toLocaleString('en-US')} file-level ingestion error(s) were caught during indexing.`
+    );
+  }
+
+  return {
+    filesDiscovered: args.filesDiscovered,
+    filesAttempted,
+    filesWithParseWarnings,
+    invalidJsonLines,
+    schemaMismatchLines,
+    fileOpenErrors,
+    assistantUsageEvents,
+    assistantEventsWithoutUsage,
+    missingDedupIdRows,
+    duplicateRowsSkipped,
+    duplicateRowsReplaced,
+    tokenRowsRejected,
+    rowsIndexed: args.rowsIndexed,
+    ingestErrors,
+    lastIndexedAt,
+    warnings,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // File discovery
 // ---------------------------------------------------------------------------
@@ -352,14 +989,26 @@ export function buildTokenRow(event: RawUsageEventParsed, filePath: string): Tok
   const rawUsage = usage as unknown as RawUsage;
 
   const { cache5m, cache1h } = resolveCacheTokens(rawUsage);
-  const costUsd = computeCost(rawUsage, modelId);
+  const pricingConfig = pricingRuntimeConfig();
+  const externalCostMicros = externalCostUsdMicros(event);
+  const costComponents = computeCostWithFamily(rawUsage, modelId, model_family(modelId), {
+    pricingProvider: pricingConfig.provider,
+    externallyRated:
+      pricingConfig.provider === 'internal_gateway' && externalCostMicros !== undefined,
+    ...(externalCostMicros !== undefined ? { externalCostUsdMicros: externalCostMicros } : {}),
+    bedrockEndpointScope:
+      pricingConfig.bedrockEndpointScope === 'unknown'
+        ? inferBedrockEndpointScope(modelId)
+        : pricingConfig.bedrockEndpointScope,
+  });
 
-  const isSubagent = filePath.includes('/subagents/');
+  const isSubagent = isSubagentFilePath(filePath);
 
-  // Derive projectName as path.basename(cwd) with trailing slashes stripped.
-  // This normalizes paths like "/foo/bar/" to "bar" (not "").
-  const rawCwd = event.cwd ?? '';
-  const projectName = nodePath.basename(rawCwd.replace(/\/+$/, ''));
+  // Prefer the real cwd emitted in JSONL. When older or partial logs omit cwd,
+  // fall back to the Claude projects directory name so dashboards still group
+  // the row under a user-derived project rather than a hardcoded placeholder.
+  const rawCwd = event.cwd || projectPathFromJsonlPath(filePath);
+  const projectName = displayPathSegment(rawCwd);
 
   const row: TokenRow = {
     date: toLocalDateStr(ts),
@@ -375,7 +1024,20 @@ export function buildTokenRow(event: RawUsageEventParsed, filePath: string): Tok
     cacheCreation1h: cache1h,
     cacheReadTokens: usage.cache_read_input_tokens ?? 0,
     webSearchRequests: usage.server_tool_use?.web_search_requests ?? 0,
-    costUsd,
+    costUsd: costComponents.totalCostUsd,
+    costUsdMicros: costComponents.totalCostUsdMicros,
+    pricingMultiplier: costComponents.pricingMultiplier,
+    pricingStatus: costComponents.pricingStatus,
+    inputCostUsd: costComponents.inputCostUsd,
+    inputCostUsdMicros: costComponents.inputCostUsdMicros,
+    outputCostUsd: costComponents.outputCostUsd,
+    outputCostUsdMicros: costComponents.outputCostUsdMicros,
+    cacheCreationCostUsd: costComponents.cacheCreationCostUsd,
+    cacheCreationCostUsdMicros: costComponents.cacheCreationCostUsdMicros,
+    cacheReadCostUsd: costComponents.cacheReadCostUsd,
+    cacheReadCostUsdMicros: costComponents.cacheReadCostUsdMicros,
+    webSearchCostUsd: costComponents.webSearchCostUsd,
+    webSearchCostUsdMicros: costComponents.webSearchCostUsdMicros,
     isSubagent,
   };
 
@@ -432,7 +1094,8 @@ function parseSinceCutoff(since: string | undefined, now: Date): Date | null {
 function aggregate(
   rows: TokenRow[],
   query: MetricsQuery,
-  sessionTimes: Map<string, { firstTs: number; lastTs: number }>
+  sessionTimes: Map<string, { firstTs: number; lastTs: number }>,
+  ingestionAudit: IngestionAuditSummary
 ): MetricSummary {
   const now = new Date();
 
@@ -470,6 +1133,13 @@ function aggregate(
   let outputTokens30d = 0;
   let cacheCreationTokens30d = 0;
   let cacheReadTokens30d = 0;
+  const costComponents30d = emptyCostComponents();
+  let mainSessionCostUsd30d = 0;
+  let subagentCostUsd30d = 0;
+  let agentToolCalls30d = 0;
+  let bashToolCalls30d = 0;
+  let opusToSonnetSavings30d = 0;
+  const project30dMap = new Map<string, ProjectBucket>();
 
   for (const row of projectFiltered) {
     const rowDate = new Date(`${row.date}T00:00:00`);
@@ -479,6 +1149,31 @@ function aggregate(
       outputTokens30d += row.outputTokens;
       cacheCreationTokens30d += row.cacheCreation5m + row.cacheCreation1h;
       cacheReadTokens30d += row.cacheReadTokens;
+      addCostComponents(costComponents30d, row);
+      if (row.isSubagent) {
+        subagentCostUsd30d += row.costUsd;
+      } else {
+        mainSessionCostUsd30d += row.costUsd;
+      }
+      agentToolCalls30d += row.toolUses?.Agent ?? 0;
+      bashToolCalls30d += row.toolUses?.Bash ?? 0;
+      opusToSonnetSavings30d += estimateOpusToSonnetSavings(row);
+
+      const existingProject30d = project30dMap.get(row.project);
+      if (existingProject30d) {
+        existingProject30d.costUsd += row.costUsd;
+        existingProject30d.inputTokens += row.inputTokens;
+        existingProject30d.outputTokens += row.outputTokens;
+        existingProject30d.events += 1;
+      } else {
+        project30dMap.set(row.project, {
+          project: row.project,
+          costUsd: row.costUsd,
+          inputTokens: row.inputTokens,
+          outputTokens: row.outputTokens,
+          events: 1,
+        });
+      }
     }
     if (rowDate >= cutoff5d) {
       costUsd5d += row.costUsd;
@@ -632,6 +1327,7 @@ function aggregate(
   );
   const byModel = [...modelMap.values()].sort((a, b) => b.costUsd - a.costUsd);
   const byProject = [...projectMap.values()].sort((a, b) => b.costUsd - a.costUsd);
+  const byProject30d = [...project30dMap.values()].sort((a, b) => b.costUsd - a.costUsd);
   const bySession = [...sessionMap.values()].sort((a, b) => b.costUsd - a.costUsd).slice(0, 15);
   const heatmapData = [...heatmapMap.values()];
 
@@ -798,6 +1494,18 @@ function aggregate(
   const turnCostP90_30d = percentileFloor(turnCosts30d, 90);
   const turnCostP99_30d = percentileFloor(turnCosts30d, 99);
 
+  function topCostShare(sortedAsc: number[], fraction: number): number {
+    if (sortedAsc.length === 0 || costUsd30d === 0) return 0;
+    const count = Math.max(1, Math.ceil(sortedAsc.length * fraction));
+    let sum = 0;
+    for (let i = sortedAsc.length - count; i < sortedAsc.length; i++) {
+      sum += sortedAsc[i] ?? 0;
+    }
+    return sum / costUsd30d;
+  }
+  const turnCostTop1PctShare30d = topCostShare(turnCosts30d, 0.01);
+  const turnCostTop5PctShare30d = topCostShare(turnCosts30d, 0.05);
+
   // ── toolErrorRate30d: total errors / total tool uses in 30d window ────────
   let totalToolUses30d = 0;
   let totalToolErrors30d = 0;
@@ -937,6 +1645,19 @@ function aggregate(
     previous: finalizePeriod(periodAccs[5] as PeriodAcc, prevYear),
   };
 
+  const optimizationOpportunities = buildOptimizationOpportunities({
+    costUsd30d,
+    components: costComponents30d,
+    byProject30d,
+    bashToolCalls30d,
+    turnCostTop5PctShare30d,
+    mainSessionCostUsd30d,
+    subagentCostUsd30d,
+    agentToolCalls30d,
+    opusToSonnetSavings30d,
+  });
+  const pricingAudit = buildPricingAudit(filtered, pricingRuntimeConfig());
+
   return {
     totalCostUsd,
     totalInputTokens,
@@ -956,6 +1677,7 @@ function aggregate(
     weeklySeries,
     byModel,
     byProject,
+    byProject30d,
     bySession,
     heatmapData,
     byTool,
@@ -964,6 +1686,16 @@ function aggregate(
     avgCostPerTurn30d,
     avgCostPerTurnPrev30d,
     toolErrorRate30d,
+    pricingAudit,
+    ingestionAudit,
+    costComponents30d,
+    turnCostTop1PctShare30d,
+    turnCostTop5PctShare30d,
+    mainSessionCostUsd30d,
+    subagentCostUsd30d,
+    agentToolCalls30d,
+    opusToSonnetSavings30d,
+    optimizationOpportunities,
     turnCostP50_30d,
     turnCostP90_30d,
     turnCostP99_30d,
@@ -1042,8 +1774,11 @@ function computeSessionSummaries(rows: TokenRow[], query: MetricsQuery): Session
 export class IndexStore extends EventEmitter {
   /** @internal Exposed as package-internal for test access; do not mutate from outside. */
   readonly rows = new Map<string, TokenRow>();
+  private readonly rowTimestampMs = new Map<string, number>();
   /** Per-session first/last event timestamps (epoch ms). Used for duration stats. */
   private readonly sessionTimes = new Map<string, { firstTs: number; lastTs: number }>();
+  private readonly fileIngestionAudits = new Map<string, FileIngestionAudit>();
+  private filesDiscovered = 0;
   private snapshot: MetricSummary | null = null;
   private lastUpdated: Date = new Date();
   private _initialized = false;
@@ -1069,12 +1804,35 @@ export class IndexStore extends EventEmitter {
     return this.lastUpdated;
   }
 
+  private recordSessionTimestamp(row: TokenRow, tsMs: number | undefined): void {
+    if (tsMs === undefined || !Number.isFinite(tsMs) || !row.sessionId) return;
+    const existing = this.sessionTimes.get(row.sessionId);
+    if (existing) {
+      existing.firstTs = Math.min(existing.firstTs, tsMs);
+      existing.lastTs = Math.max(existing.lastTs, tsMs);
+      return;
+    }
+
+    this.sessionTimes.set(row.sessionId, { firstTs: tsMs, lastTs: tsMs });
+    // Evict oldest 10% when the Map grows beyond MAX_SESSION_TIMES.
+    // Batching avoids re-sorting on every individual insert.
+    if (this.sessionTimes.size > MAX_SESSION_TIMES) {
+      const evictCount = Math.ceil(MAX_SESSION_TIMES * 0.1);
+      const sorted = [...this.sessionTimes.entries()].sort((a, b) => a[1].firstTs - b[1].firstTs);
+      for (let ei = 0; ei < evictCount; ei++) {
+        const entry = sorted[ei];
+        if (entry) this.sessionTimes.delete(entry[0]);
+      }
+    }
+  }
+
   /**
    * Full startup scan — discover all JSONL files and ingest in parallel batches
    * of BATCH_SIZE to avoid fd-limit exhaustion with 2,500+ files.
    */
   async initialize(): Promise<void> {
     const files = await collectJsonlFiles(PROJECTS_DIR).catch(() => [] as string[]);
+    this.filesDiscovered = files.length;
 
     for (let i = 0; i < files.length; i += BATCH_SIZE) {
       const batch = files.slice(i, i + BATCH_SIZE);
@@ -1110,6 +1868,7 @@ export class IndexStore extends EventEmitter {
    * See ADR 0003 for the full rationale and alternatives considered.
    */
   private async ingestFileInternal(filePath: string): Promise<void> {
+    const fileAudit = emptyFileIngestionAudit();
     // ── Two-pass ingest ───────────────────────────────────────────────────────
     //
     // Bug 4 fix: JSONL files from Claude Code can have tool_use/tool_result and
@@ -1148,9 +1907,12 @@ export class IndexStore extends EventEmitter {
     // Map<requestId, Map<toolName, {count, filePaths}>>
     const toolAccumulator = new Map<string, Map<string, { count: number; filePaths: string[] }>>();
 
-    // Map<toolUseId(uuid), toolName> — used to resolve tool name from tool_result.
+    // Map<toolUseId, request/tool metadata> — used to resolve nested
+    // tool_result blocks which usually live in a following user event and do
+    // not carry requestId themselves.
     // Entries are purged on first match to keep the map small.
-    const toolUseIdToName = new Map<string, string>();
+    const toolUseIdToMeta = new Map<string, { requestId: string; toolName: string }>();
+    const pendingErrorByToolUseId = new Map<string, number>();
 
     // Map<requestId, Map<toolName, errorCount>>
     const errorAccumulator = new Map<string, Map<string, number>>();
@@ -1158,9 +1920,144 @@ export class IndexStore extends EventEmitter {
     // Map<requestId, durationMs> — from system/turn_duration events.
     const durationAccumulator = new Map<string, number>();
 
+    // Turn-duration events in current Claude Code logs do not include
+    // requestId. They point at the previous event via parentUuid, so pass 1
+    // records a small uuid ancestry map and resolves durations after scanning.
+    const parentByUuid = new Map<string, string>();
+    const requestIdByUuid = new Map<string, string>();
+    const pendingDurations: Array<{ parentUuid: string | null | undefined; durationMs: number }> =
+      [];
+
+    function pathFromInput(
+      input:
+        | {
+            file_path?: string | undefined;
+            path?: string | undefined;
+            planFilePath?: string | undefined;
+          }
+        | undefined
+    ): string | undefined {
+      return input?.file_path ?? input?.path ?? input?.planFilePath;
+    }
+
+    function accumulateToolUse(requestId: string, toolName: string, filePath_: string | undefined) {
+      let toolsForReq = toolAccumulator.get(requestId);
+      if (!toolsForReq) {
+        toolsForReq = new Map();
+        toolAccumulator.set(requestId, toolsForReq);
+      }
+      const existing = toolsForReq.get(toolName);
+      if (existing) {
+        existing.count += 1;
+        if (filePath_) existing.filePaths.push(filePath_);
+      } else {
+        toolsForReq.set(toolName, {
+          count: 1,
+          filePaths: filePath_ ? [filePath_] : [],
+        });
+      }
+    }
+
+    function accumulateToolError(requestId: string, toolName: string, count = 1) {
+      let errorsForReq = errorAccumulator.get(requestId);
+      if (!errorsForReq) {
+        errorsForReq = new Map();
+        errorAccumulator.set(requestId, errorsForReq);
+      }
+      errorsForReq.set(toolName, (errorsForReq.get(toolName) ?? 0) + count);
+    }
+
+    function isToolUseContent(block: unknown): block is ToolUseContentParsed {
+      return (
+        typeof block === 'object' &&
+        block !== null &&
+        (block as { type?: string }).type === 'tool_use'
+      );
+    }
+
+    function isToolResultContent(block: unknown): block is ToolResultContentParsed {
+      return (
+        typeof block === 'object' &&
+        block !== null &&
+        (block as { type?: string }).type === 'tool_result'
+      );
+    }
+
+    function resolveRequestIdFromAncestor(uuid: string | null | undefined): string | undefined {
+      let cursor = uuid ?? undefined;
+      for (let depth = 0; cursor && depth < 12; depth++) {
+        const requestId = requestIdByUuid.get(cursor);
+        if (requestId) return requestId;
+        cursor = parentByUuid.get(cursor);
+      }
+      return undefined;
+    }
+
     // ── Pass 1: collect tool/duration events ──────────────────────────────────
     try {
-      for await (const event of parseJSONLFile(filePath)) {
+      for await (const event of parseJSONLFile(filePath, {
+        onSkip: (reason) => {
+          if (reason === 'invalid-json') fileAudit.invalidJsonLines += 1;
+          if (reason === 'schema-mismatch') fileAudit.schemaMismatchLines += 1;
+          if (reason === 'file-open-error') fileAudit.fileOpenErrors += 1;
+        },
+      })) {
+        if (event.type === 'assistant') {
+          if (event.message?.usage) {
+            fileAudit.assistantUsageEvents += 1;
+          } else {
+            fileAudit.assistantEventsWithoutUsage += 1;
+          }
+        }
+
+        if (event.uuid && event.parentUuid) {
+          parentByUuid.set(event.uuid, event.parentUuid);
+        }
+        if (event.uuid && event.requestId) {
+          requestIdByUuid.set(event.uuid, event.requestId);
+        }
+
+        // Current Claude Code JSONL stores tool_use/tool_result inside
+        // message.content[] rather than as top-level events. The content blocks
+        // have already been stripped by the Zod schema to preserve only tool
+        // name, tool ID, is_error, and path-like scalar input fields.
+        const messageContent = (event.message as { content?: unknown } | undefined)?.content;
+        if (Array.isArray(messageContent)) {
+          for (const block of messageContent) {
+            if (isToolUseContent(block)) {
+              const rid = event.requestId;
+              const toolName = block.name;
+              if (!rid || !toolName) continue;
+
+              accumulateToolUse(rid, toolName, pathFromInput(block.input));
+
+              if (block.id) {
+                toolUseIdToMeta.set(block.id, { requestId: rid, toolName });
+                const pendingErrorCount = pendingErrorByToolUseId.get(block.id);
+                if (pendingErrorCount !== undefined) {
+                  accumulateToolError(rid, toolName, pendingErrorCount);
+                  pendingErrorByToolUseId.delete(block.id);
+                }
+              }
+              continue;
+            }
+
+            if (isToolResultContent(block)) {
+              if (!block.tool_use_id) continue;
+              const toolMeta = toolUseIdToMeta.get(block.tool_use_id);
+              toolUseIdToMeta.delete(block.tool_use_id);
+              if (block.is_error === true && toolMeta) {
+                accumulateToolError(toolMeta.requestId, toolMeta.toolName);
+              } else if (block.is_error === true) {
+                pendingErrorByToolUseId.set(
+                  block.tool_use_id,
+                  (pendingErrorByToolUseId.get(block.tool_use_id) ?? 0) + 1
+                );
+              }
+            }
+          }
+        }
+
         // ── tool_use branch ─────────────────────────────────────────────────
         if (event.type === 'tool_use') {
           const toolEvent = event as unknown as ToolUseEventParsed;
@@ -1168,29 +2065,15 @@ export class IndexStore extends EventEmitter {
           if (!rid) continue;
 
           const toolName = toolEvent.toolName;
-          const filePath_ = toolEvent.input?.file_path; // privacy: only file_path
+          const filePath_ = pathFromInput(toolEvent.input);
 
           // Record tool name by uuid for later join with tool_result.
           if (toolEvent.uuid) {
-            toolUseIdToName.set(toolEvent.uuid, toolName);
+            toolUseIdToMeta.set(toolEvent.uuid, { requestId: rid, toolName });
           }
 
           // Accumulate count and file paths by (requestId, toolName).
-          let toolsForReq = toolAccumulator.get(rid);
-          if (!toolsForReq) {
-            toolsForReq = new Map();
-            toolAccumulator.set(rid, toolsForReq);
-          }
-          const existing = toolsForReq.get(toolName);
-          if (existing) {
-            existing.count += 1;
-            if (filePath_) existing.filePaths.push(filePath_);
-          } else {
-            toolsForReq.set(toolName, {
-              count: 1,
-              filePaths: filePath_ ? [filePath_] : [],
-            });
-          }
+          accumulateToolUse(rid, toolName, filePath_);
           continue;
         }
 
@@ -1199,27 +2082,23 @@ export class IndexStore extends EventEmitter {
           const resultEvent = event as unknown as ToolResultEventParsed;
           const rid = resultEvent.requestId;
 
-          // Resolve and immediately purge toolUseIdToName so the map only holds
+          // Resolve and immediately purge toolUseIdToMeta so the map only holds
           // entries for open (unresolved) tool invocations. This bounds peak memory
           // to O(concurrent open tools) rather than O(all tool_use events in file).
-          const toolName = resultEvent.tool_use_id
-            ? toolUseIdToName.get(resultEvent.tool_use_id)
+          const toolMeta = resultEvent.tool_use_id
+            ? toolUseIdToMeta.get(resultEvent.tool_use_id)
             : undefined;
           if (resultEvent.tool_use_id) {
-            toolUseIdToName.delete(resultEvent.tool_use_id);
+            toolUseIdToMeta.delete(resultEvent.tool_use_id);
           }
 
           // Only accumulate errors; non-error results need no further processing.
           if (!rid || !resultEvent.is_error) continue;
 
+          const toolName = toolMeta?.toolName;
           if (!toolName) continue; // tool_use uuid not seen — skip
 
-          let errorsForReq = errorAccumulator.get(rid);
-          if (!errorsForReq) {
-            errorsForReq = new Map();
-            errorAccumulator.set(rid, errorsForReq);
-          }
-          errorsForReq.set(toolName, (errorsForReq.get(toolName) ?? 0) + 1);
+          accumulateToolError(rid, toolName);
           continue;
         }
 
@@ -1230,7 +2109,13 @@ export class IndexStore extends EventEmitter {
           const sysEvent = event as unknown as SystemTurnDurationEventParsed;
           if ((sysEvent as { subtype?: string }).subtype !== 'turn_duration') continue;
           const rid = sysEvent.requestId;
-          if (!rid) continue;
+          if (!rid) {
+            pendingDurations.push({
+              parentUuid: sysEvent.parentUuid,
+              durationMs: sysEvent.durationMs,
+            });
+            continue;
+          }
           // Last write wins if multiple duration events share the same requestId.
           durationAccumulator.set(rid, sysEvent.durationMs);
         }
@@ -1238,12 +2123,58 @@ export class IndexStore extends EventEmitter {
         // assistant and other event types are not needed in pass 1 — skip.
       }
     } catch (err: unknown) {
+      fileAudit.ingestErrors += 1;
       logEvent('error', 'ingest-error', {
         path: filePath,
         error: err instanceof Error ? err.message : String(err),
         pass: 1,
       });
       // If pass 1 failed entirely, pass 2 will still run but with empty accumulators.
+    }
+
+    for (const pending of pendingDurations) {
+      const requestId = resolveRequestIdFromAncestor(pending.parentUuid);
+      if (requestId) {
+        durationAccumulator.set(requestId, pending.durationMs);
+      }
+    }
+
+    function mergeTurnMetadata(row: TokenRow, requestId: string, existingRow?: TokenRow): void {
+      const toolsForReq = toolAccumulator.get(requestId);
+      if (toolsForReq) {
+        const toolUses: Record<string, number> = {};
+        // Use a Set for O(1) dedup instead of Array.includes() which is O(n).
+        const touchedSet = new Set<string>();
+        for (const [toolName, data] of toolsForReq) {
+          toolUses[toolName] = data.count;
+          for (const fp of data.filePaths) {
+            touchedSet.add(fp);
+          }
+        }
+        row.toolUses = toolUses;
+        if (touchedSet.size > 0) row.filesTouched = [...touchedSet];
+      } else if (existingRow?.toolUses) {
+        row.toolUses = { ...existingRow.toolUses };
+        if (existingRow.filesTouched) row.filesTouched = [...existingRow.filesTouched];
+      }
+
+      const errorsForReq = errorAccumulator.get(requestId);
+      if (errorsForReq) {
+        const toolErrors: Record<string, number> = {};
+        for (const [toolName, count] of errorsForReq) {
+          toolErrors[toolName] = count;
+        }
+        row.toolErrors = toolErrors;
+      } else if (existingRow?.toolErrors) {
+        row.toolErrors = { ...existingRow.toolErrors };
+      }
+
+      const durationMs = durationAccumulator.get(requestId);
+      if (durationMs !== undefined) {
+        row.turnDurationMs = durationMs;
+      } else if (existingRow?.turnDurationMs !== undefined) {
+        row.turnDurationMs = existingRow.turnDurationMs;
+      }
     }
 
     // ── Pass 2: build TokenRows from assistant events ─────────────────────────
@@ -1258,76 +2189,49 @@ export class IndexStore extends EventEmitter {
 
         // Dedup key: BOTH requestId AND message.id must be present.
         // Matches claude-usage.py:634: (rid, mid) if rid and mid else None
-        if (!requestId || !messageId) continue;
+        if (!requestId || !messageId) {
+          fileAudit.missingDedupIdRows += 1;
+          continue;
+        }
 
         const dedupKey = `${requestId}:${messageId}`;
-        if (this.rows.has(dedupKey)) continue;
-
         const row = buildTokenRow(event, filePath);
         if (row) {
-          // Merge tool/duration data collected in pass 1 for this requestId.
-          // Because pass 1 completed before pass 2 began, tool events that
-          // appear anywhere in the file (before or after the assistant event)
-          // are guaranteed to be in the accumulators before we look them up here.
-          const toolsForReq = toolAccumulator.get(requestId);
-          if (toolsForReq) {
-            const toolUses: Record<string, number> = {};
-            // Use a Set for O(1) dedup instead of Array.includes() which is O(n).
-            const touchedSet = new Set<string>();
-            for (const [toolName, data] of toolsForReq) {
-              toolUses[toolName] = data.count;
-              for (const fp of data.filePaths) {
-                touchedSet.add(fp);
-              }
-            }
-            row.toolUses = toolUses;
-            if (touchedSet.size > 0) row.filesTouched = [...touchedSet];
-          }
+          const tsMs = parseIso(event.timestamp ?? undefined)?.getTime();
+          const existingRow = this.rows.get(dedupKey);
+          mergeTurnMetadata(row, requestId, existingRow);
 
-          const errorsForReq = errorAccumulator.get(requestId);
-          if (errorsForReq) {
-            const toolErrors: Record<string, number> = {};
-            for (const [toolName, count] of errorsForReq) {
-              toolErrors[toolName] = count;
-            }
-            row.toolErrors = toolErrors;
-          }
+          if (existingRow) {
+            const shouldReplace = shouldReplaceDuplicateRow({
+              existingRow,
+              existingTimestampMs: this.rowTimestampMs.get(dedupKey),
+              candidateRow: row,
+              candidateTimestampMs: tsMs,
+            });
 
-          const durationMs = durationAccumulator.get(requestId);
-          if (durationMs !== undefined) {
-            row.turnDurationMs = durationMs;
+            if (!shouldReplace) {
+              fileAudit.duplicateRowsSkipped += 1;
+              continue;
+            }
+
+            fileAudit.duplicateRowsReplaced += 1;
           }
 
           this.rows.set(dedupKey, row);
+          if (tsMs !== undefined) this.rowTimestampMs.set(dedupKey, tsMs);
+
+          if (!existingRow) fileAudit.rowsIndexed += 1;
 
           // Track per-session first/last timestamps for duration stats.
           // Parse the timestamp independently so we have epoch ms precision;
           // buildTokenRow only stores date+hour in the TokenRow.
-          const tsMs = parseIso(event.timestamp ?? undefined)?.getTime();
-          if (tsMs !== undefined && row.sessionId) {
-            const existing = this.sessionTimes.get(row.sessionId);
-            if (existing) {
-              existing.firstTs = Math.min(existing.firstTs, tsMs);
-              existing.lastTs = Math.max(existing.lastTs, tsMs);
-            } else {
-              this.sessionTimes.set(row.sessionId, { firstTs: tsMs, lastTs: tsMs });
-              // Evict oldest 10% when the Map grows beyond MAX_SESSION_TIMES.
-              // Batching avoids re-sorting on every individual insert.
-              if (this.sessionTimes.size > MAX_SESSION_TIMES) {
-                const evictCount = Math.ceil(MAX_SESSION_TIMES * 0.1);
-                const sorted = [...this.sessionTimes.entries()].sort(
-                  (a, b) => a[1].firstTs - b[1].firstTs
-                );
-                for (let ei = 0; ei < evictCount; ei++) {
-                  const entry = sorted[ei];
-                  if (entry) this.sessionTimes.delete(entry[0]);
-                }
-              }
-            }
-          }
+          this.recordSessionTimestamp(row, tsMs);
+        } else {
+          fileAudit.tokenRowsRejected += 1;
         }
       }
     } catch (err: unknown) {
+      fileAudit.ingestErrors += 1;
       // Log file-level ingestion errors with path only (no JSONL contents).
       logEvent('error', 'ingest-error', {
         path: filePath,
@@ -1335,6 +2239,9 @@ export class IndexStore extends EventEmitter {
         pass: 2,
       });
     }
+
+    fileAudit.lastIndexedAt = new Date().toISOString();
+    this.fileIngestionAudits.set(filePath, fileAudit);
   }
 
   /** Invalidate the aggregate snapshot (triggers recompute on next getMetrics). */
@@ -1348,7 +2255,16 @@ export class IndexStore extends EventEmitter {
     if (isDefaultQuery && this.snapshot) return this.snapshot;
 
     const allRows = [...this.rows.values()];
-    const result = aggregate(allRows, query, this.sessionTimes);
+    const result = aggregate(
+      allRows,
+      query,
+      this.sessionTimes,
+      buildIngestionAudit({
+        rowsIndexed: this.rows.size,
+        filesDiscovered: this.filesDiscovered,
+        fileAudits: this.fileIngestionAudits.values(),
+      })
+    );
 
     if (isDefaultQuery) {
       this.snapshot = result;
