@@ -161,7 +161,7 @@ function parseCsvRows(csv: string): string[][] {
 
 describe('escapeFormula', () => {
   it('prepends a single quote when the value starts with =', () => {
-    expect(escapeFormula('=HYPERLINK("evil")')).toBe("'=HYPERLINK(\"evil\")");
+    expect(escapeFormula('=HYPERLINK("evil")')).toBe('\'=HYPERLINK("evil")');
   });
 
   it('prepends a single quote when the value starts with +', () => {

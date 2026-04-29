@@ -20,8 +20,8 @@
 
 import type { MetricsQuery, SessionDetail, SessionSummary } from '@tokenomix/shared';
 import { Hono } from 'hono';
-import { logEvent } from '../logger.js';
 import type { IndexStore } from '../index-store.js';
+import { logEvent } from '../logger.js';
 
 const MAX_PARAM_LEN = 200;
 // Allowlist: Claude session IDs are UUIDs/slugs — only safe identifier chars permitted.

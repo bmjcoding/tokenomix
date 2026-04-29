@@ -22,7 +22,14 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
 import type { SessionSummary } from '@tokenomix/shared';
-import { ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Download } from 'lucide-react';
+import {
+  ArrowLeft,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
+  Download,
+} from 'lucide-react';
 import { useState } from 'react';
 import { fetchSessions } from '../lib/api.js';
 import { exportSessionsCsv } from '../lib/csvExport.js';
@@ -146,13 +153,15 @@ function TopToolsCell({ session }: TopToolsCellProps) {
   const overflow = session.toolNamesCount > 3 ? session.toolNamesCount - 3 : 0;
 
   if (tools.length === 0) {
-    return <span className="text-gray-400 dark:text-gray-600" aria-label="No tool data">—</span>;
+    return (
+      <span className="text-gray-400 dark:text-gray-600" aria-label="No tool data">
+        —
+      </span>
+    );
   }
 
   const tooltipText =
-    session.toolNamesCount > 3
-      ? `Showing top 3 of ${session.toolNamesCount} tools`
-      : undefined;
+    session.toolNamesCount > 3 ? `Showing top 3 of ${session.toolNamesCount} tools` : undefined;
 
   return (
     <div

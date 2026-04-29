@@ -19,7 +19,15 @@
  * - No external dependencies.
  */
 
-import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react';
+import {
+  type KeyboardEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from 'react';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -62,7 +70,13 @@ function cx(...classes: (string | undefined | false | null)[]): string {
 // Tabs
 // ---------------------------------------------------------------------------
 
-export function Tabs({ items, defaultKey, syncWithHash = true, className, ariaLabel = 'Dashboard sections' }: TabsProps) {
+export function Tabs({
+  items,
+  defaultKey,
+  syncWithHash = true,
+  className,
+  ariaLabel = 'Dashboard sections',
+}: TabsProps) {
   const baseId = useId();
 
   // ── Initial active key resolution ──────────────────────────────────────────
@@ -190,10 +204,7 @@ export function Tabs({ items, defaultKey, syncWithHash = true, className, ariaLa
                 'dark:focus-visible:ring-offset-gray-950',
                 isActive
                   ? // Active state: dark underline, full-opacity text
-                    [
-                      'border-gray-950 dark:border-white',
-                      'text-gray-950 dark:text-white',
-                    ].join(' ')
+                    ['border-gray-950 dark:border-white', 'text-gray-950 dark:text-white'].join(' ')
                   : // Inactive state: transparent underline, muted text with hover
                     [
                       'border-transparent',

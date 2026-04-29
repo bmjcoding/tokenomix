@@ -21,14 +21,19 @@ import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from '@tanstack/react-router';
 import type { SessionDetail, SessionTurnRow } from '@tokenomix/shared';
 import { ArrowLeft } from 'lucide-react';
+import { ToolMixBar } from '../charts/ToolMixBar.js';
 import { fetchSessionDetail } from '../lib/api.js';
-import { formatCurrency, formatDuration, formatProjectName, formatTokens } from '../lib/formatters.js';
+import {
+  formatCurrency,
+  formatDuration,
+  formatProjectName,
+  formatTokens,
+} from '../lib/formatters.js';
 import { queryKeys } from '../lib/query-keys.js';
 import { MetricCard } from '../panels/MetricCard.js';
 import { Card } from '../ui/Card.js';
 import type { TabItem } from '../ui/Tabs.js';
 import { Tabs } from '../ui/Tabs.js';
-import { ToolMixBar } from '../charts/ToolMixBar.js';
 
 // ---------------------------------------------------------------------------
 // Local helpers
@@ -106,9 +111,7 @@ function ErrorState({ message, is404 }: { message: string; is404: boolean }) {
     <div className="space-y-6 py-6 px-4 sm:px-6 lg:px-8 max-w-screen-xl mx-auto">
       <Card as="section" aria-label={heading}>
         <div className="flex flex-col items-center py-12 text-center gap-4">
-          <p className="text-base font-semibold text-gray-950 dark:text-white">
-            {heading}
-          </p>
+          <p className="text-base font-semibold text-gray-950 dark:text-white">{heading}</p>
           <p className="text-sm text-gray-500 dark:text-gray-400 max-w-sm">{message}</p>
           <Link
             to="/report"
@@ -434,7 +437,12 @@ function TurnsTab({ turns }: { turns: SessionTurnRow[] }) {
 export default function SessionDetailPage() {
   const { sessionId } = useParams({ from: '/_layout/report/$sessionId' });
 
-  const { data: detail, isLoading, isError, error } = useQuery<SessionDetail>({
+  const {
+    data: detail,
+    isLoading,
+    isError,
+    error,
+  } = useQuery<SessionDetail>({
     queryKey: queryKeys.sessionDetail(sessionId),
     queryFn: () => fetchSessionDetail(sessionId),
     retry: (failureCount, err) => {
@@ -554,11 +562,7 @@ export default function SessionDetailPage() {
         role="region"
         aria-label="Session key metrics"
       >
-        <MetricCard
-          label="Total Cost"
-          value={formatCurrency(detail.costUsd)}
-          deltaPercent={null}
-        />
+        <MetricCard label="Total Cost" value={formatCurrency(detail.costUsd)} deltaPercent={null} />
         <MetricCard
           label="Input Tokens"
           value={formatTokens(detail.inputTokens)}
@@ -579,11 +583,7 @@ export default function SessionDetailPage() {
           value={formatTokens(detail.cacheReadTokens)}
           deltaPercent={null}
         />
-        <MetricCard
-          label="Events"
-          value={formatTokens(detail.events)}
-          deltaPercent={null}
-        />
+        <MetricCard label="Events" value={formatTokens(detail.events)} deltaPercent={null} />
       </div>
 
       {/* ── Tabbed panels ── */}

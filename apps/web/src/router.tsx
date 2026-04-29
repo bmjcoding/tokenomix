@@ -92,7 +92,13 @@ const reportDetailRoute = createRoute({
 });
 
 const routeTree = rootRoute.addChildren([
-  layoutRoute.addChildren([overviewRoute, sessionsRoute, modelsRoute, reportRoute, reportDetailRoute]),
+  layoutRoute.addChildren([
+    overviewRoute,
+    sessionsRoute,
+    modelsRoute,
+    reportRoute,
+    reportDetailRoute,
+  ]),
 ]);
 
 export const router = createRouter({ routeTree });
