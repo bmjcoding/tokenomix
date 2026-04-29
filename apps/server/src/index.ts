@@ -13,14 +13,15 @@
 
 import * as fs from 'node:fs';
 import { serve } from '@hono/node-server';
-import { Hono } from 'hono';
 import type { MiddlewareHandler } from 'hono';
+import { Hono } from 'hono';
 import { IndexStore, PROJECTS_DIR } from './index-store.js';
 import { eventsRoute } from './routes/events.js';
 import { healthRoute } from './routes/health.js';
 import { metricsRoute } from './routes/metrics.js';
 import { sessionsRoute } from './routes/sessions.js';
 import { turnsRoute } from './routes/turns.js';
+import { formatLocalIso } from './time.js';
 import { startWatcher } from './watcher.js';
 
 const PORT = Number(process.env.PORT_BASE ?? 3000) + 1;
@@ -40,7 +41,7 @@ function logEvent(
   const entry = JSON.stringify({
     level,
     service: SERVICE,
-    timestamp: new Date().toISOString(),
+    timestamp: formatLocalIso(),
     event,
     ...fields,
   });

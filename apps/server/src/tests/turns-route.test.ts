@@ -241,7 +241,7 @@ describe('GET /api/turns', () => {
 
     // Required string fields.
     expect(typeof turn.timestamp).toBe('string');
-    expect(turn.timestamp).toBe('2026-04-27T14:00:00');
+    expect(turn.timestamp).toMatch(/^2026-04-27T14:00:00\.000[+-]\d{2}:\d{2}$/);
     expect(typeof turn.sessionId).toBe('string');
     expect(turn.sessionId).toBe('sess-shape-001');
     expect(typeof turn.project).toBe('string');

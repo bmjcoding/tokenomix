@@ -23,6 +23,7 @@ import * as fs from 'node:fs';
 import { Hono } from 'hono';
 import type { IndexStore } from '../index-store.js';
 import { PROJECTS_DIR } from '../index-store.js';
+import { formatLocalIso } from '../time.js';
 
 export function healthRoute(store: IndexStore): Hono {
   const app = new Hono();
@@ -30,7 +31,7 @@ export function healthRoute(store: IndexStore): Hono {
   app.get('/', (c) => {
     const indexedRows = store.indexedRows;
     const isReady = store.isReady();
-    const lastUpdated = new Date(store.lastChangeTs).toISOString();
+    const lastUpdated = formatLocalIso(new Date(store.lastChangeTs));
 
     // Determine if PROJECTS_DIR exists on disk.
     let projectsDirExists = false;

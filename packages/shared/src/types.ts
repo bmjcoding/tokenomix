@@ -416,7 +416,10 @@ export interface SubagentBucket {
  * Callers compute inputTokens + outputTokens for a total token count.
  */
 export interface TurnBucket {
-  /** ISO 8601 timestamp (derived from row.date + row.hour, e.g. "2026-04-15T14:00:00"). */
+  /**
+   * Local ISO 8601 timestamp with UTC offset, derived from row.date + row.hour.
+   * Example: "2026-04-15T14:00:00.000-05:00".
+   */
   timestamp: string;
   sessionId: string;
   project: string;
@@ -568,7 +571,7 @@ export interface MetricSummary {
    */
   totalProjectsTouched: number;
 
-  // ── Windowed totals (mirroring Python collect_data totals_30d / totals_5d) ──
+  // ── Windowed totals ──
   costUsd30d: number;
   costUsd5d: number;
   inputTokens30d: number;

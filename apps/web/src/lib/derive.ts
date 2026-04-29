@@ -14,24 +14,57 @@ import type { DailyBucket, HeatmapPoint } from '@tokenomix/shared';
 // 24-hour series
 // ---------------------------------------------------------------------------
 
+export interface HourlySpendPoint {
+  date: string;
+  hour: number;
+  costUsd: number;
+}
+
+/** Format a Date as YYYY-MM-DD in the browser's local time zone. */
+function toLocalDateKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 /**
- * Returns the last 24 hourly buckets from heatmapData, sorted ascending by
- * (date, hour).
+ * Returns local hourly boundary buckets spanning the last 24 hours.
  *
- * Strategy: sort all heatmap points by date + hour descending, take the first
- * 24, then reverse to get ascending order for chart rendering.
+ * Missing heatmap buckets are filled with 0 so the chart represents a real
+ * rolling 24-hour window instead of the last non-empty usage hours.
+ *
+ * The output has 25 points: now-24h, every hour between, and the current hour.
+ * That makes the visible chart endpoints a full 24 hours apart.
  */
-export function getLast24hSeries(heatmapData: HeatmapPoint[]): { hour: number; costUsd: number }[] {
-  // Sort descending by (date, hour) so slice(0, 24) grabs the most recent 24.
-  const sorted = [...heatmapData].sort((a, b) => {
-    if (a.date !== b.date) return a.date < b.date ? 1 : -1;
-    return b.hour - a.hour;
-  });
+export function getLast24hSeries(
+  heatmapData: HeatmapPoint[],
+  now = new Date()
+): HourlySpendPoint[] {
+  if (heatmapData.length === 0) return [];
 
-  // Take the 24 most recent buckets, then reverse to ascending.
-  const last24 = sorted.slice(0, 24).reverse();
+  const costByHour = new Map<string, number>();
+  for (const point of heatmapData) {
+    const key = `${point.date}:${point.hour}`;
+    costByHour.set(key, (costByHour.get(key) ?? 0) + point.costUsd);
+  }
 
-  return last24.map((p) => ({ hour: p.hour, costUsd: p.costUsd }));
+  const end = new Date(now.getTime());
+  end.setMinutes(0, 0, 0);
+
+  const series: HourlySpendPoint[] = [];
+  for (let offset = 24; offset >= 0; offset--) {
+    const bucketTime = new Date(end.getTime());
+    bucketTime.setHours(end.getHours() - offset);
+    const date = toLocalDateKey(bucketTime);
+    const hour = bucketTime.getHours();
+    series.push({
+      date,
+      hour,
+      costUsd: costByHour.get(`${date}:${hour}`) ?? 0,
+    });
+  }
+  return series;
 }
 
 // ---------------------------------------------------------------------------

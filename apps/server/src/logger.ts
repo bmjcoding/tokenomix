@@ -10,6 +10,8 @@
  *   'info'            → stdout
  */
 
+import { formatLocalIso } from './time.js';
+
 /**
  * Write a structured JSON log entry.
  *
@@ -24,7 +26,7 @@ export function logEvent(
   fields: Record<string, unknown>
 ): void {
   const entry = JSON.stringify({
-    timestamp: new Date().toISOString(),
+    timestamp: formatLocalIso(),
     level,
     service: 'tokenomix-server',
     event,

@@ -1,8 +1,8 @@
 /**
  * Server-side pricing bridge tests.
  *
- * These tests verify the locked arithmetic values from tests/test_tokenomix.py
- * lines 237-265, using the shared module re-exported via apps/server/src/pricing.ts.
+ * These tests verify locked arithmetic values through the shared module
+ * re-exported via apps/server/src/pricing.ts.
  *
  * Locked values:
  *   - Opus 4.7 event (1k input + 500 output + 100k cache_read) = $0.0675
@@ -12,17 +12,17 @@
 import type { TokenRow } from '@tokenomix/shared';
 import { describe, expect, it } from 'vitest';
 import {
-  MODEL_PRICES,
-  PRICING_CATALOG_METADATA,
-  WEB_SEARCH_USD_PER_REQUEST,
   computeCost,
   computeCostWithFamily,
   costForRow,
   inferBedrockEndpointScope,
   isKnownPricingModelId,
+  MODEL_PRICES,
   model_family,
+  PRICING_CATALOG_METADATA,
   pricing_status_for_usage,
   resolveCacheTokens,
+  WEB_SEARCH_USD_PER_REQUEST,
 } from '../pricing.js';
 
 // ---------------------------------------------------------------------------

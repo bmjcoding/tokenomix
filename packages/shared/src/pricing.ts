@@ -1,10 +1,8 @@
 /**
  * Pricing module for @tokenomix/shared.
  *
- * Ported from bin/claude-usage.py (lines 117, 159–208, 218–259, 273–313).
- *
  * CORRECTNESS-CRITICAL: The computeCost() function must reproduce the locked
- * arithmetic values from tests/test_tokenomix.py lines 237–265:
+ * arithmetic values covered by apps/server/src/tests/pricing.test.ts:
  *
  *   Opus 4.7 event (1k input + 500 output + 100k cache_read) = $0.0675
  *     1000 × $5/Mtok    = $0.005
@@ -63,7 +61,7 @@ export const AWS_BEDROCK_PRICING_CATALOG_METADATA: PricingCatalogMetadata = {
 export const PRICING_CATALOG_METADATA = ANTHROPIC_1P_PRICING_CATALOG_METADATA;
 
 // ---------------------------------------------------------------------------
-// Web search add-on price (claude-usage.py line 117)
+// Web search add-on price
 //
 //   WEB_SEARCH_USD_PER_REQUEST = 10.00 / 1_000 = 0.01
 // ---------------------------------------------------------------------------
@@ -90,7 +88,7 @@ export interface PriceTable {
 }
 
 // ---------------------------------------------------------------------------
-// MODEL_PRICES (claude-usage.py lines 159–208)
+// MODEL_PRICES
 // ---------------------------------------------------------------------------
 
 /**
@@ -165,7 +163,7 @@ interface ParsedModelId {
 }
 
 // ---------------------------------------------------------------------------
-// Version extraction (claude-usage.py lines 218–228)
+// Version extraction
 // ---------------------------------------------------------------------------
 
 /**
@@ -240,7 +238,7 @@ export function inferBedrockEndpointScope(
 }
 
 // ---------------------------------------------------------------------------
-// model_family() (claude-usage.py lines 231–259)
+// model_family()
 // ---------------------------------------------------------------------------
 
 /**
@@ -318,7 +316,7 @@ export function pricing_status_for_usage(
 }
 
 // ---------------------------------------------------------------------------
-// Fast-mode and data-residency guards (claude-usage.py lines 273–291)
+// Fast-mode and data-residency guards
 // ---------------------------------------------------------------------------
 
 /**
@@ -381,7 +379,7 @@ function bedrockEndpointPremiumRatio(
 }
 
 // ---------------------------------------------------------------------------
-// pricing_multiplier_for_usage() (claude-usage.py lines 293–313)
+// pricing_multiplier_for_usage()
 // ---------------------------------------------------------------------------
 
 /**
@@ -439,13 +437,13 @@ function pricing_multiplier_ratio_for_usage(
 }
 
 // ---------------------------------------------------------------------------
-// Cache-token branching (claude-usage.py lines 422–439)
+// Cache-token branching
 // ---------------------------------------------------------------------------
 
 /**
  * Resolve 5m and 1h cache creation token counts from a usage block.
  *
- * Branching rules (mirroring ModelSlice.add in Python):
+ * Branching rules:
  *   1. If usage.cache_creation is a dict and either nested field is non-zero:
  *      use the nested values as-is.
  *   2. If usage.cache_creation is a dict but BOTH nested fields are zero AND
@@ -482,7 +480,7 @@ export function resolveCacheTokens(usage: RawUsage): {
 /**
  * Compute the USD cost for a single usage record.
  *
- * Formula (mirroring ModelSlice.add in claude-usage.py lines 451–462):
+ * Formula:
  *
  *   token_cost = (
  *     input    × prices.input             / 1_000_000

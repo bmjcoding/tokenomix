@@ -7,8 +7,8 @@
 
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
-import { RawUsageEventSchema } from '@tokenomix/shared';
 import type { RawUsageEventParsed } from '@tokenomix/shared';
+import { RawUsageEventSchema } from '@tokenomix/shared';
 import { logEvent } from './logger.js';
 
 export type ParseSkipReason = 'invalid-json' | 'schema-mismatch' | 'file-open-error';

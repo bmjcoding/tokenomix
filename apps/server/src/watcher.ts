@@ -11,6 +11,7 @@
 
 import chokidar, { type FSWatcher } from 'chokidar';
 import { type IndexStore, PROJECTS_DIR } from './index-store.js';
+import { formatLocalIso } from './time.js';
 
 /** Service name tag applied to all structured log entries. */
 const SERVICE = 'tokenomix-server';
@@ -27,7 +28,7 @@ function logEvent(
   const entry = JSON.stringify({
     level,
     service: SERVICE,
-    timestamp: new Date().toISOString(),
+    timestamp: formatLocalIso(),
     event,
     ...fields,
   });

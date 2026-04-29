@@ -18,68 +18,91 @@ import {
 // ---------------------------------------------------------------------------
 
 describe('getLast24hSeries', () => {
-  it('returns exactly 24 entries when given more than 24 points', () => {
-    // Build 48 heatmap points across two days (hours 0-23 each).
+  const anchorNow = new Date(2026, 3, 29, 9, 30);
+
+  it('returns 25 consecutive boundary entries for a 24-hour span when given data', () => {
     const points: HeatmapPoint[] = [];
-    for (let h = 0; h < 24; h++) {
-      points.push({ date: '2026-04-26', hour: h, costUsd: h * 0.1 });
-      points.push({ date: '2026-04-27', hour: h, costUsd: h * 0.2 });
+    for (const date of ['2026-04-28', '2026-04-29']) {
+      for (let hour = 0; hour < 24; hour++) {
+        points.push({ date, hour, costUsd: hour });
+      }
     }
 
-    const result = getLast24hSeries(points);
-    expect(result).toHaveLength(24);
+    const result = getLast24hSeries(points, anchorNow);
+
+    expect(result).toHaveLength(25);
+    expect(result[0]).toMatchObject({ date: '2026-04-28', hour: 9 });
+    expect(result[24]).toMatchObject({ date: '2026-04-29', hour: 9 });
   });
 
-  it('returns fewer than 24 entries when given fewer than 24 points', () => {
+  it('fills missing hours with zero-cost buckets', () => {
     const points: HeatmapPoint[] = [
-      { date: '2026-04-27', hour: 10, costUsd: 1.0 },
-      { date: '2026-04-27', hour: 11, costUsd: 2.0 },
+      { date: '2026-04-29', hour: 8, costUsd: 1.0 },
+      { date: '2026-04-29', hour: 9, costUsd: 2.0 },
     ];
-    const result = getLast24hSeries(points);
-    expect(result).toHaveLength(2);
+
+    const result = getLast24hSeries(points, anchorNow);
+
+    expect(result).toHaveLength(25);
+    expect(result.at(-2)).toEqual({ date: '2026-04-29', hour: 8, costUsd: 1.0 });
+    expect(result.at(-1)).toEqual({ date: '2026-04-29', hour: 9, costUsd: 2.0 });
+    expect(result.slice(0, -2).every((p) => p.costUsd === 0)).toBe(true);
   });
 
-  it('returns entries in ascending order (oldest hour first)', () => {
-    const points: HeatmapPoint[] = [];
-    // Intentionally add hours out of order.
-    for (const h of [5, 23, 1, 14, 8]) {
-      points.push({ date: '2026-04-27', hour: h, costUsd: h * 0.1 });
-    }
-    const result = getLast24hSeries(points);
-    for (let i = 1; i < result.length; i++) {
-      // Within same day, hour should be non-decreasing.
-      const prev = result[i - 1];
-      const curr = result[i];
-      if (!prev || !curr) throw new Error('unexpected undefined element');
-      expect(curr.hour).toBeGreaterThanOrEqual(prev.hour);
-    }
+  it('returns entries in ascending chronological order', () => {
+    const result = getLast24hSeries([{ date: '2026-04-29', hour: 9, costUsd: 1 }], anchorNow);
+
+    const keys = result.map((p) => `${p.date}T${String(p.hour).padStart(2, '0')}`);
+    expect(keys).toEqual([...keys].sort());
   });
 
-  it('selects the most recent 24 when given two days of data (prefers later date)', () => {
-    const points: HeatmapPoint[] = [];
-    // Day 1: hours 0-23
-    for (let h = 0; h < 24; h++) {
-      points.push({ date: '2026-04-26', hour: h, costUsd: 0.01 });
-    }
-    // Day 2: hours 0-23 with higher cost
-    for (let h = 0; h < 24; h++) {
-      points.push({ date: '2026-04-27', hour: h, costUsd: 1.0 });
-    }
+  it('preserves chronological order across midnight', () => {
+    const points: HeatmapPoint[] = [
+      { date: '2026-04-29', hour: 2, costUsd: 2 },
+      { date: '2026-04-28', hour: 22, costUsd: 22 },
+      { date: '2026-04-29', hour: 0, costUsd: 0.5 },
+      { date: '2026-04-28', hour: 23, costUsd: 23 },
+      { date: '2026-04-29', hour: 1, costUsd: 1 },
+    ];
 
-    const result = getLast24hSeries(points);
-    // All 24 results should come from the more recent day (costUsd === 1.0).
-    expect(result.every((p) => p.costUsd === 1.0)).toBe(true);
+    const result = getLast24hSeries(points, new Date(2026, 3, 29, 2, 30));
+
+    expect(
+      result
+        .filter((p) => p.costUsd > 0)
+        .map((p) => `${p.date}T${String(p.hour).padStart(2, '0')}:00`)
+    ).toEqual([
+      '2026-04-28T22:00',
+      '2026-04-28T23:00',
+      '2026-04-29T00:00',
+      '2026-04-29T01:00',
+      '2026-04-29T02:00',
+    ]);
+  });
+
+  it('excludes buckets outside the rolling 24-hour window', () => {
+    const points: HeatmapPoint[] = [
+      { date: '2026-04-28', hour: 8, costUsd: 99 },
+      { date: '2026-04-28', hour: 9, costUsd: 1 },
+      { date: '2026-04-29', hour: 9, costUsd: 2 },
+      { date: '2026-04-29', hour: 10, costUsd: 99 },
+    ];
+
+    const result = getLast24hSeries(points, anchorNow);
+
+    expect(result[0]).toEqual({ date: '2026-04-28', hour: 9, costUsd: 1 });
+    expect(result[24]).toEqual({ date: '2026-04-29', hour: 9, costUsd: 2 });
+    expect(result.some((p) => p.costUsd === 99)).toBe(false);
   });
 
   it('returns an empty array when given an empty input', () => {
     expect(getLast24hSeries([])).toHaveLength(0);
   });
 
-  it('maps only hour and costUsd fields (no date in output)', () => {
+  it('preserves date, hour, and cost fields for chart timestamps', () => {
     const points: HeatmapPoint[] = [{ date: '2026-04-27', hour: 3, costUsd: 0.5 }];
-    const result = getLast24hSeries(points);
-    expect(result[0]).toEqual({ hour: 3, costUsd: 0.5 });
-    expect(Object.keys(result[0] as object)).not.toContain('date');
+    const result = getLast24hSeries(points, new Date(2026, 3, 27, 3, 30));
+    expect(result.at(-1)).toEqual({ date: '2026-04-27', hour: 3, costUsd: 0.5 });
   });
 });
 

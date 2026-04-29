@@ -7,10 +7,10 @@
  *   - Batch-parallel startup scan (50 files per batch) to bound fd usage.
  *
  * Dedup key: `${requestId}:${messageId}` — BOTH must be present.
- * If either is missing, the event is NOT counted (matches claude-usage.py:634).
+ * If either is missing, the event is not counted.
  *
  * Timestamp handling: convert UTC ISO → system-local naive datetime before
- * bucketing into daily / weekly slices (mirrors parse_iso in claude-usage.py).
+ * bucketing into daily / weekly slices.
  */
 
 import { EventEmitter } from 'node:events';
@@ -40,30 +40,29 @@ import type {
   SessionDurationStats,
   SessionSummary,
   SubagentBucket,
+  SystemTurnDurationEventParsed,
   TokenRow,
   ToolBucket,
-  TurnBucket,
-  WeeklyBucket,
-} from '@tokenomix/shared';
-import type {
-  SystemTurnDurationEventParsed,
   ToolResultContentParsed,
   ToolResultEventParsed,
   ToolUseContentParsed,
   ToolUseEventParsed,
+  TurnBucket,
+  WeeklyBucket,
 } from '@tokenomix/shared';
 import { logEvent } from './logger.js';
 import { parseJSONLFile } from './parser.js';
 import {
   ANTHROPIC_1P_PRICING_CATALOG_METADATA,
   AWS_BEDROCK_PRICING_CATALOG_METADATA,
-  MODEL_PRICES,
   computeCostWithFamily,
   inferBedrockEndpointScope,
+  MODEL_PRICES,
   microsToUsd,
   model_family,
   resolveCacheTokens,
 } from './pricing.js';
+import { formatLocalHourIso, formatLocalIso } from './time.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -116,7 +115,7 @@ function emptyFileIngestionAudit(): FileIngestionAudit {
     tokenRowsRejected: 0,
     rowsIndexed: 0,
     ingestErrors: 0,
-    lastIndexedAt: new Date().toISOString(),
+    lastIndexedAt: formatLocalIso(),
   };
 }
 
@@ -181,7 +180,7 @@ function pricingCatalogForConfig(
 }
 
 // ---------------------------------------------------------------------------
-// Timestamp helpers (mirrors claude-usage.py parse_iso lines 316-339)
+// Timestamp helpers
 // ---------------------------------------------------------------------------
 
 /**
@@ -192,7 +191,7 @@ function pricingCatalogForConfig(
  * - Returns null if the string is empty or unparseable.
  *
  * The resulting Date object carries local-time methods (getHours, getDate, etc.)
- * which mirror Python's aware_utc.astimezone().replace(tzinfo=None) behavior.
+ * so buckets align with the user's local calendar.
  */
 function parseIso(ts: string | null | undefined): Date | null {
   if (!ts) return null;
@@ -2188,7 +2187,6 @@ export class IndexStore extends EventEmitter {
         const messageId = event.message.id;
 
         // Dedup key: BOTH requestId AND message.id must be present.
-        // Matches claude-usage.py:634: (rid, mid) if rid and mid else None
         if (!requestId || !messageId) {
           fileAudit.missingDedupIdRows += 1;
           continue;
@@ -2240,7 +2238,7 @@ export class IndexStore extends EventEmitter {
       });
     }
 
-    fileAudit.lastIndexedAt = new Date().toISOString();
+    fileAudit.lastIndexedAt = formatLocalIso();
     this.fileIngestionAudits.set(filePath, fileAudit);
   }
 
@@ -2300,9 +2298,8 @@ export class IndexStore extends EventEmitter {
         const rowDate = new Date(`${row.date}T00:00:00`);
         if (rowDate < sinceCutoff) continue;
       }
-      // Reconstruct ISO timestamp from date + hour (hour-precision).
-      const hour = String(row.hour).padStart(2, '0');
-      const timestamp = `${row.date}T${hour}:00:00`;
+      // Reconstruct local ISO timestamp from date + hour (hour-precision).
+      const timestamp = formatLocalHourIso(row.date, row.hour);
       result.push({
         timestamp,
         sessionId: row.sessionId,

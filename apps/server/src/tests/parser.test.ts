@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RawUsageEventSchema } from '@tokenomix/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { PROJECTS_DIR, buildTokenRow } from '../index-store.js';
+import { buildTokenRow, PROJECTS_DIR } from '../index-store.js';
 import { parseJSONLFile } from '../parser.js';
 
 // ---------------------------------------------------------------------------

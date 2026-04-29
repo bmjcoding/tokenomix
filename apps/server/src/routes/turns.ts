@@ -11,8 +11,9 @@
  *   project — project path substring filter (optional)
  *
  * Each entry in the response corresponds to one TokenRow (one assistant turn).
- * The timestamp field uses hour-level precision (YYYY-MM-DDTHH:00:00), which
- * is the granularity available without storing full epoch ms in TokenRow.
+ * The timestamp field uses hour-level precision and includes the local UTC
+ * offset; this is the granularity available without storing full epoch ms in
+ * TokenRow.
  */
 
 import type { MetricsQuery, TurnBucket } from '@tokenomix/shared';
