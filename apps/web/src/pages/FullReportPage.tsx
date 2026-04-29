@@ -2,7 +2,7 @@
  * FullReportPage — comprehensive session table at /report.
  *
  * Fetches GET /api/sessions?limit=500 via the existing fetchSessions helper
- * and renders a client-side sortable, paginated table of all sessions.
+ * and renders a client-side sortable, paginated, filterable table of all sessions.
  *
  * Columns:
  *   Date (sortable; based on session.firstTs — nulls sort to end)
@@ -19,6 +19,14 @@
  * Default sort: date descending (most recent first).
  * Clicking any column header toggles ascending / descending.
  * Pagination: 50 rows per page.
+ *
+ * Filtering pipeline (applied in order):
+ *   1. Date-range filter (prune by firstTs)
+ *   2. Search filter (prune by projectName OR sessionId substring)
+ *   3. Sort (sortKey + sortDir)
+ *   4. Pagination (50/page)
+ *
+ * Subtitle stats reflect the filtered set (after steps 1–2, pre-sort, pre-page).
  */
 
 import { useQuery } from '@tanstack/react-query';
@@ -31,14 +39,24 @@ import {
   ChevronRight,
   ChevronUp,
   Download,
+  Search,
 } from 'lucide-react';
 import { useState } from 'react';
 import { fetchSessions } from '../lib/api.js';
 import { exportSessionsCsv } from '../lib/csvExport.js';
-import { formatProjectName, formatSessionDate } from '../lib/formatters.js';
+import {
+  formatCurrency,
+  formatDateRange,
+  formatProjectName,
+  formatSessionDate,
+  formatTokens,
+} from '../lib/formatters.js';
 import { queryKeys } from '../lib/query-keys.js';
+import { MetricCard } from '../panels/MetricCard.js';
 import { Button } from '../ui/Button.js';
 import { Card } from '../ui/Card.js';
+import { Select } from '../ui/Select.js';
+import type { SelectOption } from '../ui/Select.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -56,6 +74,21 @@ type SortKey =
   | keyof Pick<SessionSummary, 'costUsd' | 'inputTokens' | 'outputTokens' | 'events'>;
 
 type SortDir = 'asc' | 'desc';
+
+type DateRangePreset = 'all' | '7d' | '30d' | '90d' | 'thisMonth' | 'lastMonth';
+
+// ---------------------------------------------------------------------------
+// Date range options (typed for Select primitive)
+// ---------------------------------------------------------------------------
+
+const DATE_RANGE_OPTIONS: ReadonlyArray<SelectOption<DateRangePreset>> = [
+  { value: 'all', label: 'All time' },
+  { value: '7d', label: 'Last 7 days' },
+  { value: '30d', label: 'Last 30 days' },
+  { value: '90d', label: 'Last 90 days' },
+  { value: 'thisMonth', label: 'This month' },
+  { value: 'lastMonth', label: 'Last month' },
+] as const;
 
 // ---------------------------------------------------------------------------
 // Formatters
@@ -76,6 +109,78 @@ function formatCost(v: number): string {
 /** Locale-grouped integer. */
 function formatNum(n: number): string {
   return n.toLocaleString();
+}
+
+// ---------------------------------------------------------------------------
+// Date-range filter helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns the cutoff [startMs, endMs] inclusive range for a given preset,
+ * using the provided `now` as the reference time. Returns null for 'all'.
+ */
+function getPresetRange(preset: DateRangePreset, now: Date): [number, number] | null {
+  if (preset === 'all') return null;
+
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const todayStartMs = todayStart.getTime();
+
+  if (preset === '7d') {
+    return [todayStartMs - 6 * 86_400_000, now.getTime()];
+  }
+  if (preset === '30d') {
+    return [todayStartMs - 29 * 86_400_000, now.getTime()];
+  }
+  if (preset === '90d') {
+    return [todayStartMs - 89 * 86_400_000, now.getTime()];
+  }
+  if (preset === 'thisMonth') {
+    const start = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+    const end = now.getTime();
+    return [start, end];
+  }
+  if (preset === 'lastMonth') {
+    const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+    return [lastMonthStart.getTime(), lastMonthEnd.getTime()];
+  }
+  return null;
+}
+
+/**
+ * Apply date-range preset filter to sessions.
+ * - preset === 'all': include all sessions (including firstTs === null)
+ * - any other preset: exclude sessions where firstTs === null; include only
+ *   sessions whose firstTs falls within [rangeStart, rangeEnd].
+ */
+function applyDateFilter(
+  sessions: SessionSummary[],
+  preset: DateRangePreset,
+  now: Date
+): SessionSummary[] {
+  const range = getPresetRange(preset, now);
+  if (range === null) return sessions; // 'all' — include everything
+  const [rangeStart, rangeEnd] = range;
+  return sessions.filter((s) => {
+    if (s.firstTs === null) return false; // exclude null timestamps in non-'all' presets
+    const ts = new Date(s.firstTs).getTime();
+    if (isNaN(ts)) return false;
+    return ts >= rangeStart && ts <= rangeEnd;
+  });
+}
+
+/**
+ * Apply search filter: case-insensitive substring match against
+ * session.projectName OR session.sessionId. Empty query passes all.
+ */
+function applySearchFilter(sessions: SessionSummary[], query: string): SessionSummary[] {
+  const q = query.trim().toLowerCase();
+  if (q === '') return sessions;
+  return sessions.filter(
+    (s) =>
+      (s.projectName ?? '').toLowerCase().includes(q) ||
+      s.sessionId.toLowerCase().includes(q)
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -323,6 +428,8 @@ export default function FullReportPage() {
   const [sortKey, setSortKey] = useState<SortKey>('date');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [pageIndex, setPageIndex] = useState<number>(0);
+  const [datePreset, setDatePreset] = useState<DateRangePreset>('all');
+  const [searchQuery, setSearchQuery] = useState<string>('');
 
   const query = { limit: 500 } as const;
 
@@ -341,25 +448,74 @@ export default function FullReportPage() {
     setPageIndex(0);
   }
 
-  const sessions = data ?? [];
-  const sorted = isLoading ? [] : sortSessions(sessions, sortKey, sortDir);
+  function handleDatePresetChange(preset: DateRangePreset) {
+    setDatePreset(preset);
+    setPageIndex(0);
+  }
 
+  function handleSearchChange(q: string) {
+    setSearchQuery(q);
+    setPageIndex(0);
+  }
+
+  const sessions = data ?? [];
+
+  // ---------------------------------------------------------------------------
+  // Filtering pipeline (applied before sort and pagination)
+  // ---------------------------------------------------------------------------
+
+  // Step 1: Date-range filter
+  const now = new Date();
+  const dateFiltered = isLoading ? [] : applyDateFilter(sessions, datePreset, now);
+
+  // Step 2: Search filter
+  const filtered = isLoading ? [] : applySearchFilter(dateFiltered, searchQuery);
+
+  // KPI stats reflect the filtered set (pre-sort, pre-page)
+  const filteredCount = filtered.length;
+  const filteredTotalCost = filtered.reduce((sum, s) => sum + s.costUsd, 0);
+  const filteredTotalTokens = filtered.reduce(
+    (sum, s) => sum + s.inputTokens + s.outputTokens,
+    0
+  );
+  const filteredAvgCost = filteredCount > 0 ? filteredTotalCost / filteredCount : 0;
+
+  // Date range covered by the filtered set (from firstTs values)
+  const filteredTimestamps = filtered
+    .map((s) => s.firstTs)
+    .filter((ts): ts is string => ts !== null && !isNaN(new Date(ts).getTime()))
+    .map((ts) => new Date(ts).getTime());
+  const filteredMinTs =
+    filteredTimestamps.length > 0
+      ? new Date(Math.min(...filteredTimestamps)).toISOString()
+      : null;
+  const filteredMaxTs =
+    filteredTimestamps.length > 0
+      ? new Date(Math.max(...filteredTimestamps)).toISOString()
+      : null;
+  const dateRangeLabel = formatDateRange(filteredMinTs, filteredMaxTs);
+
+  // Step 3: Sort
+  const sorted = isLoading ? [] : sortSessions(filtered, sortKey, sortDir);
+
+  // Step 4: Pagination
   const pageCount = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
   const pageSessions = sorted.slice(pageIndex * PAGE_SIZE, (pageIndex + 1) * PAGE_SIZE);
-
-  const totalCost = sessions.reduce((sum, s) => sum + s.costUsd, 0);
 
   return (
     <div className="space-y-6 py-6 px-4 sm:px-6 lg:px-8 max-w-screen-xl mx-auto">
       {/* ── Page header card ── */}
       <Card as="section" aria-label="Full report header">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="flex items-start gap-3">
+        {/* ROW 1: back arrow + title | Export CSV button */}
+        <div className="flex items-center justify-between gap-4">
+          {/* Left: back arrow + h1 */}
+          <div className="flex items-center gap-3">
             <Link
               to="/"
               aria-label="Back to overview"
               className={[
-                'mt-0.5 inline-flex h-8 w-8 items-center justify-center rounded-lg text-gray-600 dark:text-gray-400',
+                'inline-flex h-8 w-8 items-center justify-center rounded-lg',
+                'text-gray-600 dark:text-gray-400',
                 // design-lint-disable dark-mode-pairs: compound modifier prefix (hover:) hides the dark pairing from naive line scan
                 'hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors',
                 // design-lint-disable dark-mode-pairs: compound modifier prefix (focus-visible:) hides the dark pairing from naive line scan
@@ -369,36 +525,107 @@ export default function FullReportPage() {
             >
               <ArrowLeft className="h-4 w-4" aria-hidden="true" />
             </Link>
-
-            <div>
-              <h1 className="text-2xl font-bold tracking-tight text-gray-950 dark:text-white">
-                Full Session Report
-              </h1>
-              {!isLoading && !isError && (
-                <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
-                  {sessions.length.toLocaleString()} session
-                  {sessions.length !== 1 ? 's' : ''} &middot; total cost{' '}
-                  <span className="font-medium tabular-nums text-gray-950 dark:text-white">
-                    {formatCost(totalCost)}
-                  </span>
-                </p>
-              )}
-              {isLoading && (
-                <div className="mt-1 h-4 w-48 animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
-              )}
-            </div>
+            <h1 className="text-2xl font-bold tracking-tight text-gray-950 dark:text-white">
+              Full Session Report
+            </h1>
           </div>
 
+          {/* Right: Export CSV — primary pill button using Button primitive */}
           <Button
-            variant="ghost"
-            size="sm"
+            variant="primary"
             Icon={Download}
+            className="rounded-full px-5 py-2.5"
             disabled={sessions.length === 0}
-            onClick={() => exportSessionsCsv(sessions)}
-            aria-label="Export sessions as CSV"
+            onClick={() => exportSessionsCsv(filtered)}
+            aria-label="Export filtered sessions as CSV"
           >
             Export CSV
           </Button>
+        </div>
+
+        {/* ROW 2: KPI grid — 4 MetricCards, no deltas */}
+        {!isLoading && !isError && (
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
+            <MetricCard
+              label="Sessions"
+              value={filteredCount.toLocaleString()}
+              deltaPercent={null}
+            />
+            <MetricCard
+              label="Total Cost"
+              value={formatCurrency(filteredTotalCost)}
+              deltaPercent={null}
+            />
+            <MetricCard
+              label="Total Tokens"
+              value={formatTokens(filteredTotalTokens)}
+              deltaPercent={null}
+            />
+            <MetricCard
+              label="Avg / Session"
+              value={filteredCount > 0 ? formatCurrency(filteredAvgCost) : '—'}
+              deltaPercent={null}
+            />
+          </div>
+        )}
+
+        {/* Loading skeleton for KPI grid */}
+        {isLoading && (
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
+            {(['k0', 'k1', 'k2', 'k3'] as const).map((k) => (
+              <div
+                key={k}
+                className="rounded-2xl border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900 p-5"
+              >
+                <div className="h-3 w-20 animate-pulse rounded bg-gray-200 dark:bg-gray-800 mb-3" />
+                <div className="h-7 w-24 animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ROW 3: date range covered — subtle, only when filtered set is non-empty */}
+        {!isLoading && !isError && filteredCount > 0 && dateRangeLabel !== '' && (
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-3">{dateRangeLabel}</p>
+        )}
+
+        {/* ROW 4: filter row */}
+        <div className="flex flex-wrap items-center gap-3 mt-4">
+          {/* Date range — custom Select primitive (not native <select>) */}
+          <Select<DateRangePreset>
+            value={datePreset}
+            options={DATE_RANGE_OPTIONS}
+            onChange={handleDatePresetChange}
+            ariaLabel="Date range filter"
+            widthClass="w-40"
+          />
+
+          {/* Search input */}
+          <div className="relative flex-1 min-w-[200px]">
+            <Search
+              className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 dark:text-gray-500"
+              aria-hidden="true"
+            />
+            <input
+              type="search"
+              value={searchQuery}
+              onChange={(e) => handleSearchChange(e.target.value)}
+              placeholder="Search projects or session IDs…"
+              aria-label="Search sessions"
+              className={[
+                'w-full rounded-lg border border-gray-200 dark:border-gray-800',
+                'bg-gray-50 dark:bg-gray-900',
+                'pl-10 pr-3 py-2',
+                'text-sm text-gray-900 dark:text-gray-100',
+                // design-lint-disable dark-mode-pairs: compound modifier prefix (placeholder:) hides the dark pairing from naive line scan
+                'placeholder:text-gray-400 dark:placeholder:text-gray-500',
+                // design-lint-disable dark-mode-pairs: compound modifier prefix (focus-visible:) hides the dark pairing from naive line scan
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-950 dark:focus-visible:ring-white',
+                'focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-950',
+                'transition-colors',
+              ].join(' ')}
+            />
+          </div>
         </div>
       </Card>
 
@@ -442,7 +669,7 @@ export default function FullReportPage() {
                     {/* Top Tools — non-sortable */}
                     <th
                       scope="col"
-                      className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400"
+                      className="px-4 py-3 text-center text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400"
                     >
                       Top Tools
                     </th>
@@ -489,7 +716,7 @@ export default function FullReportPage() {
                         colSpan={7}
                         className="px-4 py-8 text-center text-sm text-gray-500 dark:text-gray-500"
                       >
-                        No sessions yet.
+                        {sessions.length === 0 ? 'No sessions yet.' : 'No sessions match the current filters.'}
                       </td>
                     </tr>
                   )}

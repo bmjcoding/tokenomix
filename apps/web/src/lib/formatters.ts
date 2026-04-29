@@ -125,6 +125,50 @@ export function formatSessionDate(iso: string | null): string {
   return `${month}-${day}-${year}`;
 }
 
+/** Month name abbreviations (same approach as formatSessionDate's comment notes). */
+const MONTH_ABBR = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+];
+
+/**
+ * Formats one or two ISO 8601 date strings into a human-readable range string.
+ *
+ * Format: "MMM D, YYYY – MMM D, YYYY"
+ * Single date (start === end): "MMM D, YYYY"
+ * Empty / null / invalid input: returns ""
+ *
+ * Date components are derived from LOCAL time (getMonth / getDate / getFullYear)
+ * to match the calendar date visible to the user.
+ *
+ * Examples:
+ *   formatDateRange("2026-04-06T00:00:00Z", "2026-04-29T00:00:00Z")
+ *     → "Apr 6, 2026 – Apr 29, 2026"
+ *   formatDateRange("2026-04-06T00:00:00Z", "2026-04-06T00:00:00Z")
+ *     → "Apr 6, 2026"
+ *   formatDateRange(null, null) → ""
+ */
+export function formatDateRange(startIso: string | null, endIso: string | null): string {
+  function fmtDate(iso: string | null): string | null {
+    if (!iso) return null;
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return null;
+    const month = MONTH_ABBR[d.getMonth()];
+    const day = d.getDate();
+    const year = d.getFullYear();
+    return `${month} ${day}, ${year}`;
+  }
+
+  const start = fmtDate(startIso);
+  const end = fmtDate(endIso);
+
+  if (!start && !end) return '';
+  if (!start) return end ?? '';
+  if (!end) return start;
+  if (start === end) return start;
+  return `${start} – ${end}`;
+}
+
 /**
  * Derives the basename of an absolute project path for display purposes.
  *
