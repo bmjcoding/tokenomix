@@ -33,7 +33,7 @@ import {
 import { useState } from 'react';
 import { fetchSessions } from '../lib/api.js';
 import { exportSessionsCsv } from '../lib/csvExport.js';
-import { formatProjectName } from '../lib/formatters.js';
+import { formatProjectName, formatSessionDate } from '../lib/formatters.js';
 import { queryKeys } from '../lib/query-keys.js';
 import { Button } from '../ui/Button.js';
 import { Card } from '../ui/Card.js';
@@ -201,9 +201,9 @@ function TopToolsCell({ session }: TopToolsCellProps) {
 // Skeleton rows (loading state)
 // ---------------------------------------------------------------------------
 
-// 8 columns: Project, Top Tools, Cost, Input, Output, Cache Create, Cache Read, Events
+// 9 columns: Date, Project, Top Tools, Cost, Input, Output, Cache Create, Cache Read, Events
 const SKELETON_ROW_KEYS = ['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7'] as const;
-const SKELETON_CELL_KEYS = ['c0', 'c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7'] as const;
+const SKELETON_CELL_KEYS = ['c0', 'c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7', 'c8'] as const;
 
 function SkeletonRows() {
   return (
@@ -377,9 +377,27 @@ export default function FullReportPage() {
         {!isError && (
           <>
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="w-full table-fixed text-sm">
+                <colgroup>
+                  <col className="w-32" />
+                  <col className="w-44" />
+                  <col className="w-72" />
+                  <col className="w-24" />
+                  <col className="w-24" />
+                  <col className="w-28" />
+                  <col className="w-32" />
+                  <col className="w-32" />
+                  <col className="w-20" />
+                </colgroup>
                 <thead className="sticky top-0 z-10">
                   <tr className="border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900">
+                    {/* Date — non-sortable */}
+                    <th
+                      scope="col"
+                      className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400"
+                    >
+                      Date
+                    </th>
                     {/* Project — non-sortable; serves as primary identifier */}
                     <th
                       scope="col"
@@ -444,7 +462,7 @@ export default function FullReportPage() {
                   {!isLoading && sorted.length === 0 && (
                     <tr>
                       <td
-                        colSpan={8}
+                        colSpan={9}
                         className="px-4 py-8 text-center text-sm text-gray-500 dark:text-gray-500"
                       >
                         No sessions yet.
@@ -459,6 +477,11 @@ export default function FullReportPage() {
                         // design-lint-disable dark-mode-pairs: compound modifier prefix (hover:) hides the dark pairing from naive line scan
                         className="border-t border-gray-200 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-900 transition-colors"
                       >
+                        {/* Date */}
+                        <td className="px-4 py-3 text-sm tabular-nums text-gray-700 dark:text-gray-300">
+                          {formatSessionDate(session.firstTs)}
+                        </td>
+
                         {/* Project — basename as Link; session ID as secondary muted mono line */}
                         <td className="px-4 py-3 max-w-[220px]">
                           <Link

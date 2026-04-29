@@ -100,6 +100,37 @@ export function formatDurationMinutes(minutes: number): string {
 }
 
 /**
+ * Formats an ISO 8601 date string (or null) as `MMMM-DD-YYYY`.
+ *
+ * Format details:
+ *   - Month: full English name from a hardcoded 12-element array (e.g. "April").
+ *     No Intl/locale API is used — output is deterministic regardless of runtime locale.
+ *   - Day: zero-padded to 2 digits (e.g. "09").
+ *   - Year: full 4-digit year (e.g. "2026").
+ *   - Separator: dash between each segment.
+ *   - Example: "2026-04-29T14:00:00.000Z" → "April-29-2026"
+ *
+ * Date components are derived from LOCAL time (getMonth / getDate / getFullYear)
+ * so the output matches the user's wall-clock date, not UTC.
+ *
+ * Null fallback: returns '—' (em dash) for null, empty string, or any input
+ * that produces an invalid Date (e.g. garbage strings).
+ */
+export function formatSessionDate(iso: string | null): string {
+  const MONTH_NAMES = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December',
+  ];
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '—';
+  const month = MONTH_NAMES[d.getMonth()];
+  const day = String(d.getDate()).padStart(2, '0');
+  const year = d.getFullYear();
+  return `${month}-${day}-${year}`;
+}
+
+/**
  * Derives the basename of an absolute project path for display purposes.
  *
  * Algorithm:

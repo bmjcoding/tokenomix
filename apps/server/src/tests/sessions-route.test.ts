@@ -675,6 +675,85 @@ describe('GET /api/sessions/:id — initialPrompt fields', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Tests for GET /api/sessions — firstTs field
+// ---------------------------------------------------------------------------
+
+/**
+ * Write a minimal JSONL fixture with a single assistant event that has a usage
+ * block. ingestFile() will parse this, produce a TokenRow, and call
+ * recordSessionTimestamp() — populating sessionTimes for the given sessionId.
+ */
+async function writeTempAssistantJsonl(sessionId: string, timestampIso: string): Promise<string> {
+  const tmpDir = os.tmpdir();
+  const tmpFile = path.join(tmpDir, `tokenomix-asst-${sessionId}-${Date.now()}.jsonl`);
+  const event = JSON.stringify({
+    type: 'assistant',
+    requestId: `req-${sessionId}`,
+    sessionId,
+    timestamp: timestampIso,
+    cwd: '/projects/firstts-test',
+    message: {
+      id: `msg-${sessionId}`,
+      model: 'claude-sonnet-4-6-20251120',
+      usage: {
+        input_tokens: 100,
+        output_tokens: 50,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+    },
+  });
+  await fs.writeFile(tmpFile, event + '\n', 'utf-8');
+  tempFiles.push(tmpFile);
+  return tmpFile;
+}
+
+describe('GET /api/sessions — firstTs field', () => {
+  it('firstTs is the ISO string matching the known epoch ms when sessionTimes is populated', async () => {
+    const store = new IndexStore();
+    const sessionId = 'sess-firstts-populated';
+    // Use a fixed, deterministic timestamp so the assertion is exact.
+    const knownIso = '2026-04-15T14:00:00.000Z';
+    const expectedFirstTs = new Date(knownIso).toISOString();
+
+    const tmpFile = await writeTempAssistantJsonl(sessionId, knownIso);
+    await store.ingestFile(tmpFile);
+
+    const app = buildSessionsApp(store);
+    const res = await app.request('/api/sessions');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as SessionSummary[];
+
+    const entry = body.find((s) => s.sessionId === sessionId);
+    expect(entry).toBeDefined();
+    expect(entry?.firstTs).toBe(expectedFirstTs);
+  });
+
+  it('firstTs is null when the session row was injected directly (sessionTimes not populated)', async () => {
+    const store = new IndexStore();
+    const rows = store.rows as Map<string, TokenRow>;
+
+    const sessionId = 'sess-firstts-null';
+    // Inject a row directly — bypasses ingestFileInternal and recordSessionTimestamp.
+    rows.set(
+      'req_ftn:msg_ftn',
+      makeRow({ sessionId, project: '/projects/firstts-null', projectName: 'firstts-null' })
+    );
+
+    const app = buildSessionsApp(store);
+    const res = await app.request('/api/sessions');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as SessionSummary[];
+
+    const entry = body.find((s) => s.sessionId === sessionId);
+    expect(entry).toBeDefined();
+    expect(entry?.firstTs).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Tests for POST /api/sessions/:id/reveal
 // ---------------------------------------------------------------------------
 

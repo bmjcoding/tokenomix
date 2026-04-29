@@ -46,6 +46,8 @@ const SESSION_FIXTURES: SessionSummary[] = [
     sessionId: 'abc123',
     project: '/home/user/project-a',
     projectName: 'project-a',
+    // UTC noon — will not cross a date boundary in any common timezone
+    firstTs: '2026-04-29T12:00:00.000Z',
     costUsd: 1.2345,
     inputTokens: 1000,
     outputTokens: 500,
@@ -61,6 +63,7 @@ const SESSION_FIXTURES: SessionSummary[] = [
     // project contains a comma — must be quoted
     project: '/home/user/project, alpha',
     projectName: 'project, alpha',
+    firstTs: null,
     costUsd: 0.0001,
     inputTokens: 10,
     outputTokens: 5,
@@ -76,6 +79,7 @@ const SESSION_FIXTURES: SessionSummary[] = [
     // project contains a double-quote — must be quoted and doubled
     project: '/home/user/say "hello"',
     projectName: 'say "hello"',
+    firstTs: '2026-01-15T12:00:00.000Z',
     costUsd: 2.0,
     inputTokens: 2000,
     outputTokens: 1000,
@@ -257,12 +261,35 @@ describe('buildSessionsRows', () => {
     const rows = buildSessionsRows(SESSION_FIXTURES);
     const first = rows[1];
     expect(first).toBeDefined();
-    // [project, projectName, sessionId, costUsd, inputTokens, outputTokens, cacheCreation, cacheRead, events, isSubagent]
-    expect(first?.[0]).toBe('/home/user/project-a');
-    expect(first?.[1]).toBe('project-a');
-    expect(first?.[2]).toBe('abc123');
-    expect(first?.[3]).toBe(1.2345);
-    expect(first?.[9]).toBe(false);
+    // [date, project, projectName, sessionId, costUsd, inputTokens, outputTokens, cacheCreation, cacheRead, events, isSubagent]
+    // index 0 is the formatted date string
+    expect(first?.[1]).toBe('/home/user/project-a');
+    expect(first?.[2]).toBe('project-a');
+    expect(first?.[3]).toBe('abc123');
+    expect(first?.[4]).toBe(1.2345);
+    expect(first?.[10]).toBe(false);
+  });
+
+  it('date cell formats firstTs to MMMM-DD-YYYY', () => {
+    const rows = buildSessionsRows(SESSION_FIXTURES);
+    // first data row has firstTs '2026-04-29T12:00:00.000Z' (UTC noon — tz-safe)
+    const dateCell = String(rows[1]?.[0]);
+    expect(dateCell).toContain('2026');
+    expect(dateCell).toContain('April');
+  });
+
+  it('date cell is em-dash for null firstTs', () => {
+    const rows = buildSessionsRows(SESSION_FIXTURES);
+    // second data row has firstTs: null
+    expect(rows[2]?.[0]).toBe('—');
+  });
+
+  it('each data row has 11 elements', () => {
+    const rows = buildSessionsRows(SESSION_FIXTURES);
+    // Skip header row (index 0)
+    for (let i = 1; i < rows.length; i++) {
+      expect(rows[i]).toHaveLength(11);
+    }
   });
 
   it('produces header-only rows for an empty sessions array', () => {
@@ -306,8 +333,8 @@ describe('RFC 4180 output via serializeCsv + buildSessionsRows', () => {
   it('serializes boolean IsSubagent as "true" or "false"', () => {
     const csv = serializeCsv(buildSessionsRows(SESSION_FIXTURES));
     const rows = parseCsvRows(csv);
-    expect(rows[1]?.[9]).toBe('false'); // first session isSubagent: false
-    expect(rows[2]?.[9]).toBe('true'); // second session isSubagent: true
+    expect(rows[1]?.[10]).toBe('false'); // first session isSubagent: false
+    expect(rows[2]?.[10]).toBe('true'); // second session isSubagent: true
   });
 
   it('uses CRLF line endings throughout', () => {
@@ -328,6 +355,7 @@ describe('RFC 4180 output via serializeCsv + buildSessionsRows', () => {
     const csv = serializeCsv(buildSessionsRows([]));
     const rows = parseCsvRows(csv);
     expect(rows[0]).toEqual([
+      'Date',
       'Project',
       'ProjectName',
       'SessionId',
@@ -347,6 +375,7 @@ describe('CSV injection prevention via quoteField + escapeFormula', () => {
     sessionId: 'test-id',
     project,
     projectName,
+    firstTs: null,
     costUsd: 0,
     inputTokens: 0,
     outputTokens: 0,
@@ -519,7 +548,7 @@ describe('exportSessionsCsv — download trigger', () => {
 
   it('passes a string blob containing the CSV header to Blob', () => {
     exportSessionsCsv(SESSION_FIXTURES);
-    expect(lastBlobParts).toContain('Project,ProjectName,SessionId,CostUSD');
+    expect(lastBlobParts).toContain('Date,Project,ProjectName,SessionId,CostUSD');
   });
 
   it('passes a blob with correct row count', () => {

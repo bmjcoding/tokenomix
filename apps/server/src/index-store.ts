@@ -1729,7 +1729,11 @@ function aggregate(
 // Session summary computation
 // ---------------------------------------------------------------------------
 
-function computeSessionSummaries(rows: TokenRow[], query: MetricsQuery): SessionSummary[] {
+function computeSessionSummaries(
+  rows: TokenRow[],
+  query: MetricsQuery,
+  sessionTimes: Map<string, { firstTs: number; lastTs: number }>
+): SessionSummary[] {
   const now = new Date();
   const sinceCutoff = parseSinceCutoff(query.since, now);
 
@@ -1826,7 +1830,9 @@ function computeSessionSummaries(rows: TokenRow[], query: MetricsQuery): Session
           errorRate: count > 0 ? errorCount / count : 0,
         }));
     }
-    result.push({ ...entry, topTools, toolNamesCount });
+    const t = sessionTimes.get(entry.sessionId);
+    const firstTs: string | null = t ? new Date(t.firstTs).toISOString() : null;
+    result.push({ ...entry, firstTs, topTools, toolNamesCount });
   }
 
   return result.sort((a, b) => b.costUsd - a.costUsd);
@@ -2463,7 +2469,7 @@ export class IndexStore extends EventEmitter {
   /** Return per-session summaries, optionally filtered. */
   getSessions(query: MetricsQuery = {}): SessionSummary[] {
     const allRows = [...this.rows.values()];
-    return computeSessionSummaries(allRows, query);
+    return computeSessionSummaries(allRows, query, this.sessionTimes);
   }
 
   /**

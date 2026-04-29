@@ -466,6 +466,12 @@ export interface SessionSummary {
   cacheCreationTokens: number;
   cacheReadTokens: number;
   events: number;
+  /**
+   * ISO 8601 timestamp of the first turn in this session (UTC). null when the session
+   * has been evicted from the in-memory sessionTimes map (sessions older than the
+   * 50,000-entry LRU cap). Matches the format and semantics of SessionDetail.firstTs.
+   */
+  firstTs: string | null;
   isSubagent: boolean;
   /**
    * Top-3 tools by invocation count across all turns in this session.

@@ -17,6 +17,7 @@
  */
 
 import type { DailyBucket, SessionSummary } from '@tokenomix/shared';
+import { formatSessionDate } from './formatters.js';
 
 // ---------------------------------------------------------------------------
 // RFC 4180 helpers (exported for testing)
@@ -68,6 +69,7 @@ export function serializeCsv(
 
 /** Column headers for session export. */
 export const SESSIONS_HEADERS = [
+  'Date',
   'Project',
   'ProjectName',
   'SessionId',
@@ -100,6 +102,7 @@ export function buildSessionsRows(
   const dataRows = sessions.map(
     (s) =>
       [
+        formatSessionDate(s.firstTs),
         s.project,
         s.projectName,
         s.sessionId,
@@ -167,7 +170,7 @@ function triggerDownload(csvContent: string, filename: string): void {
  * Export an array of SessionSummary records as a downloadable CSV file.
  *
  * Columns (in order):
- *   Project, ProjectName, SessionId, CostUSD, InputTokens, OutputTokens,
+ *   Date, Project, ProjectName, SessionId, CostUSD, InputTokens, OutputTokens,
  *   CacheCreation, CacheRead, Events, IsSubagent
  *
  * @param sessions - Array of SessionSummary objects from GET /api/sessions.
