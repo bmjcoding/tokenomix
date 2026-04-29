@@ -488,6 +488,8 @@ export default function FullReportPage() {
     0
   );
   const totalDurationMs = filtered.reduce((sum, s) => sum + (s.durationMs ?? 0), 0);
+  const filteredTotalInputTokens = filtered.reduce((sum, s) => sum + s.inputTokens, 0);
+  const filteredTotalOutputTokens = filtered.reduce((sum, s) => sum + s.outputTokens, 0);
 
   // Date range covered by the filtered set (from firstTs values)
   const filteredTimestamps = filtered
@@ -797,6 +799,48 @@ export default function FullReportPage() {
                       </tr>
                     ))}
                 </tbody>
+
+                {/* ── Totals footer row — reflects filtered set, same as hero KPIs ── */}
+                {!isLoading && filteredCount > 0 && (
+                  <tfoot>
+                    <tr className="border-t-2 border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-900">
+                      {/* Date column — "TOTALS" label */}
+                      <td className="px-4 py-3 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                        Totals
+                      </td>
+
+                      {/* Project column — session count */}
+                      <td className="px-4 py-3 text-xs font-medium text-gray-500 dark:text-gray-400">
+                        {filteredCount.toLocaleString()} sessions
+                      </td>
+
+                      {/* Top Tools column — em-dash (no meaningful sum) */}
+                      <td className="px-4 py-3 text-sm text-gray-400 dark:text-gray-600" aria-label="Not applicable">
+                        &mdash;
+                      </td>
+
+                      {/* Cost */}
+                      <td className="px-4 py-3 text-center text-sm font-semibold tabular-nums text-gray-950 dark:text-white">
+                        {formatCurrency(filteredTotalCost)}
+                      </td>
+
+                      {/* Input Tokens */}
+                      <td className="px-4 py-3 text-center text-sm font-semibold tabular-nums text-gray-950 dark:text-white">
+                        {formatTokens(filteredTotalInputTokens)}
+                      </td>
+
+                      {/* Output Tokens */}
+                      <td className="px-4 py-3 text-center text-sm font-semibold tabular-nums text-gray-950 dark:text-white">
+                        {formatTokens(filteredTotalOutputTokens)}
+                      </td>
+
+                      {/* Duration */}
+                      <td className="px-4 py-3 text-center text-sm font-semibold tabular-nums text-gray-950 dark:text-white">
+                        {formatDurationNullable(totalDurationMs > 0 ? totalDurationMs : null)}
+                      </td>
+                    </tr>
+                  </tfoot>
+                )}
               </table>
             </div>
 
