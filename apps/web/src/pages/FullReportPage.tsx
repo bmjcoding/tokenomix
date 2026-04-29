@@ -5,7 +5,8 @@
  * and renders a client-side sortable, paginated table of all sessions.
  *
  * Columns:
- *   Project (basename with Link to /report/$sessionId; secondary session ID line)
+ *   Date (sortable; based on session.firstTs — nulls sort to end)
+ *   Project (sortable; case-insensitive localeCompare on session.projectName)
  *   Top Tools (up to 3 ToolBucket chips + "+N more" overflow badge)
  *   Cost (formatted $X.XX)
  *   Input Tokens (locale-grouped)
@@ -14,7 +15,7 @@
  *   Cache Read (locale-grouped)
  *   Events (locale-grouped)
  *
- * Default sort: costUsd descending.
+ * Default sort: date descending (most recent first).
  * Clicking any column header toggles ascending / descending.
  * Pagination: 50 rows per page.
  */
@@ -48,10 +49,13 @@ const PAGE_SIZE = 50;
 // Types
 // ---------------------------------------------------------------------------
 
-type SortKey = keyof Pick<
-  SessionSummary,
-  'costUsd' | 'inputTokens' | 'outputTokens' | 'cacheCreationTokens' | 'cacheReadTokens' | 'events'
->;
+type SortKey =
+  | 'date'
+  | 'project'
+  | keyof Pick<
+      SessionSummary,
+      'costUsd' | 'inputTokens' | 'outputTokens' | 'cacheCreationTokens' | 'cacheReadTokens' | 'events'
+    >;
 
 type SortDir = 'asc' | 'desc';
 
@@ -83,7 +87,26 @@ function formatNum(n: number): string {
 function sortSessions(sessions: SessionSummary[], key: SortKey, dir: SortDir): SessionSummary[] {
   return [...sessions].sort((a, b) => {
     const mult = dir === 'desc' ? -1 : 1;
-    return (a[key] - b[key]) * mult;
+
+    if (key === 'date') {
+      // Nulls always sort to the end regardless of direction.
+      const aTs = a.firstTs ?? '';
+      const bTs = b.firstTs ?? '';
+      if (aTs === '' && bTs === '') return 0;
+      if (aTs === '') return 1;
+      if (bTs === '') return -1;
+      // ISO 8601 strings are lexicographically chronological.
+      return aTs < bTs ? -1 * mult : aTs > bTs ? 1 * mult : 0;
+    }
+
+    if (key === 'project') {
+      const aName = a.projectName ?? '';
+      const bName = b.projectName ?? '';
+      return aName.localeCompare(bName, undefined, { sensitivity: 'base' }) * mult;
+    }
+
+    // Numeric columns — key is a keyof SessionSummary with number values.
+    return ((a[key] as number) - (b[key] as number)) * mult;
   });
 }
 
@@ -97,6 +120,7 @@ interface SortableHeaderProps {
   current: SortKey;
   dir: SortDir;
   onSort: (k: SortKey) => void;
+  align?: 'left' | 'right';
   className?: string;
 }
 
@@ -106,13 +130,15 @@ function SortableHeader({
   current,
   dir,
   onSort,
+  align = 'left',
   className = '',
 }: SortableHeaderProps) {
   const active = current === sortKey;
+  const isRight = align === 'right';
   return (
     <th
       scope="col"
-      className={`px-4 py-3 text-left ${className}`}
+      className={`px-4 py-3 ${isRight ? 'text-right' : 'text-left'} ${className}`}
       aria-sort={active ? (dir === 'desc' ? 'descending' : 'ascending') : 'none'}
     >
       <button
@@ -120,6 +146,7 @@ function SortableHeader({
         onClick={() => onSort(sortKey)}
         className={[
           'inline-flex items-center gap-1 text-xs font-medium uppercase tracking-wide transition-colors',
+          isRight ? 'flex-row-reverse' : '',
           // design-lint-disable dark-mode-pairs: compound modifier prefix (focus-visible:) hides the dark pairing from naive line scan
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-950 dark:focus-visible:ring-white',
           'focus-visible:ring-offset-1 focus-visible:ring-offset-transparent',
@@ -203,15 +230,29 @@ function TopToolsCell({ session }: TopToolsCellProps) {
 
 // 9 columns: Date, Project, Top Tools, Cost, Input, Output, Cache Create, Cache Read, Events
 const SKELETON_ROW_KEYS = ['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7'] as const;
-const SKELETON_CELL_KEYS = ['c0', 'c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7', 'c8'] as const;
+// First 3 cells are left-aligned (Date, Project, Top Tools); trailing 6 are right-aligned (numeric).
+const SKELETON_CELL_KEYS: { key: string; align: 'left' | 'right' }[] = [
+  { key: 'c0', align: 'left' },
+  { key: 'c1', align: 'left' },
+  { key: 'c2', align: 'left' },
+  { key: 'c3', align: 'right' },
+  { key: 'c4', align: 'right' },
+  { key: 'c5', align: 'right' },
+  { key: 'c6', align: 'right' },
+  { key: 'c7', align: 'right' },
+  { key: 'c8', align: 'right' },
+];
 
 function SkeletonRows() {
   return (
     <>
       {SKELETON_ROW_KEYS.map((rk) => (
         <tr key={rk} className="border-t border-gray-200 dark:border-gray-800">
-          {SKELETON_CELL_KEYS.map((ck) => (
-            <td key={`${rk}-${ck}`} className="px-4 py-3">
+          {SKELETON_CELL_KEYS.map(({ key: ck, align }) => (
+            <td
+              key={`${rk}-${ck}`}
+              className={`px-4 py-3${align === 'right' ? ' text-right' : ''}`}
+            >
               <div className="h-4 animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
             </td>
           ))}
@@ -284,7 +325,7 @@ function PaginationControls({ pageIndex, pageCount, onPrev, onNext }: Pagination
 // ---------------------------------------------------------------------------
 
 export default function FullReportPage() {
-  const [sortKey, setSortKey] = useState<SortKey>('costUsd');
+  const [sortKey, setSortKey] = useState<SortKey>('date');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [pageIndex, setPageIndex] = useState<number>(0);
 
@@ -391,20 +432,20 @@ export default function FullReportPage() {
                 </colgroup>
                 <thead className="sticky top-0 z-10">
                   <tr className="border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900">
-                    {/* Date — non-sortable */}
-                    <th
-                      scope="col"
-                      className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400"
-                    >
-                      Date
-                    </th>
-                    {/* Project — non-sortable; serves as primary identifier */}
-                    <th
-                      scope="col"
-                      className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400"
-                    >
-                      Project
-                    </th>
+                    <SortableHeader
+                      label="Date"
+                      sortKey="date"
+                      current={sortKey}
+                      dir={sortDir}
+                      onSort={handleSort}
+                    />
+                    <SortableHeader
+                      label="Project"
+                      sortKey="project"
+                      current={sortKey}
+                      dir={sortDir}
+                      onSort={handleSort}
+                    />
                     {/* Top Tools — non-sortable */}
                     <th
                       scope="col"
@@ -418,6 +459,7 @@ export default function FullReportPage() {
                       current={sortKey}
                       dir={sortDir}
                       onSort={handleSort}
+                      align="right"
                     />
                     <SortableHeader
                       label="Input Tokens"
@@ -425,6 +467,7 @@ export default function FullReportPage() {
                       current={sortKey}
                       dir={sortDir}
                       onSort={handleSort}
+                      align="right"
                     />
                     <SortableHeader
                       label="Output Tokens"
@@ -432,6 +475,7 @@ export default function FullReportPage() {
                       current={sortKey}
                       dir={sortDir}
                       onSort={handleSort}
+                      align="right"
                     />
                     <SortableHeader
                       label="Cache Create"
@@ -439,6 +483,7 @@ export default function FullReportPage() {
                       current={sortKey}
                       dir={sortDir}
                       onSort={handleSort}
+                      align="right"
                     />
                     <SortableHeader
                       label="Cache Read"
@@ -446,6 +491,7 @@ export default function FullReportPage() {
                       current={sortKey}
                       dir={sortDir}
                       onSort={handleSort}
+                      align="right"
                     />
                     <SortableHeader
                       label="Events"
@@ -453,6 +499,7 @@ export default function FullReportPage() {
                       current={sortKey}
                       dir={sortDir}
                       onSort={handleSort}
+                      align="right"
                     />
                   </tr>
                 </thead>
@@ -516,32 +563,32 @@ export default function FullReportPage() {
                         </td>
 
                         {/* Cost */}
-                        <td className="px-4 py-3 text-sm font-medium tabular-nums text-gray-950 dark:text-white">
+                        <td className="px-4 py-3 text-right text-sm font-medium tabular-nums text-gray-950 dark:text-white">
                           {formatCost(session.costUsd)}
                         </td>
 
                         {/* Input Tokens */}
-                        <td className="px-4 py-3 text-sm tabular-nums text-gray-600 dark:text-gray-400">
+                        <td className="px-4 py-3 text-right text-sm tabular-nums text-gray-600 dark:text-gray-400">
                           {formatNum(session.inputTokens)}
                         </td>
 
                         {/* Output Tokens */}
-                        <td className="px-4 py-3 text-sm tabular-nums text-gray-600 dark:text-gray-400">
+                        <td className="px-4 py-3 text-right text-sm tabular-nums text-gray-600 dark:text-gray-400">
                           {formatNum(session.outputTokens)}
                         </td>
 
                         {/* Cache Creation Tokens */}
-                        <td className="px-4 py-3 text-sm tabular-nums text-gray-600 dark:text-gray-400">
+                        <td className="px-4 py-3 text-right text-sm tabular-nums text-gray-600 dark:text-gray-400">
                           {formatNum(session.cacheCreationTokens)}
                         </td>
 
                         {/* Cache Read Tokens */}
-                        <td className="px-4 py-3 text-sm tabular-nums text-gray-600 dark:text-gray-400">
+                        <td className="px-4 py-3 text-right text-sm tabular-nums text-gray-600 dark:text-gray-400">
                           {formatNum(session.cacheReadTokens)}
                         </td>
 
                         {/* Events */}
-                        <td className="px-4 py-3 text-sm tabular-nums text-gray-600 dark:text-gray-400">
+                        <td className="px-4 py-3 text-right text-sm tabular-nums text-gray-600 dark:text-gray-400">
                           {formatNum(session.events)}
                         </td>
                       </tr>

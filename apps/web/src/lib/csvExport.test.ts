@@ -270,12 +270,12 @@ describe('buildSessionsRows', () => {
     expect(first?.[10]).toBe(false);
   });
 
-  it('date cell formats firstTs to MMMM-DD-YYYY', () => {
+  it('date cell formats firstTs to MM-DD-YYYY', () => {
     const rows = buildSessionsRows(SESSION_FIXTURES);
     // first data row has firstTs '2026-04-29T12:00:00.000Z' (UTC noon — tz-safe)
     const dateCell = String(rows[1]?.[0]);
-    expect(dateCell).toContain('2026');
-    expect(dateCell).toContain('April');
+    expect(dateCell).toContain('-2026');
+    expect(dateCell).toContain('04');
   });
 
   it('date cell is em-dash for null firstTs', () => {
