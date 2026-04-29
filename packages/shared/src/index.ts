@@ -90,8 +90,12 @@ export type {
   ServerToolUse,
   SessionBucket,
   SessionDurationStats,
+  // Session detail
+  SessionDetail,
   // Session summary
   SessionSummary,
+  // Session turn row (for detail view)
+  SessionTurnRow,
   SinceOption,
   SubagentBucket,
   TokenRow,
