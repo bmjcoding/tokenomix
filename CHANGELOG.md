@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Per-component USD cost breakdown (input / output / cache create / cache read) on the
+  session detail view; rendered under each token-count metric card and exposed via
+  `SessionDetail.costBreakdown` from `GET /api/sessions/:id`.
 - Per-session detail page at `/report/$sessionId` — three-tab view (Overview / Tools /
   Turns) with KPI MetricCards, ToolMixBar donut, per-tool breakdown table, and per-turn
   cost table.
