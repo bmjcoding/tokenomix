@@ -1,6 +1,0 @@
-{
-  "claude_home": "~/.claude",
-  "projects_dir": "~/.claude/projects",
-  "exclude_cwd_prefixes": [],
-  "retro_history_paths": []
-}
