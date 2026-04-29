@@ -17,11 +17,15 @@
  *   4. Param guard rejects path separator in ID with 400
  *   5. SessionSummary list includes projectName field
  *   6. Graceful handling when toolUses is undefined on every row in a session
+ *   7–10. initialPrompt / initialPromptTruncated / jsonlPath from ingestFile
  */
 
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import type { SessionDetail, SessionSummary, TokenRow } from '@tokenomix/shared';
 import { Hono } from 'hono';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { IndexStore } from '../index-store.js';
 import { sessionsRoute } from '../routes/sessions.js';
 
@@ -510,5 +514,146 @@ describe('GET /api/sessions', () => {
     expect(body[0]?.sessionId).toBe('sess-expensive');
     expect(body[1]?.sessionId).toBe('sess-mid');
     expect(body[2]?.sessionId).toBe('sess-cheap');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests for initialPrompt / initialPromptTruncated / jsonlPath
+// ---------------------------------------------------------------------------
+
+// Track temp files created during these tests for cleanup.
+const tempFiles: string[] = [];
+
+afterAll(async () => {
+  await Promise.all(tempFiles.map((f) => fs.unlink(f).catch(() => undefined)));
+});
+
+/**
+ * Write a JSONL fixture to a temp file and return its path.
+ * The fixture contains a single user event with the given message content.
+ */
+async function writeTempJsonl(
+  sessionId: string,
+  messageContent: string | Array<Record<string, unknown>>
+): Promise<string> {
+  const tmpDir = os.tmpdir();
+  const tmpFile = path.join(tmpDir, `tokenomix-test-${sessionId}-${Date.now()}.jsonl`);
+  const event = JSON.stringify({
+    type: 'user',
+    sessionId,
+    timestamp: '2026-04-29T10:00:00.000Z',
+    message: {
+      role: 'user',
+      content: messageContent,
+    },
+  });
+  await fs.writeFile(tmpFile, event + '\n', 'utf-8');
+  tempFiles.push(tmpFile);
+  return tmpFile;
+}
+
+describe('GET /api/sessions/:id — initialPrompt fields', () => {
+  it('prompt under 500 chars: initialPrompt set, initialPromptTruncated false, jsonlPath set', async () => {
+    const store = new IndexStore();
+    const rows = store.rows as Map<string, TokenRow>;
+    const sessionId = 'sess-prompt-short';
+
+    const promptText = 'Help me debug this issue';
+    const tmpFile = await writeTempJsonl(sessionId, promptText);
+    await store.ingestFile(tmpFile);
+
+    rows.set(
+      'req_ps1:msg_ps1',
+      makeRow({ sessionId, project: '/projects/prompt-test', projectName: 'prompt-test' })
+    );
+
+    const app = buildSessionsApp(store);
+    const res = await app.request(`/api/sessions/${sessionId}`);
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as SessionDetail;
+
+    expect(body.initialPrompt).toBe(promptText);
+    expect(body.initialPromptTruncated).toBe(false);
+    expect(body.jsonlPath).toBe(tmpFile);
+  });
+
+  it('prompt over 500 chars: initialPrompt.length === 500, initialPromptTruncated true, jsonlPath set', async () => {
+    const store = new IndexStore();
+    const rows = store.rows as Map<string, TokenRow>;
+    const sessionId = 'sess-prompt-long';
+
+    // 600 chars of text.
+    const longPrompt = 'A'.repeat(600);
+    const tmpFile = await writeTempJsonl(sessionId, longPrompt);
+    await store.ingestFile(tmpFile);
+
+    rows.set(
+      'req_pl1:msg_pl1',
+      makeRow({ sessionId, project: '/projects/prompt-long', projectName: 'prompt-long' })
+    );
+
+    const app = buildSessionsApp(store);
+    const res = await app.request(`/api/sessions/${sessionId}`);
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as SessionDetail;
+
+    expect(body.initialPrompt).not.toBeNull();
+    expect(body.initialPrompt?.length).toBe(500);
+    expect(body.initialPromptTruncated).toBe(true);
+    expect(body.jsonlPath).toBe(tmpFile);
+  });
+
+  it('session with no qualifying user event: initialPrompt null, initialPromptTruncated false, jsonlPath null', async () => {
+    // Only inject a TokenRow directly — no JSONL file with a user event.
+    // The sessionInitialPrompts map will have no entry for this sessionId.
+    const store = new IndexStore();
+    const rows = store.rows as Map<string, TokenRow>;
+    const sessionId = 'sess-no-prompt';
+
+    rows.set(
+      'req_np1:msg_np1',
+      makeRow({ sessionId, project: '/projects/no-prompt', projectName: 'no-prompt' })
+    );
+
+    const app = buildSessionsApp(store);
+    const res = await app.request(`/api/sessions/${sessionId}`);
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as SessionDetail;
+
+    expect(body.initialPrompt).toBeNull();
+    expect(body.initialPromptTruncated).toBe(false);
+    expect(body.jsonlPath).toBeNull();
+  });
+
+  it('multi-block content: only text blocks are concatenated, tool_result blocks are skipped', async () => {
+    const store = new IndexStore();
+    const rows = store.rows as Map<string, TokenRow>;
+    const sessionId = 'sess-prompt-blocks';
+
+    const contentBlocks = [
+      { type: 'text', text: 'Hello' },
+      { type: 'tool_result', tool_use_id: 'tu_abc', is_error: false, content: 'some output' },
+      { type: 'text', text: 'World' },
+    ];
+    const tmpFile = await writeTempJsonl(sessionId, contentBlocks);
+    await store.ingestFile(tmpFile);
+
+    rows.set(
+      'req_pb1:msg_pb1',
+      makeRow({ sessionId, project: '/projects/prompt-blocks', projectName: 'prompt-blocks' })
+    );
+
+    const app = buildSessionsApp(store);
+    const res = await app.request(`/api/sessions/${sessionId}`);
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as SessionDetail;
+
+    expect(body.initialPrompt).toBe('Hello\nWorld');
+    expect(body.initialPromptTruncated).toBe(false);
+    expect(body.jsonlPath).toBe(tmpFile);
   });
 });

@@ -16,6 +16,7 @@
 import { EventEmitter } from 'node:events';
 import type { Dirent } from 'node:fs';
 import { readdir as readdirFn } from 'node:fs/promises';
+import { open as fsOpen } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as nodePath from 'node:path';
 import type {
@@ -81,6 +82,18 @@ const BATCH_SIZE = 50;
  * even under continuous high-volume ingest.
  */
 const MAX_SESSION_TIMES = 50_000;
+
+/**
+ * Server-side hard cap on the initial-prompt text stored in sessionInitialPrompts.
+ * Prompts longer than this are truncated before storage and serialisation.
+ */
+const PROMPT_MAX_CHARS = 500;
+
+/**
+ * Maximum bytes read per JSONL file when scanning for the first user message.
+ * Prevents reading entire transcripts for very large files.
+ */
+const PROMPT_SCAN_MAX_BYTES = 64 * 1024; // 64 KB
 
 interface PricingRuntimeConfig {
   provider: PricingProvider;
@@ -1829,6 +1842,16 @@ export class IndexStore extends EventEmitter {
   private readonly rowTimestampMs = new Map<string, number>();
   /** Per-session first/last event timestamps (epoch ms). Used for duration stats. */
   private readonly sessionTimes = new Map<string, { firstTs: number; lastTs: number }>();
+  /**
+   * Per-session first qualifying user-message text (truncated to PROMPT_MAX_CHARS),
+   * truncation flag, and the JSONL file path that contained the message.
+   * Eviction follows the same MAX_SESSION_TIMES cap and oldest-10% batch policy
+   * as sessionTimes to keep memory bounded.
+   */
+  private readonly sessionInitialPrompts = new Map<
+    string,
+    { prompt: string; truncated: boolean; jsonlPath: string }
+  >();
   private readonly fileIngestionAudits = new Map<string, FileIngestionAudit>();
   private filesDiscovered = 0;
   private snapshot: MetricSummary | null = null;
@@ -1879,6 +1902,113 @@ export class IndexStore extends EventEmitter {
   }
 
   /**
+   * Scan the first PROMPT_SCAN_MAX_BYTES of a JSONL file looking for the first
+   * user-role event with qualifying text content. Stores the result in
+   * sessionInitialPrompts (keyed by sessionId). Skips if the session already
+   * has an entry. Reads raw lines rather than going through parseJSONLFile
+   * because the Zod schema strips user-message text for privacy reasons; this
+   * helper only extracts and truncates the first user message then discards the
+   * rest, satisfying the same privacy intent.
+   */
+  private async captureInitialPrompt(filePath: string): Promise<void> {
+    let fh: Awaited<ReturnType<typeof fsOpen>> | undefined;
+    try {
+      fh = await fsOpen(filePath, 'r');
+      const buf = Buffer.allocUnsafe(PROMPT_SCAN_MAX_BYTES);
+      const { bytesRead } = await fh.read(buf, 0, PROMPT_SCAN_MAX_BYTES, 0);
+      const chunk = buf.subarray(0, bytesRead).toString('utf-8');
+
+      // Split on newlines; the last element may be a partial line — discard it
+      // unless it is the only element (entire file fits in the buffer).
+      const rawLines = chunk.split('\n');
+      const lines =
+        bytesRead < PROMPT_SCAN_MAX_BYTES
+          ? rawLines // full file fits; keep all lines
+          : rawLines.slice(0, -1); // drop potentially-truncated last line
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(trimmed);
+        } catch {
+          continue; // malformed JSON — skip
+        }
+
+        if (
+          typeof parsed !== 'object' ||
+          parsed === null ||
+          (parsed as Record<string, unknown>).type !== 'user'
+        ) {
+          continue;
+        }
+
+        const rec = parsed as Record<string, unknown>;
+        const sessionId = typeof rec.sessionId === 'string' ? rec.sessionId : undefined;
+        if (!sessionId) continue;
+
+        // Skip if already captured for this session.
+        if (this.sessionInitialPrompts.has(sessionId)) continue;
+
+        // Extract text from message.content (plain string or array of blocks).
+        const msg = rec.message as Record<string, unknown> | undefined;
+        if (!msg) continue;
+        const content = msg.content;
+
+        let text = '';
+        if (typeof content === 'string') {
+          text = content;
+        } else if (Array.isArray(content)) {
+          const parts: string[] = [];
+          for (const block of content) {
+            if (
+              typeof block === 'object' &&
+              block !== null &&
+              (block as Record<string, unknown>).type === 'text'
+            ) {
+              const t = (block as Record<string, unknown>).text;
+              if (typeof t === 'string' && t.trim().length > 0) {
+                parts.push(t);
+              }
+            }
+          }
+          text = parts.join('\n');
+        }
+
+        const trimmedText = text.trim();
+        if (!trimmedText) continue; // no qualifying text (e.g. only tool_result blocks)
+
+        // Truncate and flag.
+        const truncated = trimmedText.length > PROMPT_MAX_CHARS;
+        const prompt = truncated ? trimmedText.slice(0, PROMPT_MAX_CHARS) : trimmedText;
+
+        this.sessionInitialPrompts.set(sessionId, { prompt, truncated, jsonlPath: filePath });
+
+        // Evict oldest 10% when size exceeds the cap (mirrors recordSessionTimestamp).
+        if (this.sessionInitialPrompts.size > MAX_SESSION_TIMES) {
+          const evictCount = Math.ceil(MAX_SESSION_TIMES * 0.1);
+          const keys = [...this.sessionInitialPrompts.keys()];
+          for (let ei = 0; ei < evictCount && ei < keys.length; ei++) {
+            const key = keys[ei];
+            if (key) this.sessionInitialPrompts.delete(key);
+          }
+        }
+
+        // Only the first qualifying user event per file (single-session scan).
+        // Continue scanning remaining lines in case earlier lines had a
+        // different sessionId that needed capturing, but for this sessionId we
+        // are done.
+      }
+    } catch {
+      // File open or read failure — silently skip; prompt capture is best-effort.
+    } finally {
+      await fh?.close().catch(() => undefined);
+    }
+  }
+
+  /**
    * Full startup scan — discover all JSONL files and ingest in parallel batches
    * of BATCH_SIZE to avoid fd-limit exhaustion with 2,500+ files.
    */
@@ -1921,6 +2051,12 @@ export class IndexStore extends EventEmitter {
    */
   private async ingestFileInternal(filePath: string): Promise<void> {
     const fileAudit = emptyFileIngestionAudit();
+
+    // Capture the first qualifying user message for this file's sessions.
+    // This runs as a best-effort preliminary scan and does not affect the
+    // two-pass assistant-event ingest below.
+    await this.captureInitialPrompt(filePath);
+
     // ── Two-pass ingest ───────────────────────────────────────────────────────
     //
     // Bug 4 fix: JSONL files from Claude Code can have tool_use/tool_result and
@@ -2486,6 +2622,12 @@ export class IndexStore extends EventEmitter {
     const firstTs = times ? new Date(times.firstTs).toISOString() : null;
     const lastTs = times ? new Date(times.lastTs).toISOString() : null;
 
+    // Read initial-prompt data from sessionInitialPrompts (null when absent or evicted).
+    const promptEntry = this.sessionInitialPrompts.get(sessionId);
+    const initialPrompt = promptEntry?.prompt ?? null;
+    const initialPromptTruncated = promptEntry?.truncated ?? false;
+    const jsonlPath = promptEntry?.jsonlPath ?? null;
+
     return {
       sessionId,
       project,
@@ -2506,6 +2648,9 @@ export class IndexStore extends EventEmitter {
       isSubagent,
       firstTs,
       lastTs,
+      initialPrompt,
+      initialPromptTruncated,
+      jsonlPath,
       byTool,
       turns,
     };

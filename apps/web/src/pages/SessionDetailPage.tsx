@@ -20,7 +20,8 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from '@tanstack/react-router';
 import type { SessionDetail, SessionTurnRow } from '@tokenomix/shared';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Check, ClipboardCopy } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ToolMixBar } from '../charts/ToolMixBar.js';
 import { fetchSessionDetail } from '../lib/api.js';
 import {
@@ -65,6 +66,141 @@ function fmtTs(ts: string): string {
   } catch {
     return ts;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Copy-button hook
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns { copied, onClick } for a clipboard copy button.
+ * `copied` is true for 1.5 s after a successful write, then resets to false.
+ * Safe to call with a null value — onClick is a no-op when value is null.
+ */
+function useCopyButton(value: string | null): { copied: boolean; onClick: () => void } {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Clean up timer on unmount
+  useEffect(() => {
+    return () => {
+      if (timerRef.current !== null) clearTimeout(timerRef.current);
+    };
+  }, []);
+
+  const onClick = useCallback(() => {
+    if (value === null) return;
+    navigator.clipboard.writeText(value).then(() => {
+      setCopied(true);
+      if (timerRef.current !== null) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setCopied(false), 1500);
+    });
+  }, [value]);
+
+  return { copied, onClick };
+}
+
+// ---------------------------------------------------------------------------
+// InitialPromptSection — sits between the header card and the KPI row
+// ---------------------------------------------------------------------------
+
+function InitialPromptSection({ detail }: { detail: SessionDetail }) {
+  const promptCopy = useCopyButton(detail.initialPrompt);
+  const pathCopy = useCopyButton(detail.jsonlPath);
+
+  // If both fields are null, render nothing.
+  if (detail.initialPrompt === null && detail.jsonlPath === null) {
+    return null;
+  }
+
+  return (
+    <Card as="section" aria-label="Session source metadata">
+      <div className="space-y-4">
+        {/* ── Initial prompt ── */}
+        {detail.initialPrompt !== null && (
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+              Initial prompt
+            </p>
+
+            {/* Prompt card surface with absolute-positioned copy button */}
+            <div className="relative mt-2 bg-gray-100 dark:bg-gray-800 rounded-lg p-3">
+              <p className="whitespace-pre-wrap text-sm text-gray-800 dark:text-gray-200 pr-8">
+                {detail.initialPrompt}
+                {detail.initialPromptTruncated && (
+                  <span className="text-xs text-gray-500 dark:text-gray-400 ml-2">
+                    (truncated)
+                  </span>
+                )}
+              </p>
+
+              {/* Copy button — top-right corner */}
+              <button
+                type="button"
+                aria-label={promptCopy.copied ? 'Copied' : 'Copy initial prompt'}
+                title={promptCopy.copied ? 'Copied!' : 'Copy to clipboard'}
+                onClick={promptCopy.onClick}
+                className={[
+                  'absolute top-2 right-2 inline-flex items-center justify-center',
+                  'h-7 w-7 rounded-lg text-gray-400 dark:text-gray-500',
+                  // design-lint-disable dark-mode-pairs: compound modifier prefix (hover:) hides the dark pairing from naive line scan
+                  'hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-gray-700 dark:hover:text-gray-300',
+                  'transition-colors focus-visible:outline-none',
+                  'focus-visible:ring-2 focus-visible:ring-gray-950 dark:focus-visible:ring-white',
+                ].join(' ')}
+              >
+                {promptCopy.copied ? (
+                  <Check className="h-3.5 w-3.5" aria-hidden="true" />
+                ) : (
+                  <ClipboardCopy className="h-3.5 w-3.5" aria-hidden="true" />
+                )}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ── JSONL file path ── */}
+        {detail.jsonlPath !== null && (
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+              JSONL file
+            </p>
+
+            <div className="mt-2 flex items-center gap-2 min-w-0">
+              <code
+                className="font-mono text-xs text-gray-500 dark:text-gray-400 truncate min-w-0 flex-1"
+                title={detail.jsonlPath}
+              >
+                {detail.jsonlPath}
+              </code>
+
+              {/* Copy path button */}
+              <button
+                type="button"
+                aria-label={pathCopy.copied ? 'Copied' : 'Copy JSONL file path'}
+                title={pathCopy.copied ? 'Copied!' : 'Copy path to clipboard'}
+                onClick={pathCopy.onClick}
+                className={[
+                  'inline-flex shrink-0 items-center justify-center',
+                  'h-7 w-7 rounded-lg text-gray-400 dark:text-gray-500',
+                  // design-lint-disable dark-mode-pairs: compound modifier prefix (hover:) hides the dark pairing from naive line scan
+                  'hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-700 dark:hover:text-gray-300',
+                  'transition-colors focus-visible:outline-none',
+                  'focus-visible:ring-2 focus-visible:ring-gray-950 dark:focus-visible:ring-white',
+                ].join(' ')}
+              >
+                {pathCopy.copied ? (
+                  <Check className="h-3.5 w-3.5" aria-hidden="true" />
+                ) : (
+                  <ClipboardCopy className="h-3.5 w-3.5" aria-hidden="true" />
+                )}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </Card>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -555,6 +691,9 @@ export default function SessionDetailPage() {
           </div>
         </div>
       </Card>
+
+      {/* ── Initial prompt + JSONL path section ── */}
+      <InitialPromptSection detail={detail} />
 
       {/* ── KPI MetricCard row ── */}
       <div

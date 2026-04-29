@@ -565,6 +565,27 @@ export interface SessionDetail {
    * null when evicted from the sessionTimes map (same condition as firstTs).
    */
   lastTs: string | null;
+  /**
+   * Truncated text of the first user-role message in this session, server-hard-capped to 500 chars.
+   * null when no qualifying user message was found or the entry has been evicted.
+   * Privacy intent: server hard-truncates so the wire shape is bounded; the API never
+   * serves the full transcript or the JSONL file contents. Pair with initialPromptTruncated
+   * and jsonlPath as the only data surfaces beyond aggregates.
+   */
+  initialPrompt: string | null;
+  /**
+   * True when the original first-user-message text exceeded the server-side cap (500 chars)
+   * and initialPrompt has been truncated. False when null/short. Drives the "(truncated)"
+   * indicator in the UI.
+   */
+  initialPromptTruncated: boolean;
+  /**
+   * Absolute filesystem path of the first JSONL file that contained an event for this
+   * session. null when not captured (older sessions or evicted entries). Path string only —
+   * the API does NOT serve the file contents; this is metadata for "Reveal in Finder" /
+   * copy-to-clipboard affordances on the client.
+   */
+  jsonlPath: string | null;
   /** Tool usage aggregated across all turns in this session. */
   byTool: ToolBucket[];
   /** Per-turn detail rows, sorted ascending by timestamp (oldest first). */
