@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-04-29
+
+### Added
+
+- Per-session detail page at `/report/$sessionId` — three-tab view (Overview / Tools /
+  Turns) with KPI MetricCards, ToolMixBar donut, per-tool breakdown table, and per-turn
+  cost table.
+- `GET /api/sessions/:id` endpoint returning a `SessionDetail` JSON object with
+  aggregated header fields, full `byTool` array, per-turn rows, and `firstTs`/`lastTs`
+  timestamps. The `:id` param is validated against an allowlist regex that rejects path
+  separators and NULL bytes.
+- `SessionDetail` and `SessionTurnRow` shared types in `packages/shared` (re-exported
+  from the barrel).
+- `formatProjectName(project)` helper in `apps/web/src/lib/formatters.ts` — extracts
+  the basename of a project path for display, handling trailing slashes.
+- `escapeFormula(value)` helper in `apps/web/src/lib/csvExport.ts` — prefixes cells
+  starting with `=`, `+`, `-`, `@`, or TAB with a single quote to prevent spreadsheet
+  formula injection.
+- `fetchSessionDetail(sessionId)` API helper and `queryKeys.sessionDetail(sessionId)`
+  cache key in `apps/web/src/lib/`.
+- Server-side duration observability: `session_detail` log event emitted with
+  `durationMs` and `found` fields on every `GET /api/sessions/:id` call.
+- 20 new tests: 9 server-side cases covering 200/404/400 paths, path-separator and
+  NULL-byte guards, `projectName`/`topTools` shape, empty `toolUses`, and sort order;
+  11 web cases covering CSV formula-injection regression paths.
+
+### Changed
+
+- Full Session Report (`/report`) reorganized: Project (basename) is now the primary
+  column with session ID shown as secondary text; the Type column was removed; a Top
+  Tools chip column shows up to 3 tool badges with a `+N more` overflow count;
+  pagination set to 50 sessions per page.
+- `SessionSummary` extended with `projectName: string`, `topTools: ToolBucket[]`, and
+  `toolNamesCount: number` fields, populated by `computeSessionSummaries()` on the
+  server.
+- CSV export adds a `ProjectName` column (basename) at index 1, after the full `Project`
+  path column. All CSV cells now pass through formula-injection escaping.
+- `Tabs` primitive accepts an optional `ariaLabel` prop to override the default
+  accessible name, enabling correct labelling when used outside a dashboard context.
+- SSE handler (`useServerEvents.ts`) now invalidates the `['session']` cache key
+  alongside the existing keys, so the session list refreshes on file-watch events.
+
+### Fixed
+
+- CSV formula-injection vulnerability: cells whose first character is a formula trigger
+  (`=`, `+`, `-`, `@`, TAB) are now escaped before writing to the CSV stream.
+
 ## [3.2.0] - 2026-04-29
 
 ### Added
@@ -321,7 +368,8 @@ Internal cross-references updated:
 - `DEFAULT_OUTPUT` now points to `output/usage-dashboard.html` within the
   project, instead of a session-specific retro directory.
 
-[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.2.0...HEAD
+[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.3.0...HEAD
+[3.3.0]: https://github.com/bmjcoding/tokenomix/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/bmjcoding/tokenomix/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/bmjcoding/tokenomix/compare/v3.0.1...v3.1.0
 [3.0.1]: https://github.com/bmjcoding/tokenomix/compare/v3.0.0...v3.0.1
