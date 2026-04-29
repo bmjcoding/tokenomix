@@ -669,7 +669,7 @@ export default function FullReportPage() {
                     {/* Top Tools — non-sortable */}
                     <th
                       scope="col"
-                      className="px-4 py-3 text-center text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400"
+                      className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400"
                     >
                       Top Tools
                     </th>
