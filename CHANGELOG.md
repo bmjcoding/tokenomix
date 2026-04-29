@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-04-29
+
+### Added
+
+- `apps/web/src/ui/Tabs.tsx` — headless, hash-synced tabbed navigation primitive with
+  ARIA `role="tablist"` / `role="tab"` / `role="tabpanel"`, ArrowLeft/Right keyboard
+  cycling, `history.replaceState` hash deep-linking, and render-only-when-active strategy
+  so off-tab panels do not fire their `useQuery` hooks.
+- `apps/server/src/time.ts` — `formatLocalIso()` and `formatLocalHourIso()` helpers
+  that produce local-time ISO 8601 strings with UTC offset (e.g.
+  `"2026-04-15T14:00:00.000-05:00"`), replacing raw `Date.toISOString()` calls that
+  always emitted UTC and produced wrong-day bucketing for non-UTC users.
+- `apps/web/src/vite-env.d.ts` — standard Vite client type reference shim.
+- OverviewPage rebuilt into 4 navigable tabs: **Overview** (HeroSpend → CostDriversPanel
+  → AreaChartPanel → KpiRow), **Recommendations** (OptimizationOpportunitiesPanel →
+  OptimizationSignalsPanel → KpiRow2), **Activity** (HeatmapPanel + ModelMixPanel +
+  ToolsBreakdownPanel), **Sessions** (TopSessionsTable + SubagentLeaderboard +
+  TopExpensiveTurnsTable). Tab state is synced with `window.location.hash` for
+  deep-linking; panels only mount when their tab is active.
+
+### Changed
+
+- `HeroSpend` — warning icon inlined (removed external dependency), blue delta pill
+  replacing the old neutral pill, **TOKENS · MTD** big-grey block added alongside
+  current spend.
+- `MetricCard` — empty-signal guard added: the trend pill is omitted when there is no
+  real delta signal (avoids rendering a meaningless em-dash pill for every static card).
+- `OptimizationOpportunitiesPanel` — `<colgroup>` fixed-width columns, alignment
+  corrections, label simplification, and tooltip anchor standardisation.
+- `HeatmapPanel` + `HeatmapChart` — single-hue colour ramp replacing the old
+  multi-colour scale; larger axis labels; custom tooltip; total-turns subtitle added to
+  the panel header.
+- `ModelMixBar` + `ToolMixBar` — donut hover bug fixed: chart now uses `scale: false`
+  and drops `notMerge` to prevent the stale-highlight issue on hover.
+- `TurnBucket.timestamp` is now a local ISO 8601 string with UTC offset (doc-only
+  change to the type comment; consumers that previously relied on the UTC `Z` suffix
+  should use the new offset-aware value).
+- Comment cleanup in `packages/shared/src/types.ts` (section header wording).
+- Export order in `packages/shared/src/index.ts` and `apps/server/src/pricing.ts`
+  normalised to alphabetical within each group (no functional change).
+
+### Removed
+
+- `bin/claude-usage.py`, `bin/retro-trends.py`, `bin/tokenomix_config.py`,
+  `bin/usage-dashboard.py` — legacy Python CLI tooling retired. The TypeScript
+  monorepo (introduced in v1.2.0) is the sole supported interface.
+- `tests/test_tokenomix.py` — Python test suite removed alongside the tooling.
+- `config.example.json` — Python-era runtime config template removed; TypeScript
+  server config is documented in `README.md`.
+- `output/.gitkeep` — empty output directory placeholder removed.
+
 ## [3.1.0] - 2026-04-28
 
 ### Added
@@ -270,7 +321,8 @@ Internal cross-references updated:
 - `DEFAULT_OUTPUT` now points to `output/usage-dashboard.html` within the
   project, instead of a session-specific retro directory.
 
-[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.1.0...HEAD
+[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.2.0...HEAD
+[3.2.0]: https://github.com/bmjcoding/tokenomix/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/bmjcoding/tokenomix/compare/v3.0.1...v3.1.0
 [3.0.1]: https://github.com/bmjcoding/tokenomix/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/bmjcoding/tokenomix/compare/v2.0.0...v3.0.0

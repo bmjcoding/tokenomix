@@ -5,7 +5,7 @@
   "engines": {
     "node": ">=22"
   },
-  "packageManager": "pnpm@9.15.4",
+  "packageManager": "pnpm@10.33.0",
   "scripts": {
     "dev": "concurrently -n server,web -c blue,cyan \"pnpm --filter @tokenomix/server dev\" \"pnpm --filter @tokenomix/web dev\"",
     "build": "pnpm -r run build",
@@ -19,10 +19,10 @@
     "verify:pricing": "pnpm --filter @tokenomix/server verify:pricing"
   },
   "devDependencies": {
-    "@biomejs/biome": "^1.9.4",
-    "@types/node": "^22.0.0",
-    "concurrently": "^9.1.0",
-    "typescript": "^5.7.3",
-    "vitest": "^3.0.0"
+    "@biomejs/biome": "^2.4.13",
+    "@types/node": "^25.6.0",
+    "concurrently": "^9.2.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.5"
   }
 }

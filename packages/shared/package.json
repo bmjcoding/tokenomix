@@ -14,9 +14,9 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "peerDependencies": {
-    "zod": "^3.23.0"
+    "zod": "^4.3.6"
   },
   "devDependencies": {
-    "zod": "^3.23.0"
+    "zod": "^4.3.6"
   }
 }

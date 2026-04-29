@@ -1,8 +1,6 @@
 {
-  "$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
-  "organizeImports": {
-    "enabled": true
-  },
+  "$schema": "https://biomejs.dev/schemas/2.4.13/schema.json",
+  "assist": { "actions": { "source": { "organizeImports": "on" } } },
   "linter": {
     "enabled": true,
     "rules": {
@@ -32,7 +30,7 @@
   },
   "overrides": [
     {
-      "include": ["**/_*.ts", "**/_*.tsx"],
+      "includes": ["**/_*.ts", "**/_*.tsx"],
       "linter": {
         "rules": {
           "correctness": {
@@ -43,16 +41,16 @@
     }
   ],
   "files": {
-    "include": ["**/*.ts", "**/*.tsx", "**/*.json"],
-    "ignore": [
-      "**/node_modules",
-      "**/dist",
-      "**/.git",
-      "**/.vite",
-      "**/coverage",
-      ".orchestrator",
-      "output",
-      "**/.orchestrator/**"
+    "includes": [
+      "**/*.ts",
+      "**/*.tsx",
+      "**/*.json",
+      "!**/node_modules",
+      "!**/dist",
+      "!**/.git",
+      "!**/.vite",
+      "!**/coverage",
+      "!**/.orchestrator"
     ]
   }
 }

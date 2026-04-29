@@ -1,6 +1,7 @@
-# 0001 — Add interactive TypeScript dashboard alongside Python tooling
+# 0001 — Use an interactive TypeScript dashboard
 
 Date: 2026-04-27
+Updated: 2026-04-29
 
 ## Status
 
@@ -8,74 +9,54 @@ Accepted
 
 ## Context
 
-`bin/usage-dashboard.py` produces a static, self-contained HTML file from the
-JSONL data under `~/.claude/projects/`. It is useful but not interactive:
-time-range toggles, live updates on file changes, and chart types such as
-day-of-week heatmaps are impractical in a static-HTML model.
+Tokenomix needs a local, single-user dashboard for Claude Code token usage. The
+dashboard must read JSONL data from `~/.claude/projects`, price usage locally,
+show live updates as files change, and avoid external telemetry.
 
-The requirement was an interactive web dashboard for local AI token usage
-visualization. Cost figures must be identical to the Python tooling (the
-pricing logic is the correctness-critical source of truth). The app is
-single-user, local-only, and must have no external telemetry.
+The first implementation included Python CLI scripts and a generated static
+HTML report. That surface has been retired. The maintained implementation is now
+the TypeScript dashboard and Hono API.
 
 ## Decision
 
-Build a pnpm monorepo with three packages:
+Maintain tokenomix as a pnpm monorepo with three packages:
 
 - `apps/server` — Hono on Node 22: JSONL parser, in-memory aggregation,
-  chokidar live-watch, 4 REST/SSE routes. Binds `127.0.0.1` only.
-- `apps/web` — Vite 6 + React 18 + TanStack Router/Query + Apache ECharts 5.
-  Tailwind v4 with a CSS-native `@theme` block (no config file).
-- `packages/shared` — Zod schemas, shared types, pricing module ported
-  exactly from `bin/claude-usage.py` with locked-in test values.
+  chokidar live-watch, REST/SSE routes, and startup readiness checks. Binds to
+  `127.0.0.1` only.
+- `apps/web` — Vite 8 + React 19 + TanStack Router/Query + Apache ECharts 6.
+  Tailwind CSS 4 provides styling through the CSS-native theme layer.
+- `packages/shared` — Zod 4 schemas, shared TypeScript types, and the pricing
+  module used by both server code and tests.
 
-Design language: primary blue OKLCH palette matching the existing Python
-dashboard (`oklch(0.49 0.16 255)` light / `oklch(0.58 0.12 255)` dark),
-monochromatic gray scale.
-
-Apache ECharts was chosen over Recharts because the heatmap requirement
-(day-of-week × hour-of-day) has no Recharts primitive.
-
-Tailwind v4 CSS-native `@theme` was chosen over v3 + config because it
-removes the build-time config file and keeps design tokens in a single CSS
-layer, consistent with the existing dashboard design language.
-
-The server binds `127.0.0.1` and has no authentication because the app is
-single-user and never exposed beyond localhost.
+Apache ECharts is used for chart types that need richer primitives, including
+day-of-week by hour heatmaps. Vite + Hono remains lighter than a full-stack SSR
+framework for this localhost-only tool.
 
 ## Consequences
 
 **Positive**
 
-- Cost figures are identical to the Python tooling: the pricing module is
-  ported exactly and covered by locked-in Vitest assertions.
+- Single maintained implementation surface.
 - Interactive UX: time-range toggles, live SSE updates on file changes,
-  heatmap, sortable sessions table.
-- Type-safe end-to-end: shared Zod schemas validate the boundary between
-  server and client at runtime and compile time.
-- Single-command dev experience (`pnpm dev`).
+  heatmaps, sortable sessions, and top expensive turns.
+- Type-safe end-to-end contracts through shared Zod schemas and TypeScript
+  types.
+- Single-command development through the pnpm workspace.
 
 **Negative**
 
-- Project size grew from 4 Python files to roughly 60 TypeScript files plus
-  a substantial `node_modules` tree.
-- ECharts adds approximately 1057 KB pre-tree-shake (deferred optimization).
-- Two parallel implementations to maintain: Python CLI + HTML, and the TS
-  dashboard. Mitigation: the pricing module is the only correctness-critical
-  shared logic. Both implementations read JSONL directly from
-  `~/.claude/projects/` and share no runtime state.
+- The project depends on a Node/pnpm toolchain instead of the standard Python
+  runtime.
+- Static `file://` dashboard generation is no longer supported.
+- The server currently has a fixed data source of `~/.claude/projects`.
 
-## Alternatives considered
+## Alternatives Considered
 
-- **Extend `usage-dashboard.py` with htmx**: rejected — not sufficiently
-  interactive for real-time updates and heatmap charts; design language
-  harder to evolve beyond static CSS.
-- **Remove Python tooling and go all-TypeScript**: rejected — the Python CLI
-  scripts are proven and useful independently of a browser.
-- **Next.js instead of Vite + Hono**: rejected — too heavy for a
-  single-user local app with no SSR requirement.
-
-## References
-
-- `bin/claude-usage.py` — cost calculation source of truth
-- Session 20260427T133302 implementation retro
+- **Keep the Python/static HTML implementation**: rejected because it duplicated
+  pricing, parsing, and dashboard behavior without supporting the interactive
+  workflows now expected from the app.
+- **Next.js instead of Vite + Hono**: rejected as heavier than needed for a
+  local-only app with no SSR requirement.
+- **Recharts instead of ECharts**: rejected because the heatmap requirement has
+  better first-class support in ECharts.

@@ -31,11 +31,4 @@ coverage/
 # vite dev cache
 .vite/
 
-# python
-__pycache__/
-*.pyc
-*.pyo
-
-# generated output (keep .gitkeep, exclude generated HTML)
-output/*.html
 .orchestrator/
