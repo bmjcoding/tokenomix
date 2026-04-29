@@ -79,7 +79,6 @@ export const SESSIONS_HEADERS = [
   'CacheCreation',
   'CacheRead',
   'Events',
-  'IsSubagent',
   'Duration',
 ] as const;
 
@@ -113,7 +112,6 @@ export function buildSessionsRows(
         s.cacheCreationTokens,
         s.cacheReadTokens,
         s.events,
-        s.isSubagent,
         formatDurationNullable(s.durationMs),
       ] as const
   );
@@ -173,7 +171,7 @@ function triggerDownload(csvContent: string, filename: string): void {
  *
  * Columns (in order):
  *   Date, Project, ProjectName, SessionId, CostUSD, InputTokens, OutputTokens,
- *   CacheCreation, CacheRead, Events, IsSubagent, Duration
+ *   CacheCreation, CacheRead, Events, Duration
  *
  * @param sessions - Array of SessionSummary objects from GET /api/sessions.
  * @param filename - Optional filename; defaults to "sessions.csv".
