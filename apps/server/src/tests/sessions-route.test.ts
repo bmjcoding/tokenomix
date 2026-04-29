@@ -751,6 +751,92 @@ describe('GET /api/sessions — firstTs field', () => {
     expect(entry).toBeDefined();
     expect(entry?.firstTs).toBeNull();
   });
+
+  it('durationMs is a non-negative integer when sessionTimes is populated via ingestFile', async () => {
+    const store = new IndexStore();
+    const sessionId = 'sess-duration-populated';
+    // Use two timestamps so durationMs = lastTs - firstTs > 0.
+    const firstIso = '2026-04-15T10:00:00.000Z';
+    const lastIso = '2026-04-15T10:05:00.000Z';
+    const expectedDurationMs = new Date(lastIso).getTime() - new Date(firstIso).getTime();
+
+    // Write a single JSONL with two distinct assistant events (different requestId + message.id)
+    // so each is a unique dedup key and both timestamps are recorded in sessionTimes.
+    const tmpDir = os.tmpdir();
+    const tmpFile = path.join(tmpDir, `tokenomix-duration-${sessionId}-${Date.now()}.jsonl`);
+    const event1 = JSON.stringify({
+      type: 'assistant',
+      requestId: `req-dur-a-${sessionId}`,
+      sessionId,
+      timestamp: firstIso,
+      cwd: '/projects/duration-test',
+      message: {
+        id: `msg-dur-a-${sessionId}`,
+        model: 'claude-sonnet-4-6-20251120',
+        usage: {
+          input_tokens: 100,
+          output_tokens: 50,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        },
+      },
+    });
+    const event2 = JSON.stringify({
+      type: 'assistant',
+      requestId: `req-dur-b-${sessionId}`,
+      sessionId,
+      timestamp: lastIso,
+      cwd: '/projects/duration-test',
+      message: {
+        id: `msg-dur-b-${sessionId}`,
+        model: 'claude-sonnet-4-6-20251120',
+        usage: {
+          input_tokens: 80,
+          output_tokens: 30,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        },
+      },
+    });
+    await fs.writeFile(tmpFile, event1 + '\n' + event2 + '\n', 'utf-8');
+    tempFiles.push(tmpFile);
+
+    await store.ingestFile(tmpFile);
+
+    const app = buildSessionsApp(store);
+    const res = await app.request('/api/sessions');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as SessionSummary[];
+
+    const entry = body.find((s) => s.sessionId === sessionId);
+    expect(entry).toBeDefined();
+    expect(entry?.durationMs).toBe(expectedDurationMs);
+    expect(typeof entry?.durationMs).toBe('number');
+    expect((entry?.durationMs ?? -1) >= 0).toBe(true);
+  });
+
+  it('durationMs is null when the session row was injected directly (sessionTimes not populated)', async () => {
+    const store = new IndexStore();
+    const rows = store.rows as Map<string, TokenRow>;
+
+    const sessionId = 'sess-duration-null';
+    // Inject a row directly — bypasses ingestFileInternal and recordSessionTimestamp.
+    rows.set(
+      'req_dn:msg_dn',
+      makeRow({ sessionId, project: '/projects/duration-null', projectName: 'duration-null' })
+    );
+
+    const app = buildSessionsApp(store);
+    const res = await app.request('/api/sessions');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as SessionSummary[];
+
+    const entry = body.find((s) => s.sessionId === sessionId);
+    expect(entry).toBeDefined();
+    expect(entry?.durationMs).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -472,6 +472,12 @@ export interface SessionSummary {
    * 50,000-entry LRU cap). Matches the format and semantics of SessionDetail.firstTs.
    */
   firstTs: string | null;
+  /**
+   * Session duration in milliseconds (lastTs - firstTs from the in-memory sessionTimes map).
+   * null when the session has been evicted from sessionTimes (older than the 50,000-entry LRU cap).
+   * Computed server-side; the frontend formats it via formatDurationNullable.
+   */
+  durationMs: number | null;
   isSubagent: boolean;
   /**
    * Top-3 tools by invocation count across all turns in this session.

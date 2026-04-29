@@ -1832,7 +1832,8 @@ function computeSessionSummaries(
     }
     const t = sessionTimes.get(entry.sessionId);
     const firstTs: string | null = t ? new Date(t.firstTs).toISOString() : null;
-    result.push({ ...entry, firstTs, topTools, toolNamesCount });
+    const durationMs: number | null = t ? t.lastTs - t.firstTs : null;
+    result.push({ ...entry, firstTs, durationMs, topTools, toolNamesCount });
   }
 
   return result.sort((a, b) => b.costUsd - a.costUsd);

@@ -17,7 +17,7 @@
  */
 
 import type { DailyBucket, SessionSummary } from '@tokenomix/shared';
-import { formatSessionDate } from './formatters.js';
+import { formatDurationNullable, formatSessionDate } from './formatters.js';
 
 // ---------------------------------------------------------------------------
 // RFC 4180 helpers (exported for testing)
@@ -80,6 +80,7 @@ export const SESSIONS_HEADERS = [
   'CacheRead',
   'Events',
   'IsSubagent',
+  'Duration',
 ] as const;
 
 /** Column headers for daily series export. */
@@ -113,6 +114,7 @@ export function buildSessionsRows(
         s.cacheReadTokens,
         s.events,
         s.isSubagent,
+        formatDurationNullable(s.durationMs),
       ] as const
   );
   return [SESSIONS_HEADERS, ...dataRows];
@@ -171,7 +173,7 @@ function triggerDownload(csvContent: string, filename: string): void {
  *
  * Columns (in order):
  *   Date, Project, ProjectName, SessionId, CostUSD, InputTokens, OutputTokens,
- *   CacheCreation, CacheRead, Events, IsSubagent
+ *   CacheCreation, CacheRead, Events, IsSubagent, Duration
  *
  * @param sessions - Array of SessionSummary objects from GET /api/sessions.
  * @param filename - Optional filename; defaults to "sessions.csv".

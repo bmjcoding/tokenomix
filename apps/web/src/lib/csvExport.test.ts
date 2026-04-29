@@ -55,6 +55,8 @@ const SESSION_FIXTURES: SessionSummary[] = [
     cacheReadTokens: 100,
     events: 42,
     isSubagent: false,
+    // 37 minutes and 30 seconds
+    durationMs: 2_250_000,
     topTools: [],
     toolNamesCount: 0,
   },
@@ -71,6 +73,8 @@ const SESSION_FIXTURES: SessionSummary[] = [
     cacheReadTokens: 0,
     events: 1,
     isSubagent: true,
+    // null — session evicted from sessionTimes map
+    durationMs: null,
     topTools: [],
     toolNamesCount: 0,
   },
@@ -87,6 +91,8 @@ const SESSION_FIXTURES: SessionSummary[] = [
     cacheReadTokens: 300,
     events: 10,
     isSubagent: false,
+    // 1 hour 5 minutes
+    durationMs: 3_900_000,
     topTools: [],
     toolNamesCount: 0,
   },
@@ -261,13 +267,16 @@ describe('buildSessionsRows', () => {
     const rows = buildSessionsRows(SESSION_FIXTURES);
     const first = rows[1];
     expect(first).toBeDefined();
-    // [date, project, projectName, sessionId, costUsd, inputTokens, outputTokens, cacheCreation, cacheRead, events, isSubagent]
+    // [date, project, projectName, sessionId, costUsd, inputTokens, outputTokens, cacheCreation, cacheRead, events, isSubagent, duration]
     // index 0 is the formatted date string
     expect(first?.[1]).toBe('/home/user/project-a');
     expect(first?.[2]).toBe('project-a');
     expect(first?.[3]).toBe('abc123');
     expect(first?.[4]).toBe(1.2345);
     expect(first?.[10]).toBe(false);
+    // Duration cell: first fixture has durationMs: 2_250_000 (37m 30s)
+    expect(typeof first?.[11]).toBe('string');
+    expect(first?.[11]).not.toBe('');
   });
 
   it('date cell formats firstTs to MM-DD-YYYY', () => {
@@ -284,11 +293,11 @@ describe('buildSessionsRows', () => {
     expect(rows[2]?.[0]).toBe('—');
   });
 
-  it('each data row has 11 elements', () => {
+  it('each data row has 12 elements', () => {
     const rows = buildSessionsRows(SESSION_FIXTURES);
     // Skip header row (index 0)
     for (let i = 1; i < rows.length; i++) {
-      expect(rows[i]).toHaveLength(11);
+      expect(rows[i]).toHaveLength(12);
     }
   });
 
@@ -366,7 +375,17 @@ describe('RFC 4180 output via serializeCsv + buildSessionsRows', () => {
       'CacheRead',
       'Events',
       'IsSubagent',
+      'Duration',
     ]);
+  });
+
+  it('Duration cell is formatted string for known durationMs', () => {
+    const rows = parseCsvRows(serializeCsv(buildSessionsRows(SESSION_FIXTURES)));
+    // first fixture: durationMs 2_250_000 — formatDurationNullable produces a non-em-dash string
+    expect(rows[1]?.[11]).toBeDefined();
+    expect(rows[1]?.[11]).not.toBe('—');
+    // second fixture: durationMs null — should be em-dash
+    expect(rows[2]?.[11]).toBe('—');
   });
 });
 
@@ -383,6 +402,7 @@ describe('CSV injection prevention via quoteField + escapeFormula', () => {
     cacheReadTokens: 0,
     events: 0,
     isSubagent: false,
+    durationMs: null,
     topTools: [],
     toolNamesCount: 0,
   });

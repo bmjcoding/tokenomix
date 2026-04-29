@@ -47,6 +47,7 @@ import { exportSessionsCsv } from '../lib/csvExport.js';
 import {
   formatCurrency,
   formatDateRange,
+  formatDurationNullable,
   formatProjectName,
   formatSessionDate,
   formatTokens,
@@ -71,6 +72,7 @@ const PAGE_SIZE = 50;
 type SortKey =
   | 'date'
   | 'project'
+  | 'duration'
   | keyof Pick<SessionSummary, 'costUsd' | 'inputTokens' | 'outputTokens' | 'events'>;
 
 type SortDir = 'asc' | 'desc';
@@ -208,6 +210,13 @@ function sortSessions(sessions: SessionSummary[], key: SortKey, dir: SortDir): S
       return aName.localeCompare(bName, undefined, { sensitivity: 'base' }) * mult;
     }
 
+    if (key === 'duration') {
+      // Nulls always sort to the end regardless of direction.
+      const aMs = a.durationMs ?? Number.NEGATIVE_INFINITY;
+      const bMs = b.durationMs ?? Number.NEGATIVE_INFINITY;
+      return (aMs - bMs) * mult;
+    }
+
     // Numeric columns — key is a keyof SessionSummary with number values.
     return ((a[key] as number) - (b[key] as number)) * mult;
   });
@@ -330,9 +339,9 @@ function TopToolsCell({ session }: TopToolsCellProps) {
 // Skeleton rows (loading state)
 // ---------------------------------------------------------------------------
 
-// 7 columns: Date, Project, Top Tools, Cost, Input Tokens, Output Tokens, Events
+// 8 columns: Date, Project, Top Tools, Cost, Input Tokens, Output Tokens, Events, Duration
 const SKELETON_ROW_KEYS = ['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7'] as const;
-// First 3 cells are left-aligned (Date, Project, Top Tools); trailing 4 are center-aligned (numeric).
+// First 3 cells are left-aligned (Date, Project, Top Tools); trailing 5 are center-aligned (numeric).
 const SKELETON_CELL_KEYS: { key: string; align: 'left' | 'center' }[] = [
   { key: 'c0', align: 'left' },
   { key: 'c1', align: 'left' },
@@ -341,6 +350,7 @@ const SKELETON_CELL_KEYS: { key: string; align: 'left' | 'center' }[] = [
   { key: 'c4', align: 'center' },
   { key: 'c5', align: 'center' },
   { key: 'c6', align: 'center' },
+  { key: 'c7', align: 'center' },
 ];
 
 function SkeletonRows() {
@@ -478,7 +488,7 @@ export default function FullReportPage() {
     (sum, s) => sum + s.inputTokens + s.outputTokens,
     0
   );
-  const filteredAvgCost = filteredCount > 0 ? filteredTotalCost / filteredCount : 0;
+  const totalDurationMs = filtered.reduce((sum, s) => sum + (s.durationMs ?? 0), 0);
 
   // Date range covered by the filtered set (from firstTs values)
   const filteredTimestamps = filtered
@@ -562,8 +572,8 @@ export default function FullReportPage() {
               deltaPercent={null}
             />
             <MetricCard
-              label="Avg / Session"
-              value={filteredCount > 0 ? formatCurrency(filteredAvgCost) : '—'}
+              label="Total Duration"
+              value={formatDurationNullable(totalDurationMs > 0 ? totalDurationMs : null)}
               deltaPercent={null}
             />
           </div>
@@ -649,6 +659,7 @@ export default function FullReportPage() {
                   <col className="w-36" />
                   <col className="w-36" />
                   <col className="w-24" />
+                  <col className="w-28" />
                 </colgroup>
                 <thead className="sticky top-0 z-10">
                   <tr className="border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900">
@@ -705,6 +716,14 @@ export default function FullReportPage() {
                       onSort={handleSort}
                       align="center"
                     />
+                    <SortableHeader
+                      label="Duration"
+                      sortKey="duration"
+                      current={sortKey}
+                      dir={sortDir}
+                      onSort={handleSort}
+                      align="center"
+                    />
                   </tr>
                 </thead>
                 <tbody>
@@ -713,7 +732,7 @@ export default function FullReportPage() {
                   {!isLoading && sorted.length === 0 && (
                     <tr>
                       <td
-                        colSpan={7}
+                        colSpan={8}
                         className="px-4 py-8 text-center text-sm text-gray-500 dark:text-gray-500"
                       >
                         {sessions.length === 0 ? 'No sessions yet.' : 'No sessions match the current filters.'}
@@ -784,6 +803,11 @@ export default function FullReportPage() {
                         {/* Events */}
                         <td className="px-4 py-3 text-center text-sm tabular-nums text-gray-600 dark:text-gray-400">
                           {formatNum(session.events)}
+                        </td>
+
+                        {/* Duration */}
+                        <td className="px-4 py-3 text-center text-sm tabular-nums text-gray-600 dark:text-gray-400">
+                          {formatDurationNullable(session.durationMs)}
                         </td>
                       </tr>
                     ))}
