@@ -11,9 +11,10 @@
  *   Cost (formatted $X.XX)
  *   Input Tokens (locale-grouped)
  *   Output Tokens (locale-grouped)
- *   Cache Creation (locale-grouped)
- *   Cache Read (locale-grouped)
  *   Events (locale-grouped)
+ *
+ * Cache Creation and Cache Read tokens are omitted from this view for
+ * readability; they remain in SessionSummary and the CSV export.
  *
  * Default sort: date descending (most recent first).
  * Clicking any column header toggles ascending / descending.
@@ -52,10 +53,7 @@ const PAGE_SIZE = 50;
 type SortKey =
   | 'date'
   | 'project'
-  | keyof Pick<
-      SessionSummary,
-      'costUsd' | 'inputTokens' | 'outputTokens' | 'cacheCreationTokens' | 'cacheReadTokens' | 'events'
-    >;
+  | keyof Pick<SessionSummary, 'costUsd' | 'inputTokens' | 'outputTokens' | 'events'>;
 
 type SortDir = 'asc' | 'desc';
 
@@ -120,7 +118,7 @@ interface SortableHeaderProps {
   current: SortKey;
   dir: SortDir;
   onSort: (k: SortKey) => void;
-  align?: 'left' | 'right';
+  align?: 'left' | 'right' | 'center';
   className?: string;
 }
 
@@ -134,19 +132,18 @@ function SortableHeader({
   className = '',
 }: SortableHeaderProps) {
   const active = current === sortKey;
-  const isRight = align === 'right';
+  const alignClass = align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left';
   return (
     <th
       scope="col"
-      className={`px-4 py-3 ${isRight ? 'text-right' : 'text-left'} ${className}`}
+      className={`px-4 py-3 ${alignClass} ${className}`}
       aria-sort={active ? (dir === 'desc' ? 'descending' : 'ascending') : 'none'}
     >
       <button
         type="button"
         onClick={() => onSort(sortKey)}
         className={[
-          'inline-flex items-center gap-1 text-xs font-medium uppercase tracking-wide transition-colors',
-          isRight ? 'flex-row-reverse' : '',
+          'inline-flex items-center justify-center gap-1 whitespace-nowrap text-xs font-medium uppercase tracking-wide transition-colors',
           // design-lint-disable dark-mode-pairs: compound modifier prefix (focus-visible:) hides the dark pairing from naive line scan
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-950 dark:focus-visible:ring-white',
           'focus-visible:ring-offset-1 focus-visible:ring-offset-transparent',
@@ -228,19 +225,17 @@ function TopToolsCell({ session }: TopToolsCellProps) {
 // Skeleton rows (loading state)
 // ---------------------------------------------------------------------------
 
-// 9 columns: Date, Project, Top Tools, Cost, Input, Output, Cache Create, Cache Read, Events
+// 7 columns: Date, Project, Top Tools, Cost, Input Tokens, Output Tokens, Events
 const SKELETON_ROW_KEYS = ['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7'] as const;
-// First 3 cells are left-aligned (Date, Project, Top Tools); trailing 6 are right-aligned (numeric).
-const SKELETON_CELL_KEYS: { key: string; align: 'left' | 'right' }[] = [
+// First 3 cells are left-aligned (Date, Project, Top Tools); trailing 4 are center-aligned (numeric).
+const SKELETON_CELL_KEYS: { key: string; align: 'left' | 'center' }[] = [
   { key: 'c0', align: 'left' },
   { key: 'c1', align: 'left' },
   { key: 'c2', align: 'left' },
-  { key: 'c3', align: 'right' },
-  { key: 'c4', align: 'right' },
-  { key: 'c5', align: 'right' },
-  { key: 'c6', align: 'right' },
-  { key: 'c7', align: 'right' },
-  { key: 'c8', align: 'right' },
+  { key: 'c3', align: 'center' },
+  { key: 'c4', align: 'center' },
+  { key: 'c5', align: 'center' },
+  { key: 'c6', align: 'center' },
 ];
 
 function SkeletonRows() {
@@ -251,7 +246,7 @@ function SkeletonRows() {
           {SKELETON_CELL_KEYS.map(({ key: ck, align }) => (
             <td
               key={`${rk}-${ck}`}
-              className={`px-4 py-3${align === 'right' ? ' text-right' : ''}`}
+              className={`px-4 py-3${align === 'center' ? ' text-center' : ''}`}
             >
               <div className="h-4 animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
             </td>
@@ -423,12 +418,10 @@ export default function FullReportPage() {
                   <col className="w-32" />
                   <col className="w-44" />
                   <col className="w-72" />
-                  <col className="w-24" />
-                  <col className="w-24" />
-                  <col className="w-28" />
                   <col className="w-32" />
-                  <col className="w-32" />
-                  <col className="w-20" />
+                  <col className="w-36" />
+                  <col className="w-36" />
+                  <col className="w-24" />
                 </colgroup>
                 <thead className="sticky top-0 z-10">
                   <tr className="border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900">
@@ -459,7 +452,7 @@ export default function FullReportPage() {
                       current={sortKey}
                       dir={sortDir}
                       onSort={handleSort}
-                      align="right"
+                      align="center"
                     />
                     <SortableHeader
                       label="Input Tokens"
@@ -467,7 +460,7 @@ export default function FullReportPage() {
                       current={sortKey}
                       dir={sortDir}
                       onSort={handleSort}
-                      align="right"
+                      align="center"
                     />
                     <SortableHeader
                       label="Output Tokens"
@@ -475,23 +468,7 @@ export default function FullReportPage() {
                       current={sortKey}
                       dir={sortDir}
                       onSort={handleSort}
-                      align="right"
-                    />
-                    <SortableHeader
-                      label="Cache Create"
-                      sortKey="cacheCreationTokens"
-                      current={sortKey}
-                      dir={sortDir}
-                      onSort={handleSort}
-                      align="right"
-                    />
-                    <SortableHeader
-                      label="Cache Read"
-                      sortKey="cacheReadTokens"
-                      current={sortKey}
-                      dir={sortDir}
-                      onSort={handleSort}
-                      align="right"
+                      align="center"
                     />
                     <SortableHeader
                       label="Events"
@@ -499,7 +476,7 @@ export default function FullReportPage() {
                       current={sortKey}
                       dir={sortDir}
                       onSort={handleSort}
-                      align="right"
+                      align="center"
                     />
                   </tr>
                 </thead>
@@ -509,7 +486,7 @@ export default function FullReportPage() {
                   {!isLoading && sorted.length === 0 && (
                     <tr>
                       <td
-                        colSpan={9}
+                        colSpan={7}
                         className="px-4 py-8 text-center text-sm text-gray-500 dark:text-gray-500"
                       >
                         No sessions yet.
@@ -563,32 +540,22 @@ export default function FullReportPage() {
                         </td>
 
                         {/* Cost */}
-                        <td className="px-4 py-3 text-right text-sm font-medium tabular-nums text-gray-950 dark:text-white">
+                        <td className="px-4 py-3 text-center text-sm font-medium tabular-nums text-gray-950 dark:text-white">
                           {formatCost(session.costUsd)}
                         </td>
 
                         {/* Input Tokens */}
-                        <td className="px-4 py-3 text-right text-sm tabular-nums text-gray-600 dark:text-gray-400">
+                        <td className="px-4 py-3 text-center text-sm tabular-nums text-gray-600 dark:text-gray-400">
                           {formatNum(session.inputTokens)}
                         </td>
 
                         {/* Output Tokens */}
-                        <td className="px-4 py-3 text-right text-sm tabular-nums text-gray-600 dark:text-gray-400">
+                        <td className="px-4 py-3 text-center text-sm tabular-nums text-gray-600 dark:text-gray-400">
                           {formatNum(session.outputTokens)}
                         </td>
 
-                        {/* Cache Creation Tokens */}
-                        <td className="px-4 py-3 text-right text-sm tabular-nums text-gray-600 dark:text-gray-400">
-                          {formatNum(session.cacheCreationTokens)}
-                        </td>
-
-                        {/* Cache Read Tokens */}
-                        <td className="px-4 py-3 text-right text-sm tabular-nums text-gray-600 dark:text-gray-400">
-                          {formatNum(session.cacheReadTokens)}
-                        </td>
-
                         {/* Events */}
-                        <td className="px-4 py-3 text-right text-sm tabular-nums text-gray-600 dark:text-gray-400">
+                        <td className="px-4 py-3 text-center text-sm tabular-nums text-gray-600 dark:text-gray-400">
                           {formatNum(session.events)}
                         </td>
                       </tr>
