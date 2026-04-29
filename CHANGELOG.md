@@ -43,6 +43,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   NULL-byte guards, `projectName`/`topTools` shape, empty `toolUses`, and sort order;
   11 web cases covering CSV formula-injection regression paths.
 
+- `POST /api/sessions/:id/reveal` endpoint that opens the session's JSONL file in
+  the OS file manager (Finder on macOS, Explorer on Windows, file manager on Linux).
+  The path is validated against the in-memory session map and passed as a separate
+  `spawn` argument — no shell interpolation. New `IndexStore.getJsonlPathForSession()`
+  helper; tests cover 204, 404, and 400 paths.
+- "Reveal in Finder" button on the session detail page: posts to the new endpoint and
+  shows a transient check icon on success, replacing the previous "Copy path" button.
+
 ### Changed
 
 - Full Session Report (`/report`) reorganized: Project (basename) is now the primary
@@ -58,6 +66,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   accessible name, enabling correct labelling when used outside a dashboard context.
 - SSE handler (`useServerEvents.ts`) now invalidates the `['session']` cache key
   alongside the existing keys, so the session list refreshes on file-watch events.
+- Full Session Report top-tools chip column: `+N more` overflow indicator now always
+  renders on a second line (was inconsistently inline) and links directly to the
+  session's Tools tab (`/report/$sessionId#tools`).
+- Session detail initial-prompt preview: copy button removed; text remains selectable.
+  JSONL path action changed from copy-to-clipboard to reveal-in-file-manager.
 
 ### Fixed
 
