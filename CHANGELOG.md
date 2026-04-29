@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Date column as column 1 on the Full Session Report (`/report`), formatted
+  `MMMM-DD-YYYY` (e.g. `April-29-2026`). Project shifts to column 2.
+- `SessionSummary.firstTs` field (`string | null`, ISO 8601 UTC) — populated by
+  `computeSessionSummaries()` from the existing `sessionTimes` map; `null` when
+  the session was evicted before a timestamp was recorded.
+- `formatSessionDate(iso)` helper in `apps/web/src/lib/formatters.ts` — locale-free
+  date formatting using hardcoded month names; produces the `MMMM-DD-YYYY` display
+  string consumed by the Full Session Report Date column.
+
 - Initial prompt preview (first 500 characters, server-truncated) and JSONL file path
   display on the session detail view; new `SessionDetail.initialPrompt`,
   `initialPromptTruncated`, and `jsonlPath` fields exposed via `GET /api/sessions/:id`.
@@ -52,6 +61,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shows a transient check icon on success, replacing the previous "Copy path" button.
 
 ### Changed
+
+- Full Session Report table now uses `table-fixed` layout with explicit `<colgroup>`
+  widths — columns no longer reflow when sort changes or row content varies.
+- CSV export gains a `Date` column at index 0 (header and per-row tuple length
+  increased to 11); existing columns shift right by one position.
 
 - Full Session Report (`/report`) reorganized: Project (basename) is now the primary
   column with session ID shown as secondary text; the Type column was removed; a Top
