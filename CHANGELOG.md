@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Initial prompt preview (first 500 characters, server-truncated) and JSONL file path
+  display on the session detail view; new `SessionDetail.initialPrompt`,
+  `initialPromptTruncated`, and `jsonlPath` fields exposed via `GET /api/sessions/:id`.
+  The server captures the first user-role message at ingest time and hard-caps it at 500
+  characters before serialisation. The JSONL path is metadata only — no endpoint serves
+  file contents. Both fields are hidden on the frontend when null. Server already binds
+  `127.0.0.1`; no network-exposure change.
 - Per-component USD cost breakdown (input / output / cache create / cache read) on the
   session detail view; rendered under each token-count metric card and exposed via
   `SessionDetail.costBreakdown` from `GET /api/sessions/:id`.
