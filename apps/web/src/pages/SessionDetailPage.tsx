@@ -566,21 +566,25 @@ export default function SessionDetailPage() {
         <MetricCard
           label="Input Tokens"
           value={formatTokens(detail.inputTokens)}
+          context={formatCurrency(detail.costBreakdown.input)}
           deltaPercent={null}
         />
         <MetricCard
           label="Output Tokens"
           value={formatTokens(detail.outputTokens)}
+          context={formatCurrency(detail.costBreakdown.output)}
           deltaPercent={null}
         />
         <MetricCard
           label="Cache Create"
           value={formatTokens(detail.cacheCreationTokens)}
+          context={formatCurrency(detail.costBreakdown.cacheCreate)}
           deltaPercent={null}
         />
         <MetricCard
           label="Cache Read"
           value={formatTokens(detail.cacheReadTokens)}
+          context={formatCurrency(detail.costBreakdown.cacheRead)}
           deltaPercent={null}
         />
         <MetricCard label="Events" value={formatTokens(detail.events)} deltaPercent={null} />

@@ -529,6 +529,22 @@ export interface SessionDetail {
   /** Human-readable project name derived from path.basename(cwd). */
   projectName: string;
   costUsd: number;
+  /**
+   * Per-component USD cost breakdown for the session.
+   * Sum of input + output + cacheCreate + cacheRead equals the total costUsd
+   * field, modulo small rounding differences. All values default to 0 when no
+   * priced rows are in the session.
+   */
+  costBreakdown: {
+    /** USD cost attributed to raw input tokens for the session. */
+    input: number;
+    /** USD cost attributed to output tokens for the session. */
+    output: number;
+    /** USD cost attributed to cache creation tokens for the session. */
+    cacheCreate: number;
+    /** USD cost attributed to cache read tokens for the session. */
+    cacheRead: number;
+  };
   inputTokens: number;
   outputTokens: number;
   cacheCreationTokens: number;

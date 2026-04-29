@@ -2399,6 +2399,12 @@ export class IndexStore extends EventEmitter {
     let project = '';
     let projectName = '';
 
+    // Per-component cost accumulators (USD).
+    let sumInputCostUsd = 0;
+    let sumOutputCostUsd = 0;
+    let sumCacheCreationCostUsd = 0;
+    let sumCacheReadCostUsd = 0;
+
     // Full tool accumulator (not capped).
     const toolAcc = new Map<string, { count: number; errorCount: number }>();
 
@@ -2415,6 +2421,14 @@ export class IndexStore extends EventEmitter {
         project = row.project;
         projectName = row.projectName;
       }
+
+      // Accumulate per-component USD costs: prefer stored values, fall back to
+      // pricing-table estimate (same pattern as addCostComponents).
+      const fallback = fallbackCostComponentsForRow(row);
+      sumInputCostUsd += row.inputCostUsd ?? fallback.inputCostUsd;
+      sumOutputCostUsd += row.outputCostUsd ?? fallback.outputCostUsd;
+      sumCacheCreationCostUsd += row.cacheCreationCostUsd ?? fallback.cacheCreationCostUsd;
+      sumCacheReadCostUsd += row.cacheReadCostUsd ?? fallback.cacheReadCostUsd;
 
       const uses = row.toolUses ?? {};
       const errors = row.toolErrors ?? {};
@@ -2477,6 +2491,12 @@ export class IndexStore extends EventEmitter {
       project,
       projectName,
       costUsd,
+      costBreakdown: {
+        input: sumInputCostUsd,
+        output: sumOutputCostUsd,
+        cacheCreate: sumCacheCreationCostUsd,
+        cacheRead: sumCacheReadCostUsd,
+      },
       inputTokens,
       outputTokens,
       cacheCreationTokens,

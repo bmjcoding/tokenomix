@@ -250,6 +250,146 @@ describe('GET /api/sessions/:id', () => {
 });
 
 // ---------------------------------------------------------------------------
+// costBreakdown tests for GET /api/sessions/:id
+// ---------------------------------------------------------------------------
+
+describe('GET /api/sessions/:id — costBreakdown', () => {
+  it('sum of costBreakdown components approximately equals costUsd across multiple rows', async () => {
+    const store = new IndexStore();
+    const rows = store.rows as Map<string, TokenRow>;
+
+    const sessionId = 'sess-breakdown-sum';
+
+    // Row 1: stored per-component costs set explicitly.
+    rows.set(
+      'req_cb1:msg_cb1',
+      makeRow({
+        sessionId,
+        project: '/projects/breakdown-test',
+        projectName: 'breakdown-test',
+        inputTokens: 1000,
+        outputTokens: 200,
+        cacheCreation5m: 0,
+        cacheCreation1h: 0,
+        cacheReadTokens: 500,
+        costUsd: 0.004,
+        inputCostUsd: 0.003,
+        outputCostUsd: 0.0006,
+        cacheCreationCostUsd: 0,
+        cacheReadCostUsd: 0.0004,
+      })
+    );
+
+    // Row 2: second set of explicit stored per-component costs.
+    rows.set(
+      'req_cb2:msg_cb2',
+      makeRow({
+        sessionId,
+        project: '/projects/breakdown-test',
+        projectName: 'breakdown-test',
+        inputTokens: 500,
+        outputTokens: 100,
+        cacheCreation5m: 200,
+        cacheCreation1h: 0,
+        cacheReadTokens: 0,
+        costUsd: 0.002,
+        inputCostUsd: 0.0015,
+        outputCostUsd: 0.0003,
+        cacheCreationCostUsd: 0.0002,
+        cacheReadCostUsd: 0,
+      })
+    );
+
+    // Row 3: third row with different component values.
+    rows.set(
+      'req_cb3:msg_cb3',
+      makeRow({
+        sessionId,
+        project: '/projects/breakdown-test',
+        projectName: 'breakdown-test',
+        inputTokens: 300,
+        outputTokens: 50,
+        cacheCreation5m: 0,
+        cacheCreation1h: 0,
+        cacheReadTokens: 100,
+        costUsd: 0.001,
+        inputCostUsd: 0.0007,
+        outputCostUsd: 0.0001,
+        cacheCreationCostUsd: 0,
+        cacheReadCostUsd: 0.0002,
+      })
+    );
+
+    const app = buildSessionsApp(store);
+    const res = await app.request(`/api/sessions/${sessionId}`);
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as SessionDetail;
+
+    // costBreakdown field must exist and be an object.
+    expect(body.costBreakdown).toBeDefined();
+    expect(typeof body.costBreakdown).toBe('object');
+
+    // All four fields must be numeric.
+    expect(typeof body.costBreakdown.input).toBe('number');
+    expect(typeof body.costBreakdown.output).toBe('number');
+    expect(typeof body.costBreakdown.cacheCreate).toBe('number');
+    expect(typeof body.costBreakdown.cacheRead).toBe('number');
+
+    // The sum of per-component costs should approximately equal costUsd.
+    const componentSum =
+      body.costBreakdown.input +
+      body.costBreakdown.output +
+      body.costBreakdown.cacheCreate +
+      body.costBreakdown.cacheRead;
+    expect(componentSum).toBeCloseTo(body.costUsd, 4);
+
+    // Verify expected accumulated values from our explicit fixtures.
+    expect(body.costBreakdown.input).toBeCloseTo(0.003 + 0.0015 + 0.0007, 6);
+    expect(body.costBreakdown.output).toBeCloseTo(0.0006 + 0.0003 + 0.0001, 6);
+    expect(body.costBreakdown.cacheCreate).toBeCloseTo(0 + 0.0002 + 0, 6);
+    expect(body.costBreakdown.cacheRead).toBeCloseTo(0.0004 + 0 + 0.0002, 6);
+  });
+
+  it('costBreakdown is all zeros when rows have no priced cost components', async () => {
+    const store = new IndexStore();
+    const rows = store.rows as Map<string, TokenRow>;
+
+    const sessionId = 'sess-breakdown-zero';
+
+    // Row with all zero tokens — fallback pricing will also yield zero for all components.
+    rows.set(
+      'req_cz1:msg_cz1',
+      makeRow({
+        sessionId,
+        project: '/projects/zero-test',
+        projectName: 'zero-test',
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreation5m: 0,
+        cacheCreation1h: 0,
+        cacheReadTokens: 0,
+        webSearchRequests: 0,
+        costUsd: 0,
+        // Explicitly omit all *CostUsd fields — no stored component costs.
+      })
+    );
+
+    const app = buildSessionsApp(store);
+    const res = await app.request(`/api/sessions/${sessionId}`);
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as SessionDetail;
+
+    expect(body.costBreakdown).toBeDefined();
+    expect(body.costBreakdown.input).toBe(0);
+    expect(body.costBreakdown.output).toBe(0);
+    expect(body.costBreakdown.cacheCreate).toBe(0);
+    expect(body.costBreakdown.cacheRead).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Tests for GET /api/sessions (list)
 // ---------------------------------------------------------------------------
 
