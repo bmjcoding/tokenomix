@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.4.1] - 2026-04-30
+
+### Fixed
+
+- Donut charts (Model Mix, Tool Use Breakdown) no longer flicker on hover; added `notMerge` to ECharts components.
+- Heatmap tooltip now uses canonical white/gray-950 surface tokens instead of the inverted dark-in-light scheme.
+- Spend-over-time x-axis date labels no longer clip against the y-axis or chart edge.
+- "Ask AI" button and modal now have proper light-mode styling; modal scoped via `.dark` to preserve dark aesthetic, trigger button has paired light/dark classes.
+- Dark mode toggle now has sufficient contrast in dark mode (gray-700 surface, explicit icon color).
+- Optimization Opportunities table replaced category pill badges with plain uppercase labels for cleaner appearance.
+- Page scroll no longer requires double-swipe; removed `html` from the `overflow-x: hidden` selector.
+
+### Changed
+
+- Recommendation chat trigger button focus ring is now paired across light and dark modes (was dark-only).
+- Recommendation chat status dot uses `bg-amber-500` in light mode for better legibility (was amber-300 only).
+
 ## [3.4.0] - 2026-04-29
 
 ### Added
@@ -459,7 +476,8 @@ Internal cross-references updated:
 - `DEFAULT_OUTPUT` now points to `output/usage-dashboard.html` within the
   project, instead of a session-specific retro directory.
 
-[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.4.0...HEAD
+[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.4.1...HEAD
+[3.4.1]: https://github.com/bmjcoding/tokenomix/compare/v3.4.0...v3.4.1
 [3.4.0]: https://github.com/bmjcoding/tokenomix/compare/v3.3.0...v3.4.0
 [3.3.0]: https://github.com/bmjcoding/tokenomix/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/bmjcoding/tokenomix/compare/v3.1.0...v3.2.0
