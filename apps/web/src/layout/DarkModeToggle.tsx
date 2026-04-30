@@ -1,32 +1,34 @@
-import { Moon, Sun } from 'lucide-react';
-import { useTheme } from '../providers/ThemeProvider.js';
+/**
+ * DarkModeToggle — labeled segmented-pill for theme selection.
+ *
+ * Replaces the cycling icon button with an explicit three-option segmented control
+ * so users can see all choices at a glance: Light, Dark, System. The label "Theme"
+ * sits to the left in a fixed-width span so all three rows in FloatingControls align.
+ */
+
+import { type Theme, useTheme } from '../providers/ThemeProvider.js';
+import { SegmentedToggle } from '../ui/SegmentedToggle.js';
+
+const THEME_OPTIONS: { value: Theme; label: string }[] = [
+  { value: 'light', label: 'Light' },
+  { value: 'dark', label: 'Dark' },
+  { value: 'system', label: 'System' },
+];
 
 export default function DarkModeToggle() {
-  const { resolvedTheme, setTheme } = useTheme();
-  const isDark = resolvedTheme === 'dark';
+  const { theme, setTheme } = useTheme();
 
   return (
-    <button
-      type="button"
-      onClick={() => setTheme(isDark ? 'light' : 'dark')}
-      aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-      className={[
-        'fixed bottom-6 left-6 z-[60]',
-        'rounded-full w-10 h-10',
-        'bg-white dark:bg-gray-700',
-        'border border-gray-200 dark:border-gray-600',
-        // design-lint-disable shadow-weight
-        'shadow-lg backdrop-blur-sm',
-        'flex items-center justify-center transition-colors',
-        // design-lint-disable dark-mode-pairs
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-950 dark:focus-visible:ring-white focus-visible:ring-offset-2',
-      ].join(' ')}
-    >
-      {isDark ? (
-        <Sun size={18} aria-hidden="true" className="text-gray-100" />
-      ) : (
-        <Moon size={18} aria-hidden="true" className="text-gray-700" />
-      )}
-    </button>
+    <div className="flex items-center gap-3">
+      <span className="w-16 text-xs font-medium text-gray-600 dark:text-gray-400">Theme</span>
+      <SegmentedToggle<Theme>
+        ariaLabel="Colour theme"
+        options={THEME_OPTIONS}
+        value={theme}
+        onChange={setTheme}
+        size="sm"
+        accent="achromatic"
+      />
+    </div>
   );
 }
