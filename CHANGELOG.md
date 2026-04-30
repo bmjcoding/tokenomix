@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.7.1] - 2026-04-30
+
+### Changed
+
+- Spend-over-time field toggle (Cost / Input / Output) now uses the same segmented-pill structure as the period switcher (24HR / 7D / 30D / YTD), unifying the two adjacent controls visually. (`apps/web/src/panels/AreaChartPanel.tsx`, `apps/web/src/panels/PeriodSwitcher.tsx`)
+- Both segmented toggles now render `|` divider separators between adjacent inactive segments; the divider adjacent to the active pill is suppressed so the active state remains visually prominent. (`apps/web/src/panels/AreaChartPanel.tsx`, `apps/web/src/panels/PeriodSwitcher.tsx`)
+
 ## [3.7.0] - 2026-04-30
 
 ### Added
@@ -557,7 +564,9 @@ Internal cross-references updated:
 - `DEFAULT_OUTPUT` now points to `output/usage-dashboard.html` within the
   project, instead of a session-specific retro directory.
 
-[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.6.0...HEAD
+[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.7.1...HEAD
+[3.7.1]: https://github.com/bmjcoding/tokenomix/compare/v3.7.0...v3.7.1
+[3.7.0]: https://github.com/bmjcoding/tokenomix/compare/v3.6.0...v3.7.0
 [3.6.0]: https://github.com/bmjcoding/tokenomix/compare/v3.5.0...v3.6.0
 [3.5.0]: https://github.com/bmjcoding/tokenomix/compare/v3.4.1...v3.5.0
 [3.4.1]: https://github.com/bmjcoding/tokenomix/compare/v3.4.0...v3.4.1

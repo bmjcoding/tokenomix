@@ -11,7 +11,11 @@
  *   without inter-button gaps (avoids external rounding artifacts from Button primitive).
  * - Outer group uses role="group" with aria-label per ARIA APG toggle button pattern;
  *   each button carries aria-pressed for state announcement.
+ * - Pipe dividers interleaved between non-active adjacent segments for visual separation.
+ *   Divider is hidden whenever either neighbour is active so the blue pill stands out.
  */
+
+import { Fragment } from 'react';
 
 // ---------------------------------------------------------------------------
 // Canonical type — imported by AreaChartPanel (subtask 7) and OverviewPage (subtask 9)
@@ -47,23 +51,34 @@ export function PeriodSwitcher({ value, onChange }: PeriodSwitcherProps) {
       aria-label="Time range"
       className="inline-flex items-center rounded-lg bg-gray-100 p-0.5 dark:bg-gray-800"
     >
-      {PERIOD_OPTIONS.map((opt) => {
+      {PERIOD_OPTIONS.map((opt, idx) => {
         const active = opt.value === value;
+        const next = PERIOD_OPTIONS[idx + 1];
+        const showDivider = next !== undefined && !active && next.value !== value;
         return (
-          <button
-            key={opt.value}
-            type="button"
-            aria-pressed={active}
-            onClick={() => onChange(opt.value)}
-            className={[
-              'rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
-              active
-                ? 'bg-primary text-white shadow-sm dark:bg-primary-light dark:text-gray-950'
-                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200',
-            ].join(' ')}
-          >
-            {opt.label}
-          </button>
+          <Fragment key={opt.value}>
+            <button
+              type="button"
+              aria-pressed={active}
+              onClick={() => onChange(opt.value)}
+              className={[
+                'rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
+                active
+                  ? 'bg-primary text-white shadow-sm dark:bg-primary-light dark:text-gray-950'
+                  : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200',
+              ].join(' ')}
+            >
+              {opt.label}
+            </button>
+            {showDivider && (
+              <span
+                aria-hidden="true"
+                className="select-none px-1 text-gray-300 dark:text-gray-600"
+              >
+                |
+              </span>
+            )}
+          </Fragment>
         );
       })}
     </div>

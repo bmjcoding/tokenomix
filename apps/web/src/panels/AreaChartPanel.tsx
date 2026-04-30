@@ -18,7 +18,7 @@
 import { Link } from '@tanstack/react-router';
 import type { DailyBucket, MetricSummary } from '@tokenomix/shared';
 import { Download, ExternalLink } from 'lucide-react';
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { AreaChart, type AreaField } from '../charts/AreaChart.js';
 import { exportDailySeriesCsv } from '../lib/csvExport.js';
 import { getLast24hSeries, getTrailingDailySeries, getYtdSeries } from '../lib/derive.js';
@@ -166,19 +166,44 @@ export function AreaChartPanel({ data, period, onPeriodChange }: AreaChartPanelP
       </div>
 
       {/* ── Field toggle ────────────────────────────────────────────────────── */}
-      {/* biome-ignore lint/a11y/useSemanticElements: role=group with aria-label is the canonical toolbar buttongroup pattern; <fieldset> would impose default browser visual styling */}
-      <div className="flex items-center gap-1 mb-3" role="group" aria-label="Data field">
-        {FIELD_OPTIONS.map((opt) => (
-          <Button
-            key={opt.value}
-            variant={field === opt.value ? 'primary' : 'ghost'}
-            size="sm"
-            onClick={() => setField(opt.value)}
-            aria-pressed={field === opt.value}
-          >
-            {opt.label}
-          </Button>
-        ))}
+      <div className="mb-3">
+        {/* biome-ignore lint/a11y/useSemanticElements: segmented UI control matches PeriodSwitcher; <fieldset> imposes default form styling */}
+        <div
+          role="group"
+          aria-label="Data field"
+          className="inline-flex items-center rounded-lg bg-gray-100 p-0.5 dark:bg-gray-800"
+        >
+          {FIELD_OPTIONS.map((opt, idx) => {
+            const active = field === opt.value;
+            const next = FIELD_OPTIONS[idx + 1];
+            const showDivider = next !== undefined && !active && next.value !== field;
+            return (
+              <Fragment key={opt.value}>
+                <button
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => setField(opt.value)}
+                  className={[
+                    'rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
+                    active
+                      ? 'bg-primary text-white shadow-sm dark:bg-primary-light dark:text-gray-950'
+                      : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200',
+                  ].join(' ')}
+                >
+                  {opt.label}
+                </button>
+                {showDivider && (
+                  <span
+                    aria-hidden="true"
+                    className="select-none px-1 text-gray-300 dark:text-gray-600"
+                  >
+                    |
+                  </span>
+                )}
+              </Fragment>
+            );
+          })}
+        </div>
       </div>
 
       {/* ── Chart ───────────────────────────────────────────────────────────── */}
