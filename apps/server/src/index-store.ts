@@ -44,6 +44,7 @@ import type {
   SessionSummary,
   SessionTurnRow,
   SubagentBucket,
+  SubhourlyBucket,
   SystemTurnDurationEventParsed,
   TokenRow,
   ToolBucket,
@@ -1141,6 +1142,7 @@ export function buildTokenRow(
   const row: TokenRow = {
     date: toLocalDateStr(ts),
     hour: toLocalHour(ts),
+    minute: ts.getMinutes(),
     sessionId: event.sessionId ?? '',
     project: rawCwd,
     projectName,
@@ -1327,6 +1329,17 @@ function aggregate(
   const projectMap = new Map<string, ProjectBucket>();
   const sessionMap = new Map<string, SessionBucket>();
   const heatmapMap = new Map<string, HeatmapPoint>();
+  const subhourlyMap = new Map<string, SubhourlyBucket>();
+
+  // Trailing 24h cutoff for sub-hourly bucketing.
+  // Precompute a cheap representation (date string + hour int + minute int) so
+  // the hot-path per-row check never allocates a Date object.  Only rows whose
+  // local date+hour+minute fall exactly on the cutoff boundary need the integer
+  // arithmetic; rows on other dates short-circuit via string comparison.
+  const cutoff24h = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const cutoffDateStr = toLocalDateStr(cutoff24h);  // "YYYY-MM-DD" in local TZ
+  const cutoffHour = cutoff24h.getHours();           // local hour integer
+  const cutoffMinute = cutoff24h.getMinutes();       // local minute integer
 
   for (const row of filtered) {
     totalCostUsd += row.costUsd;
@@ -1468,6 +1481,47 @@ function aggregate(
         costUsd: row.costUsd,
       });
     }
+
+    // Sub-hourly 30-minute bucket (trailing 24h window only).
+    // Slot boundaries: 0 or 30. Key: "YYYY-MM-DD:HH:MM" (local).
+    //
+    // Fast-path cutoff guard — no Date allocation per row:
+    //   row.date >  cutoffDateStr  → definitely inside 24h window
+    //   row.date <  cutoffDateStr  → definitely outside 24h window
+    //   row.date == cutoffDateStr  → compare integer hour/minute
+    const rowInWindow =
+      row.date > cutoffDateStr
+        ? true
+        : row.date < cutoffDateStr
+          ? false
+          : row.hour > cutoffHour ||
+            (row.hour === cutoffHour && row.minute >= cutoffMinute);
+
+    if (rowInWindow) {
+      const rowHH = String(row.hour).padStart(2, '0');
+      const slotMinute = Math.floor(row.minute / 30) * 30;
+      const slotMM = String(slotMinute).padStart(2, '0');
+      const slotKey = `${row.date}:${rowHH}:${slotMM}`;
+      const existingSlot = subhourlyMap.get(slotKey);
+      if (existingSlot) {
+        existingSlot.costUsd += row.costUsd;
+        existingSlot.inputTokens += row.inputTokens;
+        existingSlot.outputTokens += row.outputTokens;
+        existingSlot.cacheCreationTokens += row.cacheCreation5m + row.cacheCreation1h;
+        existingSlot.cacheReadTokens += row.cacheReadTokens;
+      } else {
+        // New slot: emit local-time ISO string with no Z or offset suffix so
+        // the chart x-axis slices HH:MM in the server's local timezone.
+        subhourlyMap.set(slotKey, {
+          timestamp: `${row.date}T${rowHH}:${slotMM}:00.000`,
+          costUsd: row.costUsd,
+          inputTokens: row.inputTokens,
+          outputTokens: row.outputTokens,
+          cacheCreationTokens: row.cacheCreation5m + row.cacheCreation1h,
+          cacheReadTokens: row.cacheReadTokens,
+        });
+      }
+    }
   }
 
   // Sort series.
@@ -1480,6 +1534,9 @@ function aggregate(
   const byProject30d = [...project30dMap.values()].sort((a, b) => b.costUsd - a.costUsd);
   const bySession = [...sessionMap.values()].sort((a, b) => b.costUsd - a.costUsd).slice(0, 15);
   const heatmapData = [...heatmapMap.values()];
+  const subhourlySeries = [...subhourlyMap.values()].sort((a, b) =>
+    a.timestamp.localeCompare(b.timestamp)
+  );
 
   // ── New analytics aggregations ─────────────────────────────────────────────
   //
@@ -1832,6 +1889,7 @@ function aggregate(
     byProject30d,
     bySession,
     heatmapData,
+    subhourlySeries,
     byTool,
     bySubagent,
     totalFilesTouched,

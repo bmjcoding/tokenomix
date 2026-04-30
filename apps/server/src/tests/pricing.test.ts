@@ -191,6 +191,7 @@ describe('costForRow', () => {
     const row: TokenRow = {
       date: '2026-04-27',
       hour: 12,
+      minute: 0,
       sessionId: 'test-session',
       project: '/test/project',
       projectName: 'project',

@@ -7,7 +7,8 @@
  * Design decisions:
  * - Card header: "Spend over time" title (left) | PeriodSwitcher + Export (right).
  * - Period-to-series transform is pure client-side — AreaChart always receives DailyBucket[].
- * - 24h mode: synthetic DailyBucket[] built from heatmapData; xAxisLabelFormat slices HH:00.
+ * - 24h mode: 49-point DailyBucket[] built from subhourlySeries (30-min slots);
+ *   xAxisLabelFormat slices local HH:MM via raw.slice(11, 16) (no Z suffix).
  * - Export button is disabled + reduced-opacity when dailySeries is empty.
  * - Existing Cost / Input / Output field toggle is preserved.
  */
@@ -17,7 +18,11 @@ import { Download } from 'lucide-react';
 import { useState } from 'react';
 import { AreaChart, type AreaField } from '../charts/AreaChart.js';
 import { exportDailySeriesCsv } from '../lib/csvExport.js';
-import { getLast24hSeries, getTrailingDailySeries, getYtdSeries } from '../lib/derive.js';
+import {
+  getLast24hSubhourlySeries,
+  getTrailingDailySeries,
+  getYtdSeries,
+} from '../lib/derive.js';
 import { Button } from '../ui/Button.js';
 import { Card } from '../ui/Card.js';
 import { SegmentedToggle } from '../ui/SegmentedToggle.js';
@@ -38,29 +43,20 @@ const FIELD_OPTIONS: { value: AreaField; label: string }[] = [
 // ---------------------------------------------------------------------------
 
 /**
- * Builds a synthetic DailyBucket[] from getLast24hSeries output.
+ * Builds a DailyBucket[] for the rolling 24h window using 30-minute slots.
  *
- * Each hourly point becomes a DailyBucket whose `date` field is an ISO
- * timestamp string `YYYY-MM-DDTHH:00:00`. AreaChart uses these strings as the
- * x-axis category data; the xAxisLabelFormat prop then slices `HH:00` via
- * `raw.slice(11, 16)` so each tick shows a different hour label.
+ * Delegates entirely to getLast24hSubhourlySeries which returns 49 entries
+ * spanning [now-24h, now] at 30-min boundaries. Each DailyBucket.date is a
+ * local-time ISO string with no Z suffix (e.g. '2026-04-30T13:30:00.000') so
+ * that xAxisLabelFormat can call raw.slice(11, 16) to display local 'HH:MM'.
  *
- * Non-cost token fields are zero because heatmapData only carries costUsd.
+ * All six DailyBucket fields are sourced from SubhourlyBucket, eliminating the
+ * prior bug where inputTokens and outputTokens were always 0 in 24h mode.
  */
-function buildSyntheticDailyBuckets(heatmapData: MetricSummary['heatmapData']): DailyBucket[] {
-  const hourPoints = getLast24hSeries(heatmapData);
-  return hourPoints.map(({ date, hour, costUsd }) => {
-    // Preserve the heatmap bucket date so 24h windows crossing midnight stay chronological.
-    const hourStr = String(hour).padStart(2, '0');
-    return {
-      date: `${date}T${hourStr}:00:00`,
-      costUsd,
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheCreationTokens: 0,
-      cacheReadTokens: 0,
-    };
-  });
+function buildSyntheticDailyBuckets(
+  subhourlySeries: MetricSummary['subhourlySeries']
+): DailyBucket[] {
+  return getLast24hSubhourlySeries(subhourlySeries);
 }
 
 // ---------------------------------------------------------------------------
@@ -70,7 +66,9 @@ function buildSyntheticDailyBuckets(heatmapData: MetricSummary['heatmapData']): 
 function filterSeries(data: MetricSummary, period: DashboardPeriod): DailyBucket[] {
   switch (period) {
     case '24h':
-      return buildSyntheticDailyBuckets(data.heatmapData);
+      // Pass through undefined-safe: getLast24hSubhourlySeries accepts undefined/null
+      // for stale-client safety (runtime guard, not a build-time contract change).
+      return buildSyntheticDailyBuckets(data.subhourlySeries);
     case '7d':
       return getTrailingDailySeries(data.dailySeries, 7);
     case '30d':
@@ -103,10 +101,16 @@ export function AreaChartPanel({ data, period, onPeriodChange }: AreaChartPanelP
   const [field, setField] = useState<AreaField>('costUsd');
 
   const filteredSeries = filterSeries(data, period);
-  const isEmpty = period === '24h' ? data.heatmapData.length === 0 : data.dailySeries.length === 0;
+  const isEmpty =
+    period === '24h'
+      ? (data.subhourlySeries ?? []).length === 0
+      : data.dailySeries.length === 0;
 
-  // For 24h, pass xAxisLabelFormat so ticks show HH:00 instead of MM-DD.
+  // For 24h, pass xAxisLabelFormat so ticks show HH:MM instead of MM-DD.
   const xAxisLabelFormat = period === '24h' ? (raw: string) => raw.slice(11, 16) : undefined;
+  // For 24h, pass tooltipHeaderFormat to convert '2026-04-30T14:30:00.000' → '2026-04-30 14:30'.
+  const tooltipHeaderFormat =
+    period === '24h' ? (raw: string) => raw.replace('T', ' ').slice(0, 16) : undefined;
 
   function handleExport() {
     exportDailySeriesCsv(filteredSeries, 'spend-over-time.csv');
@@ -165,6 +169,7 @@ export function AreaChartPanel({ data, period, onPeriodChange }: AreaChartPanelP
           field={field}
           height={220}
           {...(xAxisLabelFormat !== undefined ? { xAxisLabelFormat } : {})}
+          {...(tooltipHeaderFormat !== undefined ? { tooltipHeaderFormat } : {})}
         />
       )}
     </Card>

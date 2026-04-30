@@ -90,6 +90,10 @@ export interface TokenRow {
   date: string;
   /** 0-23 hour of day in local time. */
   hour: number;
+  /**
+   * 0-59 minute of the hour in local time. Used for 30-minute sub-hourly bucketing.
+   */
+  minute: number;
   sessionId: string;
   project: string;
   /**
@@ -245,6 +249,27 @@ export interface HeatmapPoint {
   /** 0-23 */
   hour: number;
   costUsd: number;
+}
+
+/**
+ * One 30-minute bucket of token usage for the sub-hourly 24h time-series.
+ *
+ * Emitted by the server's aggregate() function for rows that fall within the
+ * trailing 24-hour window. Older callers that do not consume this type can
+ * safely ignore MetricSummary.subhourlySeries.
+ *
+ * timestamp is the UTC ISO-8601 string of the bucket's start time at a
+ * 30-minute boundary, e.g. '2026-04-30T14:30:00.000Z'.
+ */
+export interface SubhourlyBucket {
+  /** UTC ISO-8601 bucket-start timestamp, e.g. '2026-04-30T14:30:00.000Z'. */
+  timestamp: string;
+  costUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  /** Combined cache-creation tokens (cacheCreation5m + cacheCreation1h). */
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -768,6 +793,16 @@ export interface MetricSummary {
   bySession: SessionBucket[];
   /** Raw per-(date, hour) entries; NOT pre-aggregated by dayOfWeek. */
   heatmapData: HeatmapPoint[];
+
+  /**
+   * 30-minute sub-hourly buckets for the rolling 24-hour window only.
+   *
+   * Populated by aggregate() from rows whose timestamp falls within the trailing
+   * 24 hours. Entries are sorted ascending by timestamp. Older callers that do
+   * not need sub-hourly resolution may ignore this field — it is purely additive
+   * and does not replace heatmapData.
+   */
+  subhourlySeries: SubhourlyBucket[];
 
   // ── New analytics breakdown arrays (tools + subagents) ───────────────────
 

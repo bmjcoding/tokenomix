@@ -36,6 +36,18 @@ interface AreaChartProps {
    * callers remain unaffected.
    */
   xAxisLabelFormat?: (raw: string) => string;
+  /**
+   * Optional tooltip header formatter. When provided, transforms the x-axis
+   * category label (the `name` field on each axis-pointer param) before it is
+   * rendered as the first line of the tooltip HTML.
+   *
+   * Use case: 24h period — pass `(raw) => raw.replace('T', ' ').slice(0, 16)`
+   * to convert `'2026-04-30T14:30:00.000'` → `'2026-04-30 14:30'`.
+   *
+   * When absent, the raw category value is shown unchanged, preserving the
+   * existing `YYYY-MM-DD` display for 7d / 30d / ytd periods.
+   */
+  tooltipHeaderFormat?: (raw: string) => string;
 }
 
 const FIELD_LABELS: Record<AreaField, string> = {
@@ -49,7 +61,7 @@ function formatValue(field: AreaField, v: number): string {
   return v.toLocaleString();
 }
 
-export function AreaChart({ data, field, height = 220, xAxisLabelFormat }: AreaChartProps) {
+export function AreaChart({ data, field, height = 220, xAxisLabelFormat, tooltipHeaderFormat }: AreaChartProps) {
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme === 'dark';
 
@@ -77,7 +89,8 @@ export function AreaChart({ data, field, height = 220, xAxisLabelFormat }: AreaC
         formatter: (params: unknown) => {
           const items = params as Array<{ name: string; value: number }>;
           if (!items[0]) return '';
-          return `${items[0].name}<br/>${FIELD_LABELS[field]}: ${formatValue(field, items[0].value)}`;
+          const header = tooltipHeaderFormat ? tooltipHeaderFormat(items[0].name) : items[0].name;
+          return `${header}<br/>${FIELD_LABELS[field]}: ${formatValue(field, items[0].value)}`;
         },
         backgroundColor: isDark ? surfaceColorDark() : surfaceColorLight(),
         borderColor: grid,
@@ -147,7 +160,7 @@ export function AreaChart({ data, field, height = 220, xAxisLabelFormat }: AreaC
         },
       ],
     };
-  }, [data, field, isDark, xAxisLabelFormat]);
+  }, [data, field, isDark, xAxisLabelFormat, tooltipHeaderFormat]);
 
   return <ReactECharts option={option} style={{ height: `${height}px`, width: '100%' }} notMerge />;
 }

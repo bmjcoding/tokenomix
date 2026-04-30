@@ -276,6 +276,28 @@ export const SystemTurnDurationSchema = z
   .passthrough();
 
 // ---------------------------------------------------------------------------
+// SubhourlyBucketSchema — 30-minute sub-hourly bucket (API response shape)
+// ---------------------------------------------------------------------------
+
+/**
+ * Zod schema for a single 30-minute sub-hourly bucket in MetricSummary.subhourlySeries.
+ *
+ * timestamp is a UTC ISO-8601 string representing the bucket's start at a
+ * 30-minute boundary (e.g. '2026-04-30T14:30:00.000Z').
+ *
+ * cacheCreationTokens covers both 5-minute and 1-hour cache-creation tokens
+ * combined, following the same convention as the DailyBucket fields.
+ */
+export const SubhourlyBucketSchema = z.object({
+  timestamp: z.string(),
+  costUsd: z.number(),
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  cacheCreationTokens: z.number().int().nonnegative(),
+  cacheReadTokens: z.number().int().nonnegative(),
+});
+
+// ---------------------------------------------------------------------------
 // RawUsageEventSchema — union of all known event types
 // ---------------------------------------------------------------------------
 

@@ -8,7 +8,7 @@
  * and do NOT extend the shared SinceOption type.
  */
 
-import type { DailyBucket, HeatmapPoint } from '@tokenomix/shared';
+import type { DailyBucket, HeatmapPoint, SubhourlyBucket } from '@tokenomix/shared';
 
 // ---------------------------------------------------------------------------
 // 24-hour series
@@ -76,6 +76,89 @@ export function getLast24hSeries(
     });
   }
   return series;
+}
+
+// ---------------------------------------------------------------------------
+// 24-hour sub-hourly series (30-minute buckets)
+// ---------------------------------------------------------------------------
+
+/**
+ * Format a Date as a local-time ISO string with no Z or offset suffix.
+ *
+ * Format: YYYY-MM-DDTHH:MM:00.000
+ *
+ * This matches the format emitted by the server's aggregate() so that map-key
+ * lookups between server buckets and client slots produce identical strings for
+ * the same wall-clock instant. The xAxisLabelFormat raw.slice(11, 16) then
+ * yields the local "HH:MM" the user expects instead of UTC hours.
+ */
+function formatLocalIsoNoZ(d: Date): string {
+  const y = d.getFullYear();
+  const mo = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const h = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  return `${y}-${mo}-${day}T${h}:${min}:00.000`;
+}
+
+/**
+ * Returns 30-minute boundary buckets spanning the last 24 hours.
+ *
+ * Consumes the SubhourlyBucket[] emitted by the server's aggregate() and maps
+ * them onto a fixed 49-point window (offset 48 down to 0, each step 30 min)
+ * so the chart always shows a complete rolling 24-hour view. Missing slots
+ * are zero-filled.
+ *
+ * The returned DailyBucket.date is a local-time ISO string with no Z suffix
+ * (e.g. '2026-04-30T13:30:00.000'), matching the format emitted by the server
+ * so that xAxisLabelFormat can call raw.slice(11, 16) to get local 'HH:MM'.
+ *
+ * The output has 49 points: offset 48 is the oldest slot (now - 24h) and
+ * offset 0 is the most recent slot, making the visible chart endpoints a full
+ * 24 hours apart.
+ */
+export function getLast24hSubhourlySeries(
+  subhourlySeries: SubhourlyBucket[] | undefined | null,
+  now = new Date()
+): DailyBucket[] {
+  // Treat undefined/null (stale-client or cached pre-deploy MetricSummary) as [].
+  const series = subhourlySeries ?? [];
+  if (series.length === 0) return [];
+
+  // Build a map keyed on the server-emitted local-time ISO string (no Z).
+  const bucketByTimestamp = new Map<string, SubhourlyBucket>();
+  for (const bucket of series) {
+    bucketByTimestamp.set(bucket.timestamp, bucket);
+  }
+
+  // Floor `end` to the current 30-minute slot boundary.
+  const slotMinute = now.getMinutes() >= 30 ? 30 : 0;
+  const end = new Date(now.getTime());
+  end.setMinutes(slotMinute, 0, 0);
+
+  const STEP_MS = 30 * 60 * 1000;
+  const result: DailyBucket[] = [];
+
+  for (let offset = 48; offset >= 0; offset--) {
+    const slotStart = new Date(end.getTime() - offset * STEP_MS);
+    const localKey = formatLocalIsoNoZ(slotStart);
+    const existing = bucketByTimestamp.get(localKey);
+
+    result.push(
+      existing
+        ? {
+            date: localKey,
+            costUsd: existing.costUsd,
+            inputTokens: existing.inputTokens,
+            outputTokens: existing.outputTokens,
+            cacheCreationTokens: existing.cacheCreationTokens,
+            cacheReadTokens: existing.cacheReadTokens,
+          }
+        : emptyDailyBucket(localKey)
+    );
+  }
+
+  return result;
 }
 
 // ---------------------------------------------------------------------------

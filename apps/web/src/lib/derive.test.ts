@@ -4,12 +4,13 @@
  * All fixtures are purely in-memory — no API calls, no msw.
  */
 
-import type { DailyBucket, HeatmapPoint } from '@tokenomix/shared';
+import type { DailyBucket, HeatmapPoint, SubhourlyBucket } from '@tokenomix/shared';
 import { describe, expect, it } from 'vitest';
 import {
   computeCacheEfficiency,
   computeDailyEfficiencySeries,
   getLast24hSeries,
+  getLast24hSubhourlySeries,
   getTrailingDailySeries,
   getYtdSeries,
 } from './derive.js';
@@ -488,5 +489,130 @@ describe('computeDailyEfficiencySeries', () => {
       expect(v).toBeGreaterThanOrEqual(0);
       expect(v).toBeLessThanOrEqual(100);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getLast24hSubhourlySeries
+// ---------------------------------------------------------------------------
+
+describe('getLast24hSubhourlySeries', () => {
+  /**
+   * TZ-stable test design (Option B — offset-relative assertions).
+   *
+   * getLast24hSubhourlySeries floors `now` to the nearest 30-minute boundary
+   * using now.getMinutes() in LOCAL time. Using a UTC-parsed Date anchor would
+   * produce different `end` values across CI timezones (e.g. UTC+5:45 floors
+   * 14:30Z → 20:15 local → slotMinute=0, shifting `end` one slot back).
+   *
+   * Strategy: we compute `end` using the same local-floor algorithm the
+   * function uses, then derive fixture bucket timestamps relative to that
+   * computed `end`. Assertions check position (offset index) and field values —
+   * never absolute UTC strings that depend on the test host's timezone.
+   *
+   * anchorNow is a Date constructed with the Date(year,month,day,h,m) form
+   * so that getMinutes() is unambiguously 30 in every timezone (the constructor
+   * interprets arguments as local-time components).
+   *
+   *   anchorNow local-minutes = 30  → slotMinute = 30
+   *   end = anchorNow floored to :30 of its local hour
+   *   bucketA is placed at offset 5  back from end  (5 × 30 min = 2.5 h)
+   *   bucketB is placed at offset 12 back from end  (12 × 30 min = 6 h)
+   */
+
+  const STEP_MS = 30 * 60 * 1000;
+
+  // Mirrors the formatLocalIsoNoZ helper in derive.ts.
+  function formatLocalIsoNoZ(d: Date): string {
+    const y = d.getFullYear();
+    const mo = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    const h = String(d.getHours()).padStart(2, '0');
+    const min = String(d.getMinutes()).padStart(2, '0');
+    return `${y}-${mo}-${day}T${h}:${min}:00.000`;
+  }
+
+  // Constructed as local time so getMinutes() == 30 in every timezone.
+  const anchorNow = new Date(2026, 3, 30, 14, 30, 0, 0); // 2026-04-30 14:30 local
+
+  // Mirror the function's own floor: slotMinute = getMinutes() >= 30 ? 30 : 0
+  const slotMinute = anchorNow.getMinutes() >= 30 ? 30 : 0; // always 30 for anchorNow
+  const endMs = (() => {
+    const d = new Date(anchorNow.getTime());
+    d.setMinutes(slotMinute, 0, 0);
+    return d.getTime();
+  })();
+
+  // Fixture buckets defined by their offset from end so the local-time key matches
+  // exactly what the function generates via formatLocalIsoNoZ(slotStart).
+  const bucketATs = formatLocalIsoNoZ(new Date(endMs - 5 * STEP_MS));  // offset 5 from end
+  const bucketBTs = formatLocalIsoNoZ(new Date(endMs - 12 * STEP_MS)); // offset 12 from end
+
+  const bucketA: SubhourlyBucket = {
+    timestamp: bucketATs,
+    costUsd: 1.5,
+    inputTokens: 100,
+    outputTokens: 200,
+    cacheCreationTokens: 50,
+    cacheReadTokens: 25,
+  };
+
+  const bucketB: SubhourlyBucket = {
+    timestamp: bucketBTs,
+    costUsd: 0.75,
+    inputTokens: 40,
+    outputTokens: 80,
+    cacheCreationTokens: 10,
+    cacheReadTokens: 5,
+  };
+
+  it('empty input returns empty array', () => {
+    expect(getLast24hSubhourlySeries([], anchorNow)).toHaveLength(0);
+  });
+
+  it('two buckets at known offsets produce a 49-entry array with exactly those two slots non-zero', () => {
+    const result = getLast24hSubhourlySeries([bucketA, bucketB], anchorNow);
+
+    expect(result).toHaveLength(49);
+
+    // bucketA is at offset 5 from end, so it sits at result index (48 - 5) = 43.
+    // bucketB is at offset 12 from end, so it sits at result index (48 - 12) = 36.
+    expect(result[43]?.costUsd).toBe(bucketA.costUsd);
+    expect(result[36]?.costUsd).toBe(bucketB.costUsd);
+
+    // Total non-zero slots = exactly 2.
+    const nonZero = result.filter((b) => b.costUsd > 0);
+    expect(nonZero).toHaveLength(2);
+
+    // All other slots must have zero costUsd.
+    const zeros = result.filter((b) => b.costUsd === 0);
+    expect(zeros).toHaveLength(47);
+  });
+
+  it('output date values are in ascending chronological order', () => {
+    const result = getLast24hSubhourlySeries([bucketA, bucketB], anchorNow);
+
+    const dates = result.map((b) => b.date);
+    expect(dates).toEqual([...dates].sort());
+  });
+
+  it('token fields are carried through from SubhourlyBucket without zeroing', () => {
+    const result = getLast24hSubhourlySeries([bucketA, bucketB], anchorNow);
+
+    // bucketA is at fixed offset index 43 (48 - 5).
+    const slotA = result[43];
+    expect(slotA).toBeDefined();
+    expect(slotA?.inputTokens).toBe(bucketA.inputTokens);
+    expect(slotA?.outputTokens).toBe(bucketA.outputTokens);
+    expect(slotA?.cacheCreationTokens).toBe(bucketA.cacheCreationTokens);
+    expect(slotA?.cacheReadTokens).toBe(bucketA.cacheReadTokens);
+
+    // bucketB is at fixed offset index 36 (48 - 12).
+    const slotB = result[36];
+    expect(slotB).toBeDefined();
+    expect(slotB?.inputTokens).toBe(bucketB.inputTokens);
+    expect(slotB?.outputTokens).toBe(bucketB.outputTokens);
+    expect(slotB?.cacheCreationTokens).toBe(bucketB.cacheCreationTokens);
+    expect(slotB?.cacheReadTokens).toBe(bucketB.cacheReadTokens);
   });
 });

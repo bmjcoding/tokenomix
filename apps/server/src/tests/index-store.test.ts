@@ -31,6 +31,7 @@ function makeRow(overrides: Partial<TokenRow>): TokenRow {
   return {
     date: '2026-04-01',
     hour: 12,
+    minute: 0,
     sessionId: 'session-a',
     project: '/test/proj',
     projectName: 'proj',
@@ -854,6 +855,204 @@ describe('aggregate() — pricing audit metadata', () => {
       } else {
         process.env.TOKENOMIX_PRICING_PROVIDER = previousProvider;
       }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// subhourlySeries — 30-minute bucket behaviour
+// ---------------------------------------------------------------------------
+
+/**
+ * Helpers to derive local-time date/hour/minute from an arbitrary Date.
+ * aggregate() reconstructs row epoch as new Date(`${row.date}T${HH}:${MM}:00`)
+ * (no 'Z'), so we must extract these fields from local time to match.
+ */
+function localDateStr(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+function localHour(d: Date): number {
+  return d.getHours();
+}
+
+describe('aggregate() — subhourlySeries', () => {
+  it('two rows in the same hour at :05 and :45 produce two SubhourlyBucket entries at :00 and :30', () => {
+    const store = new IndexStore();
+    const rows = store.rows as Map<string, TokenRow>;
+
+    // Anchor to current local time so both rows fall inside the 24h window.
+    const now = new Date();
+    const date = localDateStr(now);
+    const hour = localHour(now);
+
+    // Row A: same hour, minute 5 → slot :00
+    rows.set(
+      'sub_a:msg1',
+      makeRow({
+        date,
+        hour,
+        minute: 5,
+        costUsd: 0.01,
+        inputTokens: 100,
+        outputTokens: 50,
+      })
+    );
+    // Row B: same hour, minute 45 → slot :30
+    rows.set(
+      'sub_b:msg1',
+      makeRow({
+        date,
+        hour,
+        minute: 45,
+        costUsd: 0.02,
+        inputTokens: 200,
+        outputTokens: 80,
+      })
+    );
+
+    const metrics = store.getMetrics();
+    const series = metrics.subhourlySeries;
+
+    // Must have exactly two entries for this hour (assuming store is fresh).
+    expect(series.length).toBe(2);
+
+    // Sort ascending by timestamp (server guarantees this, but verify).
+    const sorted = [...series].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    expect(series).toEqual(sorted);
+
+    // Slot :00 → minute 5 lands here.
+    // The timestamp is a local-time ISO string with no Z suffix; the string ends
+    // with ':00:00.000' for the on-the-hour slot.
+    const slotZero = series.find((b) => b.timestamp.endsWith(':00:00.000'));
+    expect(slotZero).toBeDefined();
+    expect(slotZero?.costUsd).toBeCloseTo(0.01, 10);
+    expect(slotZero?.inputTokens).toBe(100);
+
+    // Slot :30 → minute 45 lands here.
+    const slotThirty = series.find((b) => b.timestamp.endsWith(':30:00.000'));
+    expect(slotThirty).toBeDefined();
+    expect(slotThirty?.costUsd).toBeCloseTo(0.02, 10);
+    expect(slotThirty?.inputTokens).toBe(200);
+  });
+
+  it('a row exactly 25 hours ago does NOT appear in subhourlySeries', () => {
+    const store = new IndexStore();
+    const rows = store.rows as Map<string, TokenRow>;
+
+    // 25h ago in local time — outside the trailing 24h window.
+    const twentyFiveHoursAgo = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    const date = localDateStr(twentyFiveHoursAgo);
+    const hour = localHour(twentyFiveHoursAgo);
+    const minute = twentyFiveHoursAgo.getMinutes();
+
+    rows.set(
+      'sub_stale:msg1',
+      makeRow({
+        date,
+        hour,
+        minute,
+        costUsd: 0.99,
+        inputTokens: 9999,
+        outputTokens: 9999,
+      })
+    );
+
+    const metrics = store.getMetrics();
+
+    // The stale row must contribute nothing to subhourlySeries.
+    expect(metrics.subhourlySeries).toHaveLength(0);
+  });
+
+  it('rows at :30 and :55 in the same hour fold into the same :30 bucket and accumulate', () => {
+    const store = new IndexStore();
+    const rows = store.rows as Map<string, TokenRow>;
+
+    const now = new Date();
+    const date = localDateStr(now);
+    const hour = localHour(now);
+
+    // Row C: minute 30 → slot :30
+    rows.set(
+      'sub_fold_c:msg1',
+      makeRow({
+        date,
+        hour,
+        minute: 30,
+        costUsd: 0.03,
+        inputTokens: 300,
+        outputTokens: 60,
+        cacheCreation5m: 10,
+        cacheCreation1h: 5,
+        cacheReadTokens: 20,
+      })
+    );
+    // Row D: minute 55 → also slot :30 (Math.floor(55/30)*30 = 30)
+    rows.set(
+      'sub_fold_d:msg1',
+      makeRow({
+        date,
+        hour,
+        minute: 55,
+        costUsd: 0.07,
+        inputTokens: 700,
+        outputTokens: 140,
+        cacheCreation5m: 20,
+        cacheCreation1h: 10,
+        cacheReadTokens: 40,
+      })
+    );
+
+    const metrics = store.getMetrics();
+    const series = metrics.subhourlySeries;
+
+    // Both rows land in the same :30 slot → exactly one bucket.
+    expect(series).toHaveLength(1);
+
+    // series[0] is guaranteed by the length check above; use non-null assertion to satisfy TS.
+    const bucket = series[0]!;
+    // costUsd accumulated.
+    expect(bucket.costUsd).toBeCloseTo(0.03 + 0.07, 10);
+    // inputTokens accumulated.
+    expect(bucket.inputTokens).toBe(300 + 700);
+    // outputTokens accumulated.
+    expect(bucket.outputTokens).toBe(60 + 140);
+    // cacheCreationTokens = (cacheCreation5m + cacheCreation1h) for each row.
+    expect(bucket.cacheCreationTokens).toBe(10 + 5 + (20 + 10));
+    // cacheReadTokens accumulated.
+    expect(bucket.cacheReadTokens).toBe(20 + 40);
+
+    // The timestamp is a local-time ISO string: YYYY-MM-DDTHH:MM:SS.mmm, no Z suffix.
+    expect(bucket.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}$/);
+    // Explicitly confirm no Z or offset suffix — this is what the contract requires.
+    expect(bucket.timestamp.endsWith('Z')).toBe(false);
+    // The slot was :30, so the timestamp must end with ':30:00.000'.
+    expect(bucket.timestamp.endsWith(':30:00.000')).toBe(true);
+  });
+
+  it('subhourlySeries is sorted ascending by timestamp', () => {
+    const store = new IndexStore();
+    const rows = store.rows as Map<string, TokenRow>;
+
+    const now = new Date();
+    const date = localDateStr(now);
+    const hour = localHour(now);
+
+    // Rows at :05, :35, and :45 — should produce :00, :30 buckets in that order.
+    rows.set('sub_sort_a:msg1', makeRow({ date, hour, minute: 5, costUsd: 0.01 }));
+    rows.set('sub_sort_b:msg1', makeRow({ date, hour, minute: 35, costUsd: 0.02 }));
+    rows.set('sub_sort_c:msg1', makeRow({ date, hour, minute: 45, costUsd: 0.03 }));
+
+    const metrics = store.getMetrics();
+    const series = metrics.subhourlySeries;
+
+    // Ascending check: each entry's timestamp must be <= the next.
+    for (let i = 1; i < series.length; i++) {
+      const cur = series[i]!;
+      const prev = series[i - 1]!;
+      expect(cur.timestamp >= prev.timestamp).toBe(true);
     }
   });
 });

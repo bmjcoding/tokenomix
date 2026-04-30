@@ -574,6 +574,7 @@ describe('tool-ingest — MetricSummary aggregate fields', () => {
     return {
       date: '2026-04-27',
       hour: 10,
+      minute: 0,
       sessionId: 'session-agg-test',
       project: '/projects/myapp',
       projectName: 'myapp',

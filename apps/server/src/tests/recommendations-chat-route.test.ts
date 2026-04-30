@@ -17,6 +17,7 @@ function makeRow(overrides: Partial<TokenRow>): TokenRow {
   return {
     date: '2026-04-27',
     hour: 10,
+    minute: 0,
     sessionId: 'session-default',
     project: '/Users/private/work/bank-app',
     projectName: 'bank-app',

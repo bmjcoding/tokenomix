@@ -51,6 +51,8 @@ export {
   RawUsageEventSchema,
   RawUsageSchema,
   ServerToolUseSchema,
+  // Sub-hourly bucket schema (MetricSummary.subhourlySeries)
+  SubhourlyBucketSchema,
   SystemTurnDurationSchema,
   ToolInputPathSchema,
   ToolResultContentSchema,
@@ -102,6 +104,8 @@ export type {
   SessionTurnRow,
   SinceOption,
   SubagentBucket,
+  // Sub-hourly bucket (MetricSummary.subhourlySeries)
+  SubhourlyBucket,
   TokenRow,
   // New analytics bucket types
   ToolBucket,

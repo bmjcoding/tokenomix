@@ -69,6 +69,7 @@ function buildMetricSummaryFixture(overrides: Partial<MetricSummary> = {}): Metr
     byProject30d: [],
     bySession: [],
     heatmapData: [],
+    subhourlySeries: [],
     // Analytics arrays
     byTool: [],
     bySubagent: [],

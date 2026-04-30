@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.9.0] - 2026-04-30
+
+### Added
+
+- 30-minute bucket granularity for the "Spend over time" chart's 24HR view. The chart now renders 49 data points across a 24-hour window (was 25 one-hour buckets) and updates live as new turns are ingested. (`packages/shared/src/types.ts`, `packages/shared/src/schemas.ts`, `apps/server/src/index-store.ts`, `apps/web/src/lib/derive.ts`, `apps/web/src/panels/AreaChartPanel.tsx`)
+- `SubhourlyBucket` interface and `SubhourlyBucketSchema` in `packages/shared` — exported shape carrying a 30-minute slot boundary plus per-slot cost and input/output/cache token totals.
+- `MetricSummary.subhourlySeries` — server-computed array of `SubhourlyBucket` entries for the trailing 24-hour window, emitted by `aggregate()` alongside existing `dailySeries` and `heatmapData`.
+- `getLast24hSubhourlySeries(subhourlySeries, now?)` helper in `apps/web/src/lib/derive.ts` — returns 49 zero-filled `DailyBucket` entries aligned to 30-minute boundaries; consumed by `AreaChartPanel` for the 24HR view.
+
+### Fixed
+
+- Cost / Input / Output field toggles in the 24HR chart view now display real values instead of flat zero lines. The previous one-hour synthetic-bucket path zeroed token fields; the new sub-hourly aggregation carries input/output/cache token totals per slot.
+- 24HR chart x-axis labels now reflect the user's local time (e.g. `14:30`) rather than UTC. `SubhourlyBucket.timestamp` is formatted as a local-time ISO string with no `Z` suffix, allowing the chart formatter to slice characters 11–15 directly for display.
+- 24HR chart tooltip header trimmed from `2026-04-30T14:30:00.000` to `2026-04-30 14:30` for readability. `AreaChart` now accepts an optional `tooltipHeaderFormat` prop that `AreaChartPanel` supplies for the 24HR period only; 7D/30D/YTD tooltips continue to show `YYYY-MM-DD` unchanged. (`apps/web/src/charts/AreaChart.tsx`, `apps/web/src/panels/AreaChartPanel.tsx`)
+
+### Changed
+
+- `aggregate()` hot path in `apps/server/src/index-store.ts` rewrites the 24-hour cutoff comparison to avoid allocating a `new Date()` per filtered row; the per-row check is now a string compare against a precomputed `cutoffDateStr` plus integer comparisons of `row.hour`/`row.minute`.
+- `AreaChartPanel` reads `data.subhourlySeries` for the 24HR period and falls back gracefully via `?? []` for clients running against an older server build that does not yet emit the field.
+
+
 ## [3.8.1] - 2026-04-30
 
 ### Fixed
@@ -598,7 +619,8 @@ Internal cross-references updated:
 - `DEFAULT_OUTPUT` now points to `output/usage-dashboard.html` within the
   project, instead of a session-specific retro directory.
 
-[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.8.0...HEAD
+[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.9.0...HEAD
+[3.9.0]: https://github.com/bmjcoding/tokenomix/compare/v3.8.1...v3.9.0
 [3.8.0]: https://github.com/bmjcoding/tokenomix/compare/v3.7.2...v3.8.0
 [3.7.2]: https://github.com/bmjcoding/tokenomix/compare/v3.7.1...v3.7.2
 [3.7.1]: https://github.com/bmjcoding/tokenomix/compare/v3.7.0...v3.7.1
