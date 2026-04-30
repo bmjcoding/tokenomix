@@ -33,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 12 new Vitest tests in `apps/server/src/tests/rescan-scheduler.test.ts`
   covering first-tick cataloguing, unchanged-mtime no-ingest, mtime-advanced
   ingest, `stop()` cancellation, and `lastRescanTs` getter lifecycle.
+- `TOKENOMIX_DEBUG=1` environment variable — when set, the structured logger
+  emits debug-level entries to stdout; off by default. `RescanScheduler` uses
+  it to emit a `rescan-tick-noop` heartbeat each cycle so operators can
+  distinguish a healthy idle scheduler from a hung one without adding
+  steady-state noise.
 
 ### Changed
 
@@ -41,6 +46,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `GET /api/health` response shape extended with `lastRescanTs: string | null`.
 - `fetchHealth()` type in `apps/web/src/lib/api.ts` updated to include
   `lastRescanTs: string | null`.
+- `RescanScheduler` extracted from `apps/server/src/index-store.ts` to its
+  own module at `apps/server/src/rescan-scheduler.ts`. The `index-store.ts`
+  module now focuses on its core JSONL aggregation responsibility. Public API
+  surface unchanged: the `RescanScheduler` class, `RescanSchedulerOptions`
+  interface, constructor signature, `start()` / `stop()` / `tick()` methods,
+  and `lastRescanTs` getter all retain their existing semantics.
+- `logEvent` signature now accepts `'debug'` as a fourth log level alongside
+  `'info' | 'warn' | 'error'`. Debug entries are silently dropped unless
+  `TOKENOMIX_DEBUG=1` is set.
 
 ## [3.4.1] - 2026-04-30
 
