@@ -694,6 +694,27 @@ describe('buildTokenRow cache branching', () => {
     expect(subRow?.isSubagent).toBe(true);
   });
 
+  it('prices Claude Code bare haiku subagent rows as Haiku catalog usage', () => {
+    const event = RawUsageEventSchema.parse({
+      ...baseRaw,
+      message: {
+        id: 'msg_haiku_alias',
+        model: 'haiku',
+        usage: {
+          input_tokens: 1_000_000,
+          output_tokens: 1_000_000,
+          cache_read_input_tokens: 1_000_000,
+        },
+      },
+    });
+
+    const row = buildTokenRow(event, '/project/session/subagents/agent-01.jsonl');
+    expect(row?.isSubagent).toBe(true);
+    expect(row?.modelFamily).toBe('haiku');
+    expect(row?.pricingStatus).toBe('catalog');
+    expect(row?.costUsd).toBeCloseTo(6.1, 10);
+  });
+
   it('uses gateway-rated cost fields when internal gateway pricing is configured', () => {
     const previousProvider = process.env.TOKENOMIX_PRICING_PROVIDER;
     process.env.TOKENOMIX_PRICING_PROVIDER = 'internal_gateway';

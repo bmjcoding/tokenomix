@@ -48,6 +48,26 @@ describe('opus 4.7 locked cost', () => {
     expect(model_family('claude-opus-4-7')).toBe('opus');
   });
 
+  it('Claude Code bare model aliases map to catalog pricing families', () => {
+    expect(isKnownPricingModelId('haiku')).toBe(true);
+    expect(isKnownPricingModelId('sonnet')).toBe(true);
+    expect(isKnownPricingModelId('opus')).toBe(true);
+    expect(model_family('haiku')).toBe('haiku');
+    expect(model_family('sonnet')).toBe('sonnet');
+    expect(model_family('opus')).toBe('opus');
+  });
+
+  it('prices bare haiku alias at Haiku 4.5 rates instead of Sonnet fallback', () => {
+    const usage = {
+      input_tokens: 1_000_000,
+      output_tokens: 1_000_000,
+      cache_read_input_tokens: 1_000_000,
+    };
+
+    expect(pricing_status_for_usage('haiku', usage)).toBe('catalog');
+    expect(computeCost(usage, 'haiku')).toBeCloseTo(6.1, 10);
+  });
+
   it('legacy Anthropic model ID order maps claude-3-opus to legacy opus pricing', () => {
     expect(model_family('claude-3-opus-20240229')).toBe('opus_legacy');
     expect(model_family('claude-3-5-haiku-20241022')).toBe('haiku_3_5');

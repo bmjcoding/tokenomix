@@ -41,6 +41,10 @@ export const queryKeys = {
     return ['health'] as const;
   },
 
+  recommendationChatStatus(): readonly unknown[] {
+    return ['recommendationChatStatus'] as const;
+  },
+
   /**
    * Cache key for fetchTurns(params).
    * Tuple format: ['turns', params] — T-006 invalidates by prefix ['turns'].

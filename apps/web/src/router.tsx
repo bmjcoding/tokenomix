@@ -9,8 +9,6 @@ import { RootLayout } from './layout/RootLayout.js';
 // ─────────────────────────────────────────────────────────────────────────────
 
 const OverviewPage = lazy(() => import('./pages/OverviewPage.js'));
-const SessionsPage = lazy(() => import('./pages/SessionsPage.js'));
-const ModelsPage = lazy(() => import('./pages/ModelsPage.js'));
 const FullReportPage = lazy(() => import('./pages/FullReportPage.js'));
 const SessionDetailPage = lazy(() => import('./pages/SessionDetailPage.js'));
 
@@ -51,26 +49,6 @@ const overviewRoute = createRoute({
   ),
 });
 
-const sessionsRoute = createRoute({
-  getParentRoute: () => layoutRoute,
-  path: '/sessions',
-  component: () => (
-    <Suspense fallback={<PageFallback />}>
-      <SessionsPage />
-    </Suspense>
-  ),
-});
-
-const modelsRoute = createRoute({
-  getParentRoute: () => layoutRoute,
-  path: '/models',
-  component: () => (
-    <Suspense fallback={<PageFallback />}>
-      <ModelsPage />
-    </Suspense>
-  ),
-});
-
 const reportRoute = createRoute({
   getParentRoute: () => layoutRoute,
   path: '/report',
@@ -92,13 +70,7 @@ const reportDetailRoute = createRoute({
 });
 
 const routeTree = rootRoute.addChildren([
-  layoutRoute.addChildren([
-    overviewRoute,
-    sessionsRoute,
-    modelsRoute,
-    reportRoute,
-    reportDetailRoute,
-  ]),
+  layoutRoute.addChildren([overviewRoute, reportRoute, reportDetailRoute]),
 ]);
 
 export const router = createRouter({ routeTree });

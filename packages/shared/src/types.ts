@@ -237,7 +237,7 @@ export interface SessionBucket {
  * Raw per-(date, hour) entry in the heatmap dataset.
  * The server emits one entry per unique (date, hour) combination.
  * The HeatmapChart component is responsible for client-side aggregation
- * to (dayOfWeek, hour) buckets via `new Date(point.date).getDay()`.
+ * to local-calendar (dayOfWeek, hour) buckets.
  */
 export interface HeatmapPoint {
   /** YYYY-MM-DD */
@@ -368,17 +368,45 @@ export interface IngestionAuditSummary {
   warnings: string[];
 }
 
-/** High-level optimization recommendation derived from observed usage. */
+/** High-level optimization experiment candidate derived from observed usage. */
 export interface OptimizationOpportunity {
   id: string;
   category: 'context' | 'model' | 'tooling' | 'workflow' | 'project';
   title: string;
   recommendation: string;
   evidence: string;
+  /** Estimated 30d impact for the candidate. Values are non-additive across rows. */
   impactUsd30d: number;
   /** Deterministic rule score from server heuristics; not an LLM probability. */
   confidence: number;
   project?: string;
+}
+
+export interface RecommendationChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface RecommendationChatStatus {
+  available: boolean;
+  configured: boolean;
+  providerDetails: 'managed_by_claude_code';
+  version: string | null;
+  message: string | null;
+}
+
+export interface RecommendationChatRequest {
+  message: string;
+  history?: RecommendationChatMessage[];
+}
+
+export interface RecommendationChatResponse {
+  answer: string;
+  groundedOpportunityIds: string[];
+  durationMs: number | null;
+  costUsd: number | null;
+  sessionId: string | null;
+  warning: string | null;
 }
 
 /**
@@ -543,9 +571,9 @@ export interface SessionDetail {
   costUsd: number;
   /**
    * Per-component USD cost breakdown for the session.
-   * Sum of input + output + cacheCreate + cacheRead equals the total costUsd
-   * field, modulo small rounding differences. All values default to 0 when no
-   * priced rows are in the session.
+   * Sum of input + output + cacheCreate + cacheRead + webSearch equals the
+   * total costUsd field, modulo small rounding differences. All values default
+   * to 0 when no priced rows are in the session.
    */
   costBreakdown: {
     /** USD cost attributed to raw input tokens for the session. */
@@ -556,6 +584,8 @@ export interface SessionDetail {
     cacheCreate: number;
     /** USD cost attributed to cache read tokens for the session. */
     cacheRead: number;
+    /** USD cost attributed to billable web search requests for the session. */
+    webSearch: number;
   };
   inputTokens: number;
   outputTokens: number;
@@ -836,7 +866,7 @@ export interface MetricSummary {
   /**
    * Ranked, heuristic optimization opportunities. Values are derived from
    * observed local session data and should be treated as candidates for
-   * controlled before/after experiments, not guaranteed savings.
+   * controlled before/after experiments, not guaranteed or additive savings.
    */
   optimizationOpportunities: OptimizationOpportunity[];
 

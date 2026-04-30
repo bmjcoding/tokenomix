@@ -19,6 +19,7 @@ import { IndexStore, PROJECTS_DIR } from './index-store.js';
 import { eventsRoute } from './routes/events.js';
 import { healthRoute } from './routes/health.js';
 import { metricsRoute } from './routes/metrics.js';
+import { recommendationsChatRoute } from './routes/recommendations-chat.js';
 import { sessionsRoute } from './routes/sessions.js';
 import { turnsRoute } from './routes/turns.js';
 import { formatLocalIso } from './time.js';
@@ -97,6 +98,7 @@ async function main(): Promise<void> {
   app.route('/api/health', healthRoute(store));
   app.route('/api/events', eventsRoute(store));
   app.route('/api/turns', turnsRoute(store));
+  app.route('/api/recommendations/chat', recommendationsChatRoute(store));
 
   // Start file watcher and capture handle for graceful shutdown.
   const watcher = startWatcher(store);

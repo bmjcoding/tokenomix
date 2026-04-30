@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-04-29
+
+### Added
+
+- Floating dark-mode toggle (`DarkModeToggle`) fixed at the bottom-right of
+  the viewport; persists via `localStorage:tokenomix:theme` and is visible
+  on all routes.
+- Page header on the Overview page with an enlarged "tokenomix" wordmark and
+  a "Full Report" call-to-action linking to `/report`.
+- `HelpTooltip` accepts an optional `align: 'left' | 'right'` prop so
+  popovers near card edges can be right-anchored to avoid viewport clipping.
+- `MIN_TOOL_CALLS_FOR_ERROR_RATE` constant (= 10) in `KpiRow2`: the
+  worst-tool error-rate KPI now requires at least 10 calls before a tool is
+  eligible, preventing single-failure outliers from dominating the card.
+
+### Changed
+
+- Left sidebar removed; pages handle their own container and padding without
+  a shared shell wrapper.
+- Activity heatmap hour labels updated to zero-padded 24-hour format
+  (00–23); all 7 day rows render as table rows with proper vertical centering.
+- Heatmap tooltips no longer duplicate the native browser `title` attribute
+  and now flip position to avoid clipping at viewport edges.
+- Donut chart hover (Tool Use Breakdown and Model Mix): non-hovered slices
+  remain fully opaque; a 1 px accent ring highlights the hovered slice
+  instead of dimming the rest.
+- Optimization Opportunities table: AREA pill aligned with cell content,
+  header pill text changed to "Up to $X potential savings" (sum of the
+  Impact column), Impact column centered.
+- Activity tab reorganised: heatmap occupies a full-width row; Model Mix and
+  Tool Use Breakdown sit in a 2-column grid below it.
+- Server-side project-path deduplication tightened with case-insensitive
+  normalisation, trailing-slash trimming, and skip rules for non-project
+  directories (node_modules, .git, .cache, dist, build, tmp, temp).
+
+### Removed
+
+- Sessions tab from the Overview page tab bar.
+- `/sessions` route and `SessionsPage.tsx`.
+- `/models` route and `ModelsPage.tsx`.
+- Orphaned panel files: `SubagentLeaderboard.tsx`, `TopSessionsTable.tsx`,
+  `TopExpensiveTurnsTable.tsx`.
+- `--sidebar-width` CSS custom property.
+
+### Fixed
+
+- `HelpTooltip` popover no longer clips at card boundaries when
+  `align="right"` is set.
+- `HelpTooltip` drop-shadow weight brought within design-lint ceiling.
+- `DarkModeToggle` z-index raised to `z-[60]` for headroom above future
+  modal layers.
+- `HeatmapChart` accessibility: removed redundant `aria-hidden` attribute
+  and assigned stable React keys to hour-column elements.
+
 ## [3.3.0] - 2026-04-29
 
 ### Added
@@ -405,7 +459,8 @@ Internal cross-references updated:
 - `DEFAULT_OUTPUT` now points to `output/usage-dashboard.html` within the
   project, instead of a session-specific retro directory.
 
-[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.3.0...HEAD
+[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.4.0...HEAD
+[3.4.0]: https://github.com/bmjcoding/tokenomix/compare/v3.3.0...v3.4.0
 [3.3.0]: https://github.com/bmjcoding/tokenomix/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/bmjcoding/tokenomix/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/bmjcoding/tokenomix/compare/v3.0.1...v3.1.0

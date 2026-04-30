@@ -178,6 +178,11 @@ interface ParsedModelId {
  */
 const MODERN_MODEL_RE = /\bclaude-(opus|sonnet|haiku)-(\d+)(?:-(\d+))?/;
 const LEGACY_MODEL_RE = /\bclaude-(\d+)(?:-(\d+))?-(opus|sonnet|haiku)/;
+const MODEL_ALIAS_VERSIONS: Record<ModelKind, [number, number]> = {
+  opus: [4, 5],
+  sonnet: [4, 6],
+  haiku: [4, 5],
+};
 
 function parseModelMinor(rawMinor: string | undefined): number {
   if (rawMinor === undefined) return 0;
@@ -192,7 +197,12 @@ function parseModelMinor(rawMinor: string | undefined): number {
  */
 function parseModelId(modelId: string | null | undefined): ParsedModelId {
   if (!modelId) return { kind: null, major: 0, minor: 0, known: false };
-  const id = modelId.toLowerCase();
+  const id = modelId.trim().toLowerCase();
+
+  if (id === 'opus' || id === 'sonnet' || id === 'haiku') {
+    const [major, minor] = MODEL_ALIAS_VERSIONS[id];
+    return { kind: id, major, minor, known: true };
+  }
 
   const modern = MODERN_MODEL_RE.exec(id);
   if (modern) {

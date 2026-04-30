@@ -6,9 +6,8 @@
  * - Passes MetricSummary down as props to all prop-driven panels:
  *   HeroSpend, CostDriversPanel, KpiRow, KpiRow2, OptimizationOpportunitiesPanel,
  *   OptimizationSignalsPanel, AreaChartPanel.
- * - Self-fetching panels (HeatmapPanel, ModelMixPanel, ToolsBreakdownPanel,
- *   SubagentLeaderboard, TopSessionsTable, TopExpensiveTurnsTable) mount only
- *   when their tab is active — their useQuery hooks do not fire on inactive tabs.
+ * - Self-fetching panels (HeatmapPanel, ModelMixPanel, ToolsBreakdownPanel) mount
+ *   only when their tab is active — their useQuery hooks do not fire on inactive tabs.
  * - useServerEvents() SSE hook is mounted here for live cache invalidation.
  * - Period state is lifted to this page and passed to AreaChartPanel.
  * - Hash sync via Tabs: reloading with #recommendations lands on that tab.
@@ -16,12 +15,13 @@
  * Tab structure:
  *   overview        — HeroSpend → CostDriversPanel → AreaChartPanel → KpiRow
  *   recommendations — OptimizationOpportunitiesPanel → OptimizationSignalsPanel → KpiRow2
- *   activity        — 3-col grid: HeatmapPanel + ModelMixPanel + ToolsBreakdownPanel
- *   sessions        — TopSessionsTable → 2-col grid: SubagentLeaderboard + TopExpensiveTurnsTable
+ *   activity        — HeatmapPanel (full-width) → 2-col grid: ModelMixPanel + ToolsBreakdownPanel
  */
 
 import { useQuery } from '@tanstack/react-query';
+import { Link } from '@tanstack/react-router';
 import type { MetricSummary } from '@tokenomix/shared';
+import { FileText } from 'lucide-react';
 import { useState } from 'react';
 import { fetchMetrics } from '../lib/api.js';
 import { queryKeys } from '../lib/query-keys.js';
@@ -36,10 +36,7 @@ import { ModelMixPanel } from '../panels/ModelMixPanel.js';
 import { OptimizationOpportunitiesPanel } from '../panels/OptimizationOpportunitiesPanel.js';
 import { OptimizationSignalsPanel } from '../panels/OptimizationSignalsPanel.js';
 import type { DashboardPeriod } from '../panels/PeriodSwitcher.js';
-import { SubagentLeaderboard } from '../panels/SubagentLeaderboard.js';
 import { ToolsBreakdownPanel } from '../panels/ToolsBreakdownPanel.js';
-import { TopExpensiveTurnsTable } from '../panels/TopExpensiveTurnsTable.js';
-import { TopSessionsTable } from '../panels/TopSessionsTable.js';
 import type { TabItem } from '../ui/Tabs.js';
 import { Tabs } from '../ui/Tabs.js';
 
@@ -95,27 +92,14 @@ function RecommendationsTabContent({ data }: RecommendationsTabProps) {
 
 function ActivityTabContent() {
   return (
-    <div className="pt-6">
-      {/* 3-column grid of activity charts — stacked on small viewports */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <HeatmapPanel />
+    <div className="space-y-6 pt-6">
+      {/* Heatmap — full-width row */}
+      <HeatmapPanel />
+
+      {/* Model mix and tools breakdown — 2-column grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <ModelMixPanel />
         <ToolsBreakdownPanel since="30d" />
-      </div>
-    </div>
-  );
-}
-
-function SessionsTabContent() {
-  return (
-    <div className="space-y-6 pt-6">
-      {/* Top sessions by cost */}
-      <TopSessionsTable limit={10} />
-
-      {/* Agent & Turn Breakdown — two-column grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <SubagentLeaderboard since="30d" />
-        <TopExpensiveTurnsTable limit={10} since="30d" />
       </div>
     </div>
   );
@@ -139,7 +123,7 @@ export default function OverviewPage() {
     queryFn: () => fetchMetrics({ since: 'all' }),
   });
 
-  const containerCls = 'py-6 px-4 sm:px-6 lg:px-8 max-w-screen-xl';
+  const containerCls = 'py-6 px-4 sm:px-6 lg:px-8 max-w-screen-xl mx-auto';
 
   // Loading state — show the tab shell immediately so chrome appears before data.
   // The tab content areas render the loading indicator inline.
@@ -168,14 +152,12 @@ export default function OverviewPage() {
 
   // ── Tab definitions ─────────────────────────────────────────────────────────
   // Each content block is a component call — inactive tabs are not rendered so
-  // their useQuery hooks (HeatmapPanel, TopSessionsTable, etc.) don't fire.
+  // their useQuery hooks (HeatmapPanel, etc.) don't fire.
   const tabItems: TabItem[] = [
     {
       key: 'overview',
       label: 'Overview',
-      content: (
-        <OverviewTabContent data={data} period={period} onPeriodChange={setPeriod} />
-      ),
+      content: <OverviewTabContent data={data} period={period} onPeriodChange={setPeriod} />,
     },
     {
       key: 'recommendations',
@@ -187,15 +169,25 @@ export default function OverviewPage() {
       label: 'Activity',
       content: <ActivityTabContent />,
     },
-    {
-      key: 'sessions',
-      label: 'Sessions',
-      content: <SessionsTabContent />,
-    },
   ];
 
   return (
     <div className={containerCls}>
+      {/* Page header — wordmark left, Full Report CTA right */}
+      <div className="flex justify-between items-center mb-6">
+        <span className="text-3xl font-bold font-mono tracking-tight text-gray-950 dark:text-white">
+          tokenomix
+        </span>
+        <Link
+          to="/report"
+          // design-lint-disable dark-mode-pairs
+          className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-900 dark:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-950 dark:focus-visible:ring-white focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-950"
+        >
+          <FileText size={16} aria-hidden="true" />
+          Full Report
+        </Link>
+      </div>
+
       <Tabs items={tabItems} defaultKey="overview" syncWithHash />
     </div>
   );

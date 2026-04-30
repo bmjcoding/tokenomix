@@ -83,6 +83,10 @@ export type {
   ProjectBucket,
   RawUsage,
   RawUsageEvent,
+  RecommendationChatMessage,
+  RecommendationChatRequest,
+  RecommendationChatResponse,
+  RecommendationChatStatus,
   RetroForecastPoint,
   // Retro stubs
   RetroRollup,

@@ -111,11 +111,47 @@ gateway-rated cost field. Recognized top-level micro-USD fields include
 include `costUsd`, `cost_usd`, `gatewayCostUsd`, `internalCostUsd`, and
 `chargebackCostUsd`.
 
+## Recommendation Chat
+
+The Recommendations tab can call a local Claude Code executable to answer
+questions about the currently indexed optimization opportunities. tokenomix
+treats Claude Code as an opaque local command: gateway URLs, AWS credentials,
+and enterprise auth settings stay in Claude Code and are never read or exposed
+by the dashboard.
+
+Optional controls:
+
+```bash
+TOKENOMIX_CLAUDE_COMMAND=/Users/me/.local/bin/claude
+TOKENOMIX_CLAUDE_CHAT_MODEL=sonnet
+TOKENOMIX_CLAUDE_CHAT_MAX_BUDGET_USD=0.05
+TOKENOMIX_CLAUDE_CHAT_TIMEOUT_MS=60000
+TOKENOMIX_CLAUDE_CHAT_EFFORT=low
+TOKENOMIX_CLAUDE_CHAT_BARE=0
+corepack pnpm@10.33.0 dev
+```
+
+The chat route runs Claude Code in print mode with tools disabled, a bounded
+turn count, and the configured budget cap. Streamed turns use deterministic
+retrieval over the existing in-memory index from `~/.claude/projects`: global
+optimization context for the initial seed, then targeted project/session/turn
+context for follow-up questions. Follow-up streamed turns resume the same
+server-process Claude Code session until the server is stopped.
+
+`TOKENOMIX_CLAUDE_CHAT_EFFORT` is optional and accepts Claude Code effort
+levels such as `low`, `medium`, or `high`. `TOKENOMIX_CLAUDE_CHAT_BARE=1`
+enables Claude Code bare mode for faster startup, but it is disabled by default
+because some enterprise Claude Code authentication and settings flows depend on
+the normal startup path.
+
 ## API Routes
 
 | Route | Description |
 | --- | --- |
 | `GET /api/metrics?since=7d\|30d\|all&project=...` | Aggregated totals, series, model/project/tool breakdowns |
+| `GET /api/recommendations/chat/status` | Local Claude Code availability for recommendation chat |
+| `POST /api/recommendations/chat` | Read-only recommendation chat backed by local Claude Code |
+| `POST /api/recommendations/chat/stream` | SSE recommendation chat with server-lifetime Claude Code session context |
 | `GET /api/sessions?since=...&project=...&limit=...` | Per-session breakdown sorted by cost |
 | `GET /api/sessions/:id` | Full detail for a single session: header totals, all-tool breakdown, per-turn rows |
 | `GET /api/turns?since=...&limit=...&project=...` | Top expensive turns, default 10 and max 50 |
@@ -127,7 +163,6 @@ include `costUsd`, `cost_usd`, `gatewayCostUsd`, `internalCostUsd`, and
 | Route | Description |
 | --- | --- |
 | `/` | Overview — spend hero, KPI cards, activity heatmap, model mix |
-| `/models` | Model usage and cost breakdown |
 | `/report` | Full session list with project name, top tools, and pagination |
 | `/report/$sessionId` | Per-session detail — Overview / Tools / Turns tabs |
 
