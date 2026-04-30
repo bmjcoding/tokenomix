@@ -97,7 +97,7 @@ async function main(): Promise<void> {
 
   // Start file watcher and rescan scheduler; both handles needed by shutdown().
   const watcher = startWatcher(store);
-  const scheduler = new RescanScheduler(store, 60_000);
+  const scheduler = new RescanScheduler(store);
   scheduler.start();
 
   app.route('/api/metrics', metricsRoute(store));

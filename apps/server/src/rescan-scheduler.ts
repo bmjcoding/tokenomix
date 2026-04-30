@@ -3,7 +3,7 @@
  *
  * Extracted from index-store.ts to keep that module focused on the aggregation engine.
  *
- * Every `intervalMs` milliseconds (default 60 000) it:
+ * Every `intervalMs` milliseconds (default 5 000) it:
  *   1. Collects all *.jsonl paths under PROJECTS_DIR.
  *   2. Stats each path for its mtime.
  *   3. On the very first observation of a path, records the mtime without
@@ -15,6 +15,15 @@
  *      avoid per-tick noise in steady-state.
  *   6. Emits a debug-level 'rescan-tick-noop' event when zero files changed
  *      (gated by TOKENOMIX_DEBUG=1 so it is silent in normal operation).
+ *
+ * ## Safety-net role
+ *
+ * With polling as the default watcher mode, this scheduler acts as a
+ * last-resort backstop for polling gaps or process-startup races. The 5-second
+ * default ensures the user never waits more than ~5 seconds for a missed
+ * update even under the worst conditions (polling missed a write AND chokidar
+ * was somehow busy). The mtime-based scan is cheap (O(n) stat calls on the
+ * small ~/.claude/projects tree).
  *
  * The interval timer is unref()'d so a quiet scheduler does not prevent a
  * clean process exit if the application shuts down normally.
@@ -38,7 +47,7 @@ export type RescanSchedulerOptions = {
 /**
  * Periodic safety-net that complements the chokidar file watcher.
  *
- * Every `intervalMs` milliseconds (default 60 000) it:
+ * Every `intervalMs` milliseconds (default 5 000) it:
  *   1. Collects all *.jsonl paths under PROJECTS_DIR.
  *   2. Stats each path for its mtime.
  *   3. On the very first observation of a path, records the mtime without
@@ -64,7 +73,7 @@ export class RescanScheduler {
   /** Epoch ms of the last fully-completed successful tick. 0 before the first successful tick. */
   private _lastRescanTs: number = 0;
 
-  constructor(store: IndexStore, intervalMs: number = 60_000, dir: string = PROJECTS_DIR) {
+  constructor(store: IndexStore, intervalMs: number = 5_000, dir: string = PROJECTS_DIR) {
     this.store = store;
     this.intervalMs = intervalMs;
     this.dir = dir;
