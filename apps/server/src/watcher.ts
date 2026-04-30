@@ -49,6 +49,9 @@ export function startWatcher(store: IndexStore): FSWatcher {
   const watcher = chokidar.watch(pattern, {
     ignoreInitial: true, // startup scan handled by store.initialize()
     persistent: true,
+    // interval only takes effect when usePolling is true; it is harmless (ignored by chokidar) otherwise.
+    usePolling: process.env.TOKENOMIX_WATCHER_POLLING === '1',
+    interval: 1_000,
     awaitWriteFinish: {
       stabilityThreshold: 500,
       pollInterval: 100,

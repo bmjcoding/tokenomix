@@ -15,7 +15,8 @@ import * as fs from 'node:fs';
 import { serve } from '@hono/node-server';
 import type { MiddlewareHandler } from 'hono';
 import { Hono } from 'hono';
-import { IndexStore, PROJECTS_DIR } from './index-store.js';
+import { IndexStore, PROJECTS_DIR, RescanScheduler } from './index-store.js';
+import { adminRoute } from './routes/admin.js';
 import { eventsRoute } from './routes/events.js';
 import { healthRoute } from './routes/health.js';
 import { metricsRoute } from './routes/metrics.js';
@@ -93,15 +94,18 @@ async function main(): Promise<void> {
   // Use custom logger instead of hono/logger to avoid logging query-string values.
   app.use('*', httpLogger());
 
+  // Start file watcher and rescan scheduler; both handles needed by shutdown().
+  const watcher = startWatcher(store);
+  const scheduler = new RescanScheduler(store, 60_000);
+  scheduler.start();
+
   app.route('/api/metrics', metricsRoute(store));
   app.route('/api/sessions', sessionsRoute(store));
-  app.route('/api/health', healthRoute(store));
+  app.route('/api/health', healthRoute(store, scheduler));
   app.route('/api/events', eventsRoute(store));
   app.route('/api/turns', turnsRoute(store));
   app.route('/api/recommendations/chat', recommendationsChatRoute(store));
-
-  // Start file watcher and capture handle for graceful shutdown.
-  const watcher = startWatcher(store);
+  app.route('/api/admin', adminRoute(scheduler));
 
   // ---------------------------------------------------------------------------
   // Graceful shutdown: close watcher, drain SSE streams, force-exit at 5s.
@@ -124,6 +128,9 @@ async function main(): Promise<void> {
     }, 5_000);
     // Allow the timer to be garbage-collected without blocking the event loop.
     if (forceTimer.unref) forceTimer.unref();
+
+    // Stop the rescan scheduler before closing the watcher.
+    scheduler.stop();
 
     // Close the chokidar watcher.
     watcher

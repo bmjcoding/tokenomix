@@ -267,6 +267,7 @@ export async function fetchHealth(): Promise<{
   isReady: boolean;
   indexedRows: number;
   lastUpdated: string;
+  lastRescanTs: string | null;
 }> {
   return apiFetch<{
     ok: boolean;
@@ -274,5 +275,6 @@ export async function fetchHealth(): Promise<{
     isReady: boolean;
     indexedRows: number;
     lastUpdated: string;
+    lastRescanTs: string | null;
   }>('/api/health');
 }
