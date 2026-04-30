@@ -234,7 +234,7 @@ export function HeroSpend({ data }: HeroSpendProps) {
         <div className="min-w-0">
           {/* Label */}
           <p className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-4">
-            Current Spend (MTD)
+            Current Spend · MTD
           </p>
 
           {/* Hero number + inline warning icon */}
@@ -285,7 +285,7 @@ export function HeroSpend({ data }: HeroSpendProps) {
             <p className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
               Tokens · MTD
             </p>
-            <div className="mt-2 flex items-baseline justify-center gap-2">
+            <div className="mt-4 flex items-baseline justify-center gap-2">
               <Cpu
                 size={48}
                 aria-hidden="true"
@@ -297,8 +297,8 @@ export function HeroSpend({ data }: HeroSpendProps) {
                 className="text-6xl sm:text-7xl lg:text-8xl font-bold leading-none tracking-tight tabular-nums text-gray-200 dark:text-gray-800"
               />
             </div>
-            <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-              input + output, this month
+            <p className="mt-3 text-sm text-gray-500 dark:text-gray-400">
+              input + output
             </p>
           </div>
         </div>

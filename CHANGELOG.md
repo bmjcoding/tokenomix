@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.8.0] - 2026-04-30
+
+### Added
+
+- In-page floating settings panel (gear icon at bottom-left) with collapsible labeled-row layout containing three segmented toggles: Theme (light / dark), Refresh (Real-time SSE / 5s polling), and Motion (System / Reduced / Full). Panel dismisses on Escape, outside click, or the close button. Focus is managed on open and close. (`apps/web/src/layout/FloatingControls.tsx`, `apps/web/src/layout/DarkModeToggle.tsx`, `apps/web/src/layout/RefreshModeToggle.tsx`, `apps/web/src/layout/MotionPreferenceToggle.tsx`)
+- `RefreshModeProvider` — React context that persists the user's refresh mode (`realtime` | `minute`) to `localStorage:tokenomix:refresh-mode`. In `minute` mode `useServerEvents` falls back to a 5-second polling interval instead of holding a live SSE connection. (`apps/web/src/providers/RefreshModeProvider.tsx`, `apps/web/src/providers/RefreshModeProvider.test.tsx`)
+- `MotionPreferenceProvider` — React context that persists motion preference (`system` | `reduced` | `full`) to `localStorage:tokenomix:motion`. `FlipNumber` honours this to override `prefers-reduced-motion`. (`apps/web/src/providers/MotionPreferenceProvider.tsx`, `apps/web/src/providers/MotionPreferenceProvider.test.tsx`)
+- `SegmentedToggle` reusable primitive — generic `T extends string` segmented-pill radiogroup with WAI-ARIA APG keyboard navigation (ArrowLeft/Right/Up/Down, Home, End, roving tabindex). `accent` prop selects `primary` (brand-blue) for data toggles or `achromatic` (gray-900/gray-100) for the floating settings panel. (`apps/web/src/ui/SegmentedToggle.tsx`)
+- Vitest tests for `useServerEvents` minute-mode polling branch and both new providers. (`apps/web/src/lib/useServerEvents.test.ts`, `apps/web/src/providers/RefreshModeProvider.test.tsx`, `apps/web/src/providers/MotionPreferenceProvider.test.tsx`)
+
+### Fixed
+
+- Real-time SSE refresh now fires on every file change instead of every 60 seconds. Root causes addressed: (1) chokidar FSEvents backend silently drops events on macOS after long uptimes — polling is now the default (`usePolling: true`, 1 s interval) with `TOKENOMIX_WATCHER_FSEVENTS=1` as opt-back-in; (2) `RescanScheduler` constructor received a hardcoded `60_000` ms argument that overrode the class default of `5_000` ms — the hardcoded argument has been removed; (3) SSE response was missing `X-Accel-Buffering: no` and `Content-Encoding: identity`, allowing Vite dev proxy to buffer frames before flushing to the client; (4) `awaitWriteFinish.stabilityThreshold` reduced from 500 → 250 ms, cutting per-turn detection latency. (`apps/server/src/watcher.ts`, `apps/server/src/rescan-scheduler.ts`, `apps/server/src/routes/events.ts`)
+- `HeroSpend` label and spacing: eyebrow changed from "Current Spend (MTD)" → "Current Spend · MTD" to match the "Tokens · MTD" adjacent label; "input + output, this month" shortened to "input + output"; right-column vertical rhythm aligned to left column via adjusted `mt-4` / `mt-3` spacing. (`apps/web/src/panels/HeroSpend.tsx`)
+
+### Changed
+
+- `PeriodSwitcher` and `AreaChartPanel` field toggle migrated to `SegmentedToggle`. Dividers (`|`) now always render between adjacent options regardless of the active pill position, replacing the previous conditional-hide logic. (`apps/web/src/panels/PeriodSwitcher.tsx`, `apps/web/src/panels/AreaChartPanel.tsx`)
+- `DarkModeToggle` refactored to render as a labeled settings row inside the new `FloatingControls` panel rather than a standalone floating button. (`apps/web/src/layout/DarkModeToggle.tsx`)
+- `FlipNumber` reads `MotionPreferenceProvider` to override `prefers-reduced-motion` per user preference. (`apps/web/src/ui/FlipNumber.tsx`)
+
 ## [3.7.2] - 2026-04-30
 
 ### Changed
@@ -570,7 +591,8 @@ Internal cross-references updated:
 - `DEFAULT_OUTPUT` now points to `output/usage-dashboard.html` within the
   project, instead of a session-specific retro directory.
 
-[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.7.2...HEAD
+[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.8.0...HEAD
+[3.8.0]: https://github.com/bmjcoding/tokenomix/compare/v3.7.2...v3.8.0
 [3.7.2]: https://github.com/bmjcoding/tokenomix/compare/v3.7.1...v3.7.2
 [3.7.1]: https://github.com/bmjcoding/tokenomix/compare/v3.7.0...v3.7.1
 [3.7.0]: https://github.com/bmjcoding/tokenomix/compare/v3.6.0...v3.7.0
