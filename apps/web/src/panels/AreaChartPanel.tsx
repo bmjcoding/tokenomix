@@ -5,19 +5,15 @@
  * No internal useQuery or fetch. Period state is lifted to OverviewPage.
  *
  * Design decisions:
- * - Card header: "Spend over time" title (left) | PeriodSwitcher + Export + View full report (right).
+ * - Card header: "Spend over time" title (left) | PeriodSwitcher + Export (right).
  * - Period-to-series transform is pure client-side — AreaChart always receives DailyBucket[].
  * - 24h mode: synthetic DailyBucket[] built from heatmapData; xAxisLabelFormat slices HH:00.
  * - Export button is disabled + reduced-opacity when dailySeries is empty.
- * - View full report uses TanStack Router Link with a string literal to '/report'.
- *   The /report route is registered by subtask 8 (parallel group 3); type augmentation
- *   may not be present yet, so we suppress the type error inline.
  * - Existing Cost / Input / Output field toggle is preserved.
  */
 
-import { Link } from '@tanstack/react-router';
 import type { DailyBucket, MetricSummary } from '@tokenomix/shared';
-import { Download, ExternalLink } from 'lucide-react';
+import { Download } from 'lucide-react';
 import { useState } from 'react';
 import { AreaChart, type AreaField } from '../charts/AreaChart.js';
 import { exportDailySeriesCsv } from '../lib/csvExport.js';
@@ -122,7 +118,7 @@ export function AreaChartPanel({ data, period, onPeriodChange }: AreaChartPanelP
       <div className="flex items-center justify-between gap-4 mb-4 flex-wrap">
         <h2 className="text-base font-semibold text-gray-950 dark:text-white">Spend over time</h2>
 
-        {/* Right-side cluster: PeriodSwitcher | Export | View full report */}
+        {/* Right-side cluster: PeriodSwitcher | Export */}
         <div className="flex items-center gap-2 flex-wrap">
           {/* Period segmented switcher */}
           <PeriodSwitcher value={period} onChange={onPeriodChange} />
@@ -142,27 +138,6 @@ export function AreaChartPanel({ data, period, onPeriodChange }: AreaChartPanelP
           >
             Export
           </Button>
-
-          {/* View full report — TanStack Router Link styled as a ghost button.
-              /report route is registered by subtask 8 (parallel group 3).
-              Cast required until that route is in the routeTree type augmentation. */}
-          <Link
-            to="/report"
-            className={[
-              // Layout & typography — matches ghost Button primitive
-              'inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors',
-              // Colours (light + dark pairs on the same line)
-              // design-lint-disable dark-mode-pairs
-              'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800',
-              // Focus ring per design-authority pattern
-              // design-lint-disable dark-mode-pairs
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-gray-950 dark:focus-visible:ring-white dark:focus-visible:ring-offset-gray-950',
-            ].join(' ')}
-            aria-label="View full report"
-          >
-            <ExternalLink size={14} aria-hidden="true" className="shrink-0" />
-            View full report
-          </Link>
         </div>
       </div>
 

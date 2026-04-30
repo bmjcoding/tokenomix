@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.8.1] - 2026-04-30
+
+### Fixed
+
+- Removed the inline "View full report" link from the `AreaChartPanel` card header — it was redundant with the page-level "Full Report" CTA and created a confusing double-entry point for the same route. `Link`, `ExternalLink` imports, and associated comment scaffolding cleaned up. (`apps/web/src/panels/AreaChartPanel.tsx`)
+- `Full Report` hero CTA icon swapped from `FileText` (suggested a static document / popup) to `ArrowRight` placed after the label, so the affordance reads "Full Report →" and clearly signals navigation to another page. (`apps/web/src/pages/OverviewPage.tsx`)
+
 ## [3.8.0] - 2026-04-30
 
 ### Added
