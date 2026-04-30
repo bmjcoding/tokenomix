@@ -222,7 +222,7 @@ export function RecommendationChatPanel() {
     <div className="fixed bottom-6 right-6 z-[70] flex flex-col items-end gap-3">
       {isOpen && (
         <section
-          className="w-[calc(100vw-2rem)] max-w-[440px] overflow-hidden rounded-2xl border border-black/80 bg-gray-900/50 shadow-2xl backdrop-blur-sm"
+          className="w-[calc(100vw-2rem)] max-w-[440px] overflow-hidden rounded-2xl border border-black/80 bg-gray-900/50 shadow-2xl backdrop-blur-sm dark"
           aria-label="Recommendation chat"
         >
           <div className="px-4 py-3 border-b border-black/80">
@@ -259,7 +259,7 @@ export function RecommendationChatPanel() {
 
             <div
               ref={messageListRef}
-              className="h-[min(420px,calc(100vh-13rem))] min-h-64 overflow-y-auto rounded-lg border border-black/80 bg-black/50"
+              className="h-[min(420px,calc(100vh-13rem))] min-h-64 overflow-y-auto overscroll-contain rounded-lg border border-black/80 bg-black/50"
             >
               {messages.length === 0 ? (
                 <div className="flex h-full items-center justify-center px-4 text-center text-sm text-gray-500 dark:text-gray-500">
@@ -363,10 +363,10 @@ export function RecommendationChatPanel() {
         aria-label={isOpen ? 'Close AI chat' : 'Open AI chat'}
         className={[
           'inline-flex h-10 items-center gap-2 rounded-xl px-3',
-          'border border-white/10 bg-black/35 text-gray-400',
+          'border border-gray-200 dark:border-white/10 bg-white dark:bg-black/35 text-gray-700 dark:text-gray-400',
           'shadow-lg backdrop-blur-md transition-colors',
-          'hover:border-white/20 hover:bg-white/[0.06] hover:text-gray-100',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:ring-offset-2',
+          'hover:bg-gray-50 hover:border-gray-300 hover:text-gray-900 dark:hover:bg-white/[0.06] dark:hover:border-white/20 dark:hover:text-gray-100',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 dark:focus-visible:ring-white/70 focus-visible:ring-offset-2',
         ].join(' ')}
       >
         <Sparkles size={16} aria-hidden="true" />
@@ -375,7 +375,10 @@ export function RecommendationChatPanel() {
           <Loader2 size={14} aria-hidden="true" className="animate-spin opacity-80" />
         )}
         {statusQuery.data?.available === false && (
-          <span className="h-2 w-2 rounded-full bg-amber-300" aria-hidden="true" />
+          <span
+            className="h-2 w-2 rounded-full bg-amber-500 dark:bg-amber-300"
+            aria-hidden="true"
+          />
         )}
       </button>
     </div>

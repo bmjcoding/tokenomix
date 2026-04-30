@@ -104,9 +104,11 @@ export function OptimizationOpportunitiesPanel({ data }: OptimizationOpportuniti
                   key={opportunity.id}
                   className="border-b border-gray-100 dark:border-gray-800 align-top"
                 >
-                  {/* AREA cell: badge only — title moved to Recommendation column. */}
+                  {/* AREA cell: uppercase label — title moved to Recommendation column. */}
                   <td className="px-4 py-3">
-                    <Badge variant="default">{categoryLabel(opportunity.category)}</Badge>
+                    <span className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                      {categoryLabel(opportunity.category)}
+                    </span>
                   </td>
                   <td className="px-4 py-3">
                     {/* Title sits above the recommendation text within the same cell. */}

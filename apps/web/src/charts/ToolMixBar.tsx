@@ -162,5 +162,5 @@ export function ToolMixBar({ data, height = 240 }: ToolMixBarProps) {
     };
   }, [data, isDark]);
 
-  return <ReactECharts option={option} style={{ height: `${height}px`, width: '100%' }} />;
+  return <ReactECharts option={option} style={{ height: `${height}px`, width: '100%' }} notMerge />;
 }
