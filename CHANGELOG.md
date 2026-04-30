@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.5.0] - 2026-04-30
+
+### Added
+
+- `RescanScheduler` in `apps/server/src/index-store.ts` — periodic 60-second
+  mtime-based rescan that re-ingests JSONL files whose modification time has
+  advanced since the last tick. Compensates for chokidar FSEvents queue
+  overflow observed on long-uptime macOS hosts (worst-case recovery window:
+  60 s). Includes a re-entrancy guard and structured error handling so a slow
+  ingest cycle cannot produce overlapping ticks or unhandled rejections.
+- `TOKENOMIX_WATCHER_POLLING=1` environment variable — when set, the chokidar
+  watcher switches to polling mode (1 s interval) instead of native FSEvents.
+  Useful on network mounts or virtual machines where FSEvents is unreliable.
+- `POST /api/admin/rescan` endpoint — triggers a full mtime-based rescan of
+  all JSONL files immediately, without restarting the server. Returns
+  `{ ok: true, ts: <epoch-ms> }`. Mounted at `/api/admin` alongside existing
+  routes; no authentication beyond the existing `127.0.0.1`-only binding.
+- `lastRescanTs` field on `GET /api/health` response — ISO 8601 local-time
+  string of the most recent completed scheduler tick, or `null` before the
+  first successful tick. Enables operators to verify scheduler liveness
+  without tailing logs.
+- `apps/server/src/routes/admin.ts` — new route module exporting the
+  `adminRoute` factory consumed by `index.ts`.
+- 12 new Vitest tests in `apps/server/src/tests/rescan-scheduler.test.ts`
+  covering first-tick cataloguing, unchanged-mtime no-ingest, mtime-advanced
+  ingest, `stop()` cancellation, and `lastRescanTs` getter lifecycle.
+- `TOKENOMIX_DEBUG=1` environment variable — when set, the structured logger
+  emits debug-level entries to stdout; off by default. `RescanScheduler` uses
+  it to emit a `rescan-tick-noop` heartbeat each cycle so operators can
+  distinguish a healthy idle scheduler from a hung one without adding
+  steady-state noise.
+
+### Changed
+
+- `collectJsonlFiles()` in `index-store.ts` is now exported, enabling direct
+  use by `RescanScheduler` and by the new test suite.
+- `GET /api/health` response shape extended with `lastRescanTs: string | null`.
+- `fetchHealth()` type in `apps/web/src/lib/api.ts` updated to include
+  `lastRescanTs: string | null`.
+- `RescanScheduler` extracted from `apps/server/src/index-store.ts` to its
+  own module at `apps/server/src/rescan-scheduler.ts`. The `index-store.ts`
+  module now focuses on its core JSONL aggregation responsibility. Public API
+  surface unchanged: the `RescanScheduler` class, `RescanSchedulerOptions`
+  interface, constructor signature, `start()` / `stop()` / `tick()` methods,
+  and `lastRescanTs` getter all retain their existing semantics.
+- `logEvent` signature now accepts `'debug'` as a fourth log level alongside
+  `'info' | 'warn' | 'error'`. Debug entries are silently dropped unless
+  `TOKENOMIX_DEBUG=1` is set.
+
 ## [3.4.1] - 2026-04-30
 
 ### Fixed
@@ -482,7 +531,8 @@ Internal cross-references updated:
 - `DEFAULT_OUTPUT` now points to `output/usage-dashboard.html` within the
   project, instead of a session-specific retro directory.
 
-[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.4.1...HEAD
+[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.5.0...HEAD
+[3.5.0]: https://github.com/bmjcoding/tokenomix/compare/v3.4.1...v3.5.0
 [3.4.1]: https://github.com/bmjcoding/tokenomix/compare/v3.4.0...v3.4.1
 [3.4.0]: https://github.com/bmjcoding/tokenomix/compare/v3.3.0...v3.4.0
 [3.3.0]: https://github.com/bmjcoding/tokenomix/compare/v3.2.0...v3.3.0

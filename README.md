@@ -176,3 +176,25 @@ the normal startup path.
   Claude Code activity by day.
 - The dashboard intentionally avoids chat-content ingestion. Tool/file-touch
   policy is documented in `docs/adr/0002-tool-event-ingestion-and-files-touched-policy.md`.
+
+## Watcher Configuration
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `TOKENOMIX_WATCHER_POLLING` | unset | When set to `1`, switches chokidar from FSEvents (macOS) / inotify (Linux) to `usePolling: true` with a 1-second interval. Useful for network mounts, VMs, or hosts where FSEvents queue overflow has been observed after long uptimes. |
+
+## Admin Endpoints
+
+| Endpoint | Description |
+| --- | --- |
+| `POST /api/admin/rescan` | Forces an immediate mtime-based rescan of all known JSONL files without restarting the server. Returns `{ ok: true, ts: <unix-ms> }`. |
+
+The server binds to `127.0.0.1` only; no authentication is required for admin endpoints.
+
+Example:
+
+```bash
+curl -X POST http://localhost:3001/api/admin/rescan
+```
+
+The port may differ if `PORT_BASE` is set; the API server always runs on `PORT_BASE + 1`.

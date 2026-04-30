@@ -4,7 +4,9 @@
  * Returns server readiness and index statistics.
  *
  * Response shape:
- *   { ok: boolean; projectsDir: string; isReady: boolean; indexedRows: number; lastUpdated: string }
+ *   { ok: boolean; projectsDir: string; isReady: boolean; indexedRows: number; lastUpdated: string;
+ *     lastRescanTs: string | null } — lastRescanTs is the formatted local ISO of the most recent
+ *     successful RescanScheduler tick completion, or null if no successful tick has occurred yet.
  *
  * Status codes:
  *   200 — server is fully ready. Criteria (ALL must be true):
@@ -23,15 +25,21 @@ import * as fs from 'node:fs';
 import { Hono } from 'hono';
 import type { IndexStore } from '../index-store.js';
 import { PROJECTS_DIR } from '../index-store.js';
+import type { RescanScheduler } from '../rescan-scheduler.js';
 import { formatLocalIso } from '../time.js';
 
-export function healthRoute(store: IndexStore): Hono {
+export function healthRoute(store: IndexStore, scheduler: RescanScheduler): Hono {
   const app = new Hono();
 
   app.get('/', (c) => {
     const indexedRows = store.indexedRows;
     const isReady = store.isReady();
     const lastUpdated = formatLocalIso(new Date(store.lastChangeTs));
+
+    // Emit the epoch ms of the last successful tick as a formatted local ISO
+    // string, or null before the first successful tick has completed.
+    const lastRescanTsEpoch = scheduler.lastRescanTs;
+    const lastRescanTs = lastRescanTsEpoch > 0 ? formatLocalIso(new Date(lastRescanTsEpoch)) : null;
 
     // Determine if PROJECTS_DIR exists on disk.
     let projectsDirExists = false;
@@ -55,6 +63,7 @@ export function healthRoute(store: IndexStore): Hono {
         isReady,
         indexedRows,
         lastUpdated,
+        lastRescanTs,
       },
       status
     );

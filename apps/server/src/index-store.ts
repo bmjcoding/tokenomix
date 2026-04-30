@@ -1044,7 +1044,7 @@ function buildIngestionAudit(args: {
  * Recursively collect all *.jsonl paths under a directory.
  * Uses only node:fs/promises — no glob dependency.
  */
-async function collectJsonlFiles(dir: string): Promise<string[]> {
+export async function collectJsonlFiles(dir: string): Promise<string[]> {
   const results: string[] = [];
 
   async function walk(current: string): Promise<void> {
