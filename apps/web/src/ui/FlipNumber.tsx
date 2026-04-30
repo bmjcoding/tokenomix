@@ -31,7 +31,10 @@ import NumberFlow, { type Format, type NumberFlowProps } from '@number-flow/reac
 export type { Format };
 
 export interface FlipNumberProps
-  extends Omit<NumberFlowProps, 'value' | 'format' | 'prefix' | 'locales' | 'respectMotionPreference'> {
+  extends Omit<
+    NumberFlowProps,
+    'value' | 'format' | 'prefix' | 'locales' | 'respectMotionPreference'
+  > {
   /** The numeric value to display (and animate to when it changes). */
   value: number;
   /**
@@ -59,16 +62,10 @@ export interface FlipNumberProps
 // Component
 // ---------------------------------------------------------------------------
 
-export function FlipNumber({
-  value,
-  format,
-  prefix,
-  locales = 'en-US',
-  ...rest
-}: FlipNumberProps) {
+export function FlipNumber({ value, format, prefix, locales = 'en-US', ...rest }: FlipNumberProps) {
   const optionalProps: Record<string, unknown> = {};
-  if (format !== undefined) optionalProps['format'] = format;
-  if (prefix !== undefined) optionalProps['prefix'] = prefix;
+  if (format !== undefined) optionalProps.format = format;
+  if (prefix !== undefined) optionalProps.prefix = prefix;
 
   return (
     <NumberFlow

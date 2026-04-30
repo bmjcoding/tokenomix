@@ -230,7 +230,6 @@ export function HeroSpend({ data }: HeroSpendProps) {
   return (
     <Card as="section" aria-label="Current spend month to date" className="p-6">
       <div className="grid grid-cols-1 lg:grid-cols-[2fr_3fr] gap-8">
-
         {/* ── Left column: primary $ metric + satellite cost driver ── */}
         <div className="min-w-0">
           {/* Label */}
@@ -242,7 +241,12 @@ export function HeroSpend({ data }: HeroSpendProps) {
           <div className="flex items-start gap-0 mb-3">
             <FlipNumber
               value={current.costUsd}
-              format={{ style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }}
+              format={{
+                style: 'currency',
+                currency: 'USD',
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+              }}
               className="text-5xl font-bold tracking-tight tabular-nums text-gray-950 dark:text-white"
             />
             <DataQualityTooltip
@@ -298,7 +302,6 @@ export function HeroSpend({ data }: HeroSpendProps) {
             </p>
           </div>
         </div>
-
       </div>
     </Card>
   );
