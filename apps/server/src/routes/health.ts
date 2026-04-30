@@ -23,8 +23,9 @@
 
 import * as fs from 'node:fs';
 import { Hono } from 'hono';
-import type { IndexStore, RescanScheduler } from '../index-store.js';
+import type { IndexStore } from '../index-store.js';
 import { PROJECTS_DIR } from '../index-store.js';
+import type { RescanScheduler } from '../rescan-scheduler.js';
 import { formatLocalIso } from '../time.js';
 
 export function healthRoute(store: IndexStore, scheduler: RescanScheduler): Hono {

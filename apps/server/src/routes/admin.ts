@@ -14,7 +14,7 @@
  */
 
 import { Hono } from 'hono';
-import type { RescanScheduler } from '../index-store.js';
+import type { RescanScheduler } from '../rescan-scheduler.js';
 
 export function adminRoute(scheduler: RescanScheduler): Hono {
   const app = new Hono();

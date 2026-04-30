@@ -23,7 +23,8 @@ import { mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { IndexStore, RescanScheduler } from '../index-store.js';
+import { IndexStore } from '../index-store.js';
+import { RescanScheduler } from '../rescan-scheduler.js';
 
 // No vi.mock needed: RescanScheduler now accepts an optional `dir` parameter
 // that defaults to PROJECTS_DIR. Tests pass tempDir directly so tick() scans
@@ -61,7 +62,7 @@ beforeEach(async () => {
   // bleed between tests and teardown is clean.
   tempDir = await mkdtemp(join(tmpdir(), 'tokenomix-rescan-'));
   fixturePath = join(tempDir, 'session.jsonl');
-  await writeFile(fixturePath, VALID_LINE + '\n', 'utf-8');
+  await writeFile(fixturePath, `${VALID_LINE}\n`, 'utf-8');
 });
 
 afterEach(async () => {
@@ -187,7 +188,7 @@ describe('RescanScheduler.tick() — mtime advanced triggers ingest', () => {
   it('ingests each modified file independently', async () => {
     // Create a second .jsonl file alongside the first.
     const secondPath = join(tempDir, 'session2.jsonl');
-    await writeFile(secondPath, VALID_LINE + '\n', 'utf-8');
+    await writeFile(secondPath, `${VALID_LINE}\n`, 'utf-8');
 
     const { scheduler, ingestFileSpy } = makeScheduler(tempDir);
 
@@ -310,7 +311,7 @@ describe('RescanScheduler — subdirectory traversal', () => {
     const nestedDir = join(tempDir, 'project-a', 'subagents');
     await mkdir(nestedDir, { recursive: true });
     const nestedPath = join(nestedDir, 'nested.jsonl');
-    await writeFile(nestedPath, VALID_LINE + '\n', 'utf-8');
+    await writeFile(nestedPath, `${VALID_LINE}\n`, 'utf-8');
 
     // Use the nested dir-only variant so only the nested file is picked up.
     const { scheduler, ingestFileSpy } = makeScheduler(tempDir);
