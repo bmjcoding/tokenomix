@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dark mode toggle now has sufficient contrast in dark mode (gray-700 surface, explicit icon color).
 - Optimization Opportunities table replaced category pill badges with plain uppercase labels for cleaner appearance.
 - Page scroll no longer requires double-swipe; removed `html` from the `overflow-x: hidden` selector.
+- Donut chart slices no longer fade out on hover; replaced `emphasis.focus:'none'` (ineffective in ECharts 6) with `emphasis.disabled:true` plus a defensive `blur.itemStyle.opacity:1`.
+- Spend over time x-axis rightmost date label (e.g. `04-29`) no longer truncates; widened `grid.right` from 12 to 24 and removed `axisLabel.overflow:'truncate'`.
+- Optimization Opportunities table rows are now vertically centered; AREA column header and cells are horizontally centered.
+- "Listed impact" badge repositioned to a centered row above the IMPACT column (was right-aligned in the panel header next to the title).
+- "Rule Score" column header now displays the help tooltip inline (was floating in the panel header).
 
 ### Changed
 

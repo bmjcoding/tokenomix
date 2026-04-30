@@ -85,7 +85,7 @@ export function AreaChart({ data, field, height = 220, xAxisLabelFormat }: AreaC
       },
       grid: {
         left: 8,
-        right: 12,
+        right: 24,
         top: 8,
         bottom: 32,
         containLabel: true,
@@ -103,7 +103,6 @@ export function AreaChart({ data, field, height = 220, xAxisLabelFormat }: AreaC
           interval: Math.max(0, Math.floor(dates.length / 6) - 1),
           formatter: xAxisLabelFormat ?? ((val: string) => val.slice(5)), // MM-DD default
           hideOverlap: true,
-          overflow: 'truncate',
           margin: 6,
         },
         splitLine: { show: false },
