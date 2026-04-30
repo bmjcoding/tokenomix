@@ -1,6 +1,6 @@
 import { Outlet } from '@tanstack/react-router';
 import { RecommendationChatPanel } from '../panels/RecommendationChatPanel.js';
-import DarkModeToggle from './DarkModeToggle.js';
+import FloatingControls from './FloatingControls.js';
 
 /**
  * RootLayout — full-width layout with floating utility controls.
@@ -13,7 +13,7 @@ export function RootLayout() {
       <main className="flex-1 min-h-screen">
         <Outlet />
       </main>
-      <DarkModeToggle />
+      <FloatingControls />
       <RecommendationChatPanel />
     </div>
   );

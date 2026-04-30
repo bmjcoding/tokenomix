@@ -1,11 +1,29 @@
 /**
  * useServerEvents — subscribes to the /api/events SSE stream.
  *
- * On each `{type:'updated'}` message, invalidates the 'metrics' and 'sessions'
- * TanStack Query cache keys so all panels refresh automatically.
+ * On each `{type:'updated'}` message, invalidates the 'metrics', 'sessions',
+ * 'turns', and 'session' TanStack Query cache keys so all panels refresh
+ * automatically.
  *
- * Lifecycle: the EventSource is created on mount and closed on unmount.
- * No external dependencies beyond browser EventSource API and TanStack Query.
+ * ## Refresh modes
+ *
+ * The hook reads `refreshMode` from `useRefreshMode()` and branches:
+ *
+ * - **realtime** (default): opens an `EventSource('/api/events')`, invalidates
+ *   all four query keys on each `{type:'updated'}` message, and tracks
+ *   consecutive errors — dispatching `SSE_DEGRADED_EVENT` on the document once
+ *   `MAX_CONSECUTIVE_ERRORS` is reached. The EventSource is closed on unmount
+ *   or when the mode changes.
+ *
+ * - **minute**: does NOT open an EventSource. Instead, a `setInterval` fires
+ *   every 60 000 ms and invalidates all four query keys unconditionally. The
+ *   error counter and `SSE_DEGRADED_EVENT` logic are inactive in this branch.
+ *   The interval is cleared on unmount or when the mode changes.
+ *
+ * Mode switches (realtime → minute or minute → realtime) are handled cleanly
+ * by including `refreshMode` in the `useEffect` dependency array — React tears
+ * down the previous effect (closing the EventSource or clearing the interval)
+ * before starting the new one.
  *
  * ## Heartbeat note
  * The server emits a keepalive using `event: heartbeat` (not `event: message`).
@@ -17,6 +35,7 @@
 
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
+import { useRefreshMode } from '../providers/RefreshModeProvider.js';
 
 /** Maximum consecutive SSE errors before a warning DOM event is dispatched. */
 const MAX_CONSECUTIVE_ERRORS = 3;
@@ -24,11 +43,36 @@ const MAX_CONSECUTIVE_ERRORS = 3;
 /** Custom DOM event name emitted when the SSE connection has failed repeatedly. */
 const SSE_DEGRADED_EVENT = 'tokenomix:sse-degraded';
 
+/** Shared helper — invalidates all four query keys used across dashboard panels. */
+function invalidateAll(queryClient: ReturnType<typeof useQueryClient>): void {
+  void queryClient.invalidateQueries({ queryKey: ['metrics'] });
+  void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+  void queryClient.invalidateQueries({ queryKey: ['turns'] });
+  void queryClient.invalidateQueries({ queryKey: ['session'] });
+}
+
 export function useServerEvents(): void {
   const queryClient = useQueryClient();
+  const { refreshMode } = useRefreshMode();
   const consecutiveErrorsRef = useRef(0);
 
   useEffect(() => {
+    if (refreshMode === 'minute') {
+      // Minute-polling branch: no EventSource, no error counter.
+      // Reset the consecutive error ref so the realtime branch starts clean
+      // if the user later switches back.
+      consecutiveErrorsRef.current = 0;
+
+      const intervalId = setInterval(() => {
+        invalidateAll(queryClient);
+      }, 60_000);
+
+      return () => {
+        clearInterval(intervalId);
+      };
+    }
+
+    // Realtime branch: EventSource-driven updates.
     const source = new EventSource('/api/events');
 
     source.onmessage = (event: MessageEvent) => {
@@ -43,10 +87,7 @@ export function useServerEvents(): void {
           'type' in data &&
           (data as Record<string, unknown>).type === 'updated'
         ) {
-          void queryClient.invalidateQueries({ queryKey: ['metrics'] });
-          void queryClient.invalidateQueries({ queryKey: ['sessions'] });
-          void queryClient.invalidateQueries({ queryKey: ['turns'] });
-          void queryClient.invalidateQueries({ queryKey: ['session'] });
+          invalidateAll(queryClient);
         }
       } catch {
         // Malformed JSON — ignore silently
@@ -71,5 +112,5 @@ export function useServerEvents(): void {
     return () => {
       source.close();
     };
-  }, [queryClient]);
+  }, [queryClient, refreshMode]);
 }

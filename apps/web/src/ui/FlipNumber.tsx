@@ -7,8 +7,14 @@
  * the library's built-in slot-machine flip animation.
  *
  * Key behaviours:
- * - `respectMotionPreference` is always set so users with
- *   `prefers-reduced-motion: reduce` see instant updates instead of animation.
+ * - Animation is governed by the MotionPreferenceProvider context:
+ *   - `'system'`  → `respectMotionPreference={true}` (OS pref decides;
+ *                    existing default behaviour).
+ *   - `'reduced'` → `animated={false}` — all transitions are instant
+ *                    regardless of OS or NumberFlow defaults.
+ *   - `'full'`    → `respectMotionPreference={false}` — always animates,
+ *                    overriding any OS prefers-reduced-motion setting.
+ *   Callers do NOT pass `respectMotionPreference`; it is computed internally.
  * - `format` accepts a `Format` object (Intl.NumberFormatOptions minus
  *   scientific/engineering notation) forwarded directly to NumberFlow.
  * - `className` forwards Tailwind utility classes to the NumberFlow root
@@ -23,6 +29,7 @@
  */
 
 import NumberFlow, { type Format, type NumberFlowProps } from '@number-flow/react';
+import { useMotionPreference } from '../providers/MotionPreferenceProvider.js';
 
 // ---------------------------------------------------------------------------
 // Props
@@ -63,15 +70,31 @@ export interface FlipNumberProps
 // ---------------------------------------------------------------------------
 
 export function FlipNumber({ value, format, prefix, locales = 'en-US', ...rest }: FlipNumberProps) {
+  const { motionPreference } = useMotionPreference();
+
   const optionalProps: Record<string, unknown> = {};
   if (format !== undefined) optionalProps.format = format;
   if (prefix !== undefined) optionalProps.prefix = prefix;
+
+  // Compute animation props based on user motion preference.
+  // 'reduced' → instant: animated=false overrides all animation
+  // 'full'    → always animate: respectMotionPreference=false ignores OS pref
+  // 'system'  → defer to OS: respectMotionPreference=true (default behaviour)
+  const motionProps: Record<string, unknown> = {};
+  if (motionPreference === 'reduced') {
+    motionProps.animated = false;
+  } else if (motionPreference === 'full') {
+    motionProps.respectMotionPreference = false;
+  } else {
+    // 'system'
+    motionProps.respectMotionPreference = true;
+  }
 
   return (
     <NumberFlow
       value={value}
       locales={locales}
-      respectMotionPreference={true}
+      {...(motionProps as { animated?: boolean; respectMotionPreference?: boolean })}
       {...(optionalProps as { format?: Format; prefix?: string })}
       {...rest}
     />
