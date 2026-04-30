@@ -40,9 +40,6 @@ function confidenceLabel(confidence: number): string {
 export function OptimizationOpportunitiesPanel({ data }: OptimizationOpportunitiesPanelProps) {
   const opportunities = data.optimizationOpportunities;
 
-  // Non-additive scan metric: candidates can overlap, so this is not booked savings.
-  const listedImpact = opportunities.reduce((s, o) => s + o.impactUsd30d, 0);
-
   return (
     <Card as="section" className="p-0 overflow-hidden" aria-label="Optimization opportunities">
       <div className="px-5 py-4 border-b border-gray-200 dark:border-gray-800">
@@ -70,16 +67,6 @@ export function OptimizationOpportunitiesPanel({ data }: OptimizationOpportuniti
               <col style={{ width: '15%' }} />
             </colgroup>
             <thead>
-              {listedImpact > 0 && (
-                <tr>
-                  <th className="px-4 pt-3" />
-                  <th className="px-4 pt-3" />
-                  <th className="px-4 pt-3 text-center font-normal">
-                    <Badge variant="accent">Listed impact {formatCurrency(listedImpact)}</Badge>
-                  </th>
-                  <th className="px-4 pt-3" />
-                </tr>
-              )}
               <tr className="border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900">
                 <th className="px-4 py-2.5 text-center text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
                   Area

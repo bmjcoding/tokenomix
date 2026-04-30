@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.7.2] - 2026-04-30
+
+### Changed
+
+- Segmented toggles (period switcher and Cost/Input/Output field toggle) migrated from `role="group"` + `aria-pressed` to the WAI-ARIA APG radio-group pattern: `role="radiogroup"` outer + `role="radio"` inner with `aria-checked`, roving tabindex, and full keyboard navigation (ArrowLeft/Right/Up/Down, Home, End). Active option remains visually unchanged. (`apps/web/src/panels/PeriodSwitcher.tsx`, `apps/web/src/panels/AreaChartPanel.tsx`)
+
+## [3.7.1] - 2026-04-30
+
+### Changed
+
+- Spend-over-time field toggle (Cost / Input / Output) now uses the same segmented-pill structure as the period switcher (24HR / 7D / 30D / YTD), unifying the two adjacent controls visually. (`apps/web/src/panels/AreaChartPanel.tsx`, `apps/web/src/panels/PeriodSwitcher.tsx`)
+- Both segmented toggles now render `|` divider separators between adjacent inactive segments; the divider adjacent to the active pill is suppressed so the active state remains visually prominent. (`apps/web/src/panels/AreaChartPanel.tsx`, `apps/web/src/panels/PeriodSwitcher.tsx`)
+
+## [3.7.0] - 2026-04-30
+
+### Added
+
+- Recommendation chat now displays an elapsed-seconds counter while waiting for the first response token (e.g., "Thinking… 12s") so the ~30 s Claude Code spawn and first-API-call latency feels accountable instead of frozen. The counter starts when the server emits its `start` SSE event, increments every second, and clears the moment the first delta arrives, the stream completes, the request errors or aborts, or the panel unmounts. Uses `aria-live="polite"` and `tabular-nums` for accessible, layout-stable updates. (`apps/web/src/panels/RecommendationChatPanel.tsx`)
+
+### Fixed
+
+- Ask AI popout now renders correctly in light mode: chat window, message list, markdown prose, and send button all use proper light/dark token pairs instead of hardcoded dark-only values; send button background and text are visible on a white surface.
+- Spend-over-time chart: increased `grid.left` so the first x-axis date tick no longer collides with y-axis labels.
+- Donut card legend pills (model mix and tools breakdown) are now horizontally centered via `justify-center` on the legend list.
+- Removed the redundant "Listed impact $X.XX" summary Badge row that appeared above the Optimization Opportunities table headers.
+
+### Changed
+
+- Period switcher (24HR / 7D / 30D / YTD) is now a single segmented-pill control using design tokens (`bg-primary` / `bg-primary-light`) for the active segment, replacing four separate Button instances.
+- Period label renamed from "24Hr" to "24HR" for consistent capitalisation.
+- Raised the default chat budget cap (`TOKENOMIX_CLAUDE_CHAT_MAX_BUDGET_USD`) from `0.05` to `0.15` so typical first-turn answers no longer trip the "Claude Code reached the configured chat budget cap" warning. Existing env-var override behaviour is unchanged. (`apps/server/src/routes/recommendations-chat.ts`, `README.md`)
+
+## [3.6.0] - 2026-04-30
+
+### Added
+
+- `FlipNumber` component (`apps/web/src/ui/FlipNumber.tsx`) — wraps `@number-flow/react@0.6.0` to provide animated digit transitions on numeric values. Used by the hero card to flip-count the Current Spend (MTD) currency value and the Tokens · MTD integer display whenever new SSE-driven metrics arrive. Honors `prefers-reduced-motion: reduce` (instant updates instead of animation) via `respectMotionPreference={true}`.
+- New runtime dependency: `@number-flow/react@0.6.0` (~10 KB gzipped, exact-pinned per project policy).
+
 ## [3.5.0] - 2026-04-30
 
 ### Added
@@ -531,7 +570,11 @@ Internal cross-references updated:
 - `DEFAULT_OUTPUT` now points to `output/usage-dashboard.html` within the
   project, instead of a session-specific retro directory.
 
-[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.5.0...HEAD
+[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.7.2...HEAD
+[3.7.2]: https://github.com/bmjcoding/tokenomix/compare/v3.7.1...v3.7.2
+[3.7.1]: https://github.com/bmjcoding/tokenomix/compare/v3.7.0...v3.7.1
+[3.7.0]: https://github.com/bmjcoding/tokenomix/compare/v3.6.0...v3.7.0
+[3.6.0]: https://github.com/bmjcoding/tokenomix/compare/v3.5.0...v3.6.0
 [3.5.0]: https://github.com/bmjcoding/tokenomix/compare/v3.4.1...v3.5.0
 [3.4.1]: https://github.com/bmjcoding/tokenomix/compare/v3.4.0...v3.4.1
 [3.4.0]: https://github.com/bmjcoding/tokenomix/compare/v3.3.0...v3.4.0

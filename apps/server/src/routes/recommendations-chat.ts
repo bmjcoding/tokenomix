@@ -675,7 +675,7 @@ export class LocalClaudeRecommendationRunner implements ClaudeRecommendationRunn
     this.timeoutMs =
       args.timeoutMs ?? Number(process.env.TOKENOMIX_CLAUDE_CHAT_TIMEOUT_MS ?? 60_000);
     this.maxBudgetUsd =
-      args.maxBudgetUsd ?? process.env.TOKENOMIX_CLAUDE_CHAT_MAX_BUDGET_USD ?? '0.05';
+      args.maxBudgetUsd ?? process.env.TOKENOMIX_CLAUDE_CHAT_MAX_BUDGET_USD ?? '0.15';
     this.model = process.env.TOKENOMIX_CLAUDE_CHAT_MODEL?.trim() || 'sonnet';
     this.sessionId = randomUUID();
     this.effort = normalizeClaudeEffort(process.env.TOKENOMIX_CLAUDE_CHAT_EFFORT);

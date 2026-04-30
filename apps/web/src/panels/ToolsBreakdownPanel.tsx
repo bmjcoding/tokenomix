@@ -63,7 +63,7 @@ export function ToolsBreakdownPanel({ since = '30d' }: ToolsBreakdownPanelProps)
       {data && (
         <>
           <ToolMixBar data={data.byTool} height={240} />
-          <ul className="mt-4 flex flex-wrap gap-2" aria-label="Tool legend">
+          <ul className="mt-4 flex flex-wrap justify-center gap-2" aria-label="Tool legend">
             {badgeItems.map((t) => {
               const pct = totalCount > 0 ? ((t.count / totalCount) * 100).toFixed(0) : '0';
               return (
