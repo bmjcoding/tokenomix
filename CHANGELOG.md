@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.0] - 2026-04-30
+
+### Added
+
+- `FlipNumber` component (`apps/web/src/ui/FlipNumber.tsx`) — wraps `@number-flow/react@0.6.0` to provide animated digit transitions on numeric values. Used by the hero card to flip-count the Current Spend (MTD) currency value and the Tokens · MTD integer display whenever new SSE-driven metrics arrive. Honors `prefers-reduced-motion: reduce` (instant updates instead of animation) via `respectMotionPreference={true}`.
+- New runtime dependency: `@number-flow/react@0.6.0` (~10 KB gzipped, exact-pinned per project policy).
+
 ## [3.5.0] - 2026-04-30
 
 ### Added
@@ -531,7 +538,8 @@ Internal cross-references updated:
 - `DEFAULT_OUTPUT` now points to `output/usage-dashboard.html` within the
   project, instead of a session-specific retro directory.
 
-[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.5.0...HEAD
+[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.6.0...HEAD
+[3.6.0]: https://github.com/bmjcoding/tokenomix/compare/v3.5.0...v3.6.0
 [3.5.0]: https://github.com/bmjcoding/tokenomix/compare/v3.4.1...v3.5.0
 [3.4.1]: https://github.com/bmjcoding/tokenomix/compare/v3.4.0...v3.4.1
 [3.4.0]: https://github.com/bmjcoding/tokenomix/compare/v3.3.0...v3.4.0
