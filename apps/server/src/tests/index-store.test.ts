@@ -585,7 +585,7 @@ describe('aggregate() — optimization opportunities portability', () => {
         project: '/Users/example/work/portable-app',
         projectName: 'portable-app',
         sessionId: 'sess-portable-top',
-        costUsd: 100,
+        costUsd: 300,
       })
     );
     rows.set(
@@ -617,6 +617,104 @@ describe('aggregate() — optimization opportunities portability', () => {
       projectOpportunity?.evidence,
     ].join('\n');
     expect(returnedSuggestionText).not.toContain('/Users/example');
+  });
+
+  it('suppresses high-share but immaterial opportunities', () => {
+    const store = new IndexStore();
+    const rows = store.rows as Map<string, TokenRow>;
+
+    rows.set(
+      'tiny_window:msg1',
+      makeRow({
+        date: daysAgo(1),
+        costUsd: 10,
+        inputCostUsd: 1,
+        outputCostUsd: 3,
+        cacheCreationCostUsd: 1,
+        cacheReadCostUsd: 5,
+        toolUses: { Bash: 150 },
+      })
+    );
+
+    const metrics = store.getMetrics();
+
+    expect(metrics.optimizationOpportunities).toEqual([]);
+  });
+
+  it('uses effective component costs for Opus-to-Sonnet counterfactuals', () => {
+    const store = new IndexStore();
+    const rows = store.rows as Map<string, TokenRow>;
+
+    rows.set(
+      'gateway_opus:msg1',
+      makeRow({
+        date: daysAgo(1),
+        modelId: 'claude-opus-4-7',
+        modelFamily: 'opus',
+        inputTokens: 1_000_000,
+        outputTokens: 0,
+        costUsd: 1,
+        costUsdMicros: 1_000_000,
+        pricingStatus: 'internal_gateway_rated',
+        inputCostUsd: 1,
+        inputCostUsdMicros: 1_000_000,
+        outputCostUsd: 0,
+        outputCostUsdMicros: 0,
+        cacheCreationCostUsd: 0,
+        cacheCreationCostUsdMicros: 0,
+        cacheReadCostUsd: 0,
+        cacheReadCostUsdMicros: 0,
+        webSearchCostUsd: 0,
+        webSearchCostUsdMicros: 0,
+      })
+    );
+
+    const metrics = store.getMetrics();
+
+    // Modern Opus input is $5/MTok and Sonnet is $3/MTok, so the same
+    // effective cost basis implies 40% savings on token spend.
+    expect(metrics.opusToSonnetSavings30d).toBeCloseTo(0.4, 10);
+  });
+
+  it('surfaces subagent governance from subagent rows even when Agent tool events are absent', () => {
+    const store = new IndexStore();
+    const rows = store.rows as Map<string, TokenRow>;
+
+    rows.set(
+      'main_session:msg1',
+      makeRow({
+        date: daysAgo(1),
+        sessionId: 'sess-main',
+        costUsd: 100,
+      })
+    );
+    rows.set(
+      'subagent_a:msg1',
+      makeRow({
+        date: daysAgo(1),
+        sessionId: 'sess-sub-a',
+        costUsd: 200,
+        isSubagent: true,
+      })
+    );
+    rows.set(
+      'subagent_b:msg1',
+      makeRow({
+        date: daysAgo(1),
+        sessionId: 'sess-sub-b',
+        costUsd: 200,
+        isSubagent: true,
+      })
+    );
+
+    const metrics = store.getMetrics();
+    const subagentOpportunity = metrics.optimizationOpportunities.find(
+      (opportunity) => opportunity.id === 'subagent-cost-governance'
+    );
+
+    expect(subagentOpportunity).toBeDefined();
+    expect(subagentOpportunity?.impactUsd30d).toBeCloseTo(32, 10);
+    expect(subagentOpportunity?.evidence).toContain('no Agent tool calls were captured');
   });
 });
 

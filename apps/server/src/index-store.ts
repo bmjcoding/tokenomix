@@ -15,10 +15,11 @@
 
 import { EventEmitter } from 'node:events';
 import type { Dirent } from 'node:fs';
-import { readdir as readdirFn } from 'node:fs/promises';
-import { open as fsOpen } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { open as fsOpen, readdir as readdirFn } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as nodePath from 'node:path';
+import { createInterface } from 'node:readline';
 import type {
   BedrockEndpointScope,
   BedrockServiceTier,
@@ -64,6 +65,7 @@ import {
   microsToUsd,
   model_family,
   resolveCacheTokens,
+  WEB_SEARCH_USD_PER_REQUEST,
 } from './pricing.js';
 import { formatLocalHourIso, formatLocalIso } from './time.js';
 
@@ -94,6 +96,31 @@ const PROMPT_MAX_CHARS = 500;
  * Prevents reading entire transcripts for very large files.
  */
 const PROMPT_SCAN_MAX_BYTES = 64 * 1024; // 64 KB
+
+/**
+ * Optimization recommendations must clear a dollar materiality floor. This
+ * prevents high-share but tiny windows from producing authoritative-looking
+ * "$0.00" opportunities.
+ */
+const MIN_OPPORTUNITY_IMPACT_USD = 25;
+
+/** Minimum 30d row count before calling top-turn concentration a pattern. */
+const MIN_OUTLIER_TURN_COUNT = 20;
+
+/**
+ * Set of known non-project directory names used to filter out system and build
+ * directories during project-name deduplication in aggregate().
+ * Declared at module scope so it is allocated once at load, not per row.
+ */
+const NON_PROJECT_NAMES = new Set([
+  'tmp',
+  'temp',
+  'node_modules',
+  '.git',
+  '.cache',
+  'dist',
+  'build',
+]);
 
 interface PricingRuntimeConfig {
   provider: PricingProvider;
@@ -442,7 +469,39 @@ function fallbackCostComponentsForRow(row: TokenRow): {
         (row.cacheCreation1h * (prices?.cache_creation_1h ?? 0)) / 1_000_000) *
       multiplier,
     cacheReadCostUsd: ((row.cacheReadTokens * (prices?.cache_read ?? 0)) / 1_000_000) * multiplier,
-    webSearchCostUsd: row.webSearchRequests * 0.01,
+    webSearchCostUsd: row.webSearchRequests * WEB_SEARCH_USD_PER_REQUEST,
+  };
+}
+
+function costComponentsForRow(row: TokenRow): {
+  inputCostUsd: number;
+  outputCostUsd: number;
+  cacheCreationCostUsd: number;
+  cacheReadCostUsd: number;
+  webSearchCostUsd: number;
+} {
+  const fallback = fallbackCostComponentsForRow(row);
+  return {
+    inputCostUsd:
+      row.inputCostUsdMicros !== undefined
+        ? microsToUsd(row.inputCostUsdMicros)
+        : (row.inputCostUsd ?? fallback.inputCostUsd),
+    outputCostUsd:
+      row.outputCostUsdMicros !== undefined
+        ? microsToUsd(row.outputCostUsdMicros)
+        : (row.outputCostUsd ?? fallback.outputCostUsd),
+    cacheCreationCostUsd:
+      row.cacheCreationCostUsdMicros !== undefined
+        ? microsToUsd(row.cacheCreationCostUsdMicros)
+        : (row.cacheCreationCostUsd ?? fallback.cacheCreationCostUsd),
+    cacheReadCostUsd:
+      row.cacheReadCostUsdMicros !== undefined
+        ? microsToUsd(row.cacheReadCostUsdMicros)
+        : (row.cacheReadCostUsd ?? fallback.cacheReadCostUsd),
+    webSearchCostUsd:
+      row.webSearchCostUsdMicros !== undefined
+        ? microsToUsd(row.webSearchCostUsdMicros)
+        : (row.webSearchCostUsd ?? fallback.webSearchCostUsd),
   };
 }
 
@@ -486,37 +545,51 @@ function shouldReplaceDuplicateRow(args: {
 }
 
 function addCostComponents(acc: CostComponentSummary, row: TokenRow): void {
-  const fallback = fallbackCostComponentsForRow(row);
+  const components = costComponentsForRow(row);
   acc.inputTokens += row.inputTokens;
   acc.outputTokens += row.outputTokens;
   acc.cacheCreationTokens += row.cacheCreation5m + row.cacheCreation1h;
   acc.cacheReadTokens += row.cacheReadTokens;
   acc.webSearchRequests += row.webSearchRequests;
-  acc.inputCostUsd += row.inputCostUsd ?? fallback.inputCostUsd;
-  acc.outputCostUsd += row.outputCostUsd ?? fallback.outputCostUsd;
-  acc.cacheCreationCostUsd += row.cacheCreationCostUsd ?? fallback.cacheCreationCostUsd;
-  acc.cacheReadCostUsd += row.cacheReadCostUsd ?? fallback.cacheReadCostUsd;
-  acc.webSearchCostUsd += row.webSearchCostUsd ?? fallback.webSearchCostUsd;
+  acc.inputCostUsd += components.inputCostUsd;
+  acc.outputCostUsd += components.outputCostUsd;
+  acc.cacheCreationCostUsd += components.cacheCreationCostUsd;
+  acc.cacheReadCostUsd += components.cacheReadCostUsd;
+  acc.webSearchCostUsd += components.webSearchCostUsd;
+}
+
+function priceRatio(targetPrice: number, sourcePrice: number): number {
+  return sourcePrice > 0 ? targetPrice / sourcePrice : 0;
 }
 
 function estimateOpusToSonnetSavings(row: TokenRow): number {
   if (row.modelFamily !== 'opus' && row.modelFamily !== 'opus_legacy') return 0;
+  const source = MODEL_PRICES[row.modelFamily];
   const sonnet = MODEL_PRICES.sonnet;
-  if (!sonnet) return 0;
-  const multiplier = row.pricingMultiplier ?? 1;
-  const sonnetCost =
-    ((row.inputTokens * sonnet.input) / 1_000_000 +
-      (row.outputTokens * sonnet.output) / 1_000_000 +
-      (row.cacheCreation5m * sonnet.cache_creation_5m) / 1_000_000 +
-      (row.cacheCreation1h * sonnet.cache_creation_1h) / 1_000_000 +
-      (row.cacheReadTokens * sonnet.cache_read) / 1_000_000) *
-      multiplier +
-    (row.webSearchCostUsd ?? row.webSearchRequests * 0.01);
-  return Math.max(0, row.costUsd - sonnetCost);
+  if (!source || !sonnet) return 0;
+
+  const components = costComponentsForRow(row);
+  const originalTokenCost =
+    components.inputCostUsd +
+    components.outputCostUsd +
+    components.cacheCreationCostUsd +
+    components.cacheReadCostUsd;
+  const sonnetTokenCost =
+    components.inputCostUsd * priceRatio(sonnet.input, source.input) +
+    components.outputCostUsd * priceRatio(sonnet.output, source.output) +
+    components.cacheCreationCostUsd *
+      priceRatio(sonnet.cache_creation_5m, source.cache_creation_5m) +
+    components.cacheReadCostUsd * priceRatio(sonnet.cache_read, source.cache_read);
+
+  return Math.max(0, originalTokenCost - sonnetTokenCost);
 }
 
 function shareOfTotal(value: number, total: number): number {
   return total > 0 ? value / total : 0;
+}
+
+function hasMaterialOpportunityImpact(impactUsd30d: number): boolean {
+  return impactUsd30d >= MIN_OPPORTUNITY_IMPACT_USD;
 }
 
 function displayPathSegment(pathLike: string): string {
@@ -549,6 +622,19 @@ function projectLabelForDisplay(project: string): string {
 
 function isSubagentFilePath(filePath: string): boolean {
   return /(^|[\\/])subagents([\\/]|$)/.test(filePath);
+}
+
+function agentIdFromSubagentEvent(
+  event: RawUsageEventParsed,
+  filePath: string
+): string | undefined {
+  const raw = event as unknown as Record<string, unknown>;
+  const eventAgentId = raw.agentId;
+  if (typeof eventAgentId === 'string' && eventAgentId.trim() !== '') return eventAgentId;
+
+  const basename = nodePath.basename(filePath);
+  const match = /^agent-(.+)\.jsonl$/.exec(basename);
+  return match?.[1];
 }
 
 function numberField(source: Record<string, unknown>, keys: string[]): number | undefined {
@@ -593,9 +679,11 @@ function buildOptimizationOpportunities(args: {
   components: CostComponentSummary;
   byProject30d: ProjectBucket[];
   bashToolCalls30d: number;
+  turnCount30d: number;
   turnCostTop5PctShare30d: number;
   mainSessionCostUsd30d: number;
   subagentCostUsd30d: number;
+  subagentRows30d: number;
   agentToolCalls30d: number;
   opusToSonnetSavings30d: number;
 }): OptimizationOpportunity[] {
@@ -608,55 +696,66 @@ function buildOptimizationOpportunities(args: {
     components,
     byProject30d,
     bashToolCalls30d,
+    turnCount30d,
     turnCostTop5PctShare30d,
     mainSessionCostUsd30d,
     subagentCostUsd30d,
+    subagentRows30d,
     agentToolCalls30d,
     opusToSonnetSavings30d,
   } = args;
 
   const cacheUsd = components.cacheCreationCostUsd + components.cacheReadCostUsd;
   const cacheShare = shareOfTotal(cacheUsd, costUsd30d);
-  if (cacheShare >= 0.45) {
+  const cacheImpact = cacheUsd * 0.12;
+  if (cacheShare >= 0.45 && hasMaterialOpportunityImpact(cacheImpact)) {
+    const cacheReadShare = shareOfTotal(components.cacheReadCostUsd, cacheUsd);
     opportunities.push({
       id: 'context-cache-pressure',
       category: 'context',
-      title: 'Context rereads dominate cost',
+      title:
+        cacheReadShare >= 0.6 ? 'Context rereads dominate cost' : 'Context caching dominates cost',
       recommendation:
         'Measure Graphify-assisted navigation, shorter sessions, earlier /clear or /compact policies, narrower file reads, and reusable project notes on the projects with the highest cache-read cost.',
       evidence: `${formatUsdCompact(cacheUsd)} of 30d spend (${(cacheShare * 100).toFixed(0)}%) came from cache creation/read.`,
-      impactUsd30d: cacheUsd * 0.12,
+      impactUsd30d: cacheImpact,
       confidence: 0.72,
     });
   }
 
-  if (opusToSonnetSavings30d >= Math.max(25, costUsd30d * 0.05)) {
+  if (opusToSonnetSavings30d >= Math.max(MIN_OPPORTUNITY_IMPACT_USD, costUsd30d * 0.05)) {
     opportunities.push({
       id: 'opus-routing',
       category: 'model',
       title: 'Opus routing needs an audit',
       recommendation:
         'Run matched Sonnet trials for low-risk Opus-heavy workflows and compare task completion, rework, tests, and review defects before changing defaults.',
-      evidence: `A pure pricing counterfactual says Sonnet-priced Opus rows would cost about ${formatUsdCompact(opusToSonnetSavings30d)} less over 30d.`,
+      evidence: `A same-basis pricing counterfactual says Sonnet-priced Opus rows would cost about ${formatUsdCompact(opusToSonnetSavings30d)} less over 30d.`,
       impactUsd30d: opusToSonnetSavings30d,
       confidence: 0.52,
     });
   }
 
-  if (bashToolCalls30d >= 100) {
+  const rtkImpact = components.outputCostUsd * 0.08 + components.cacheReadCostUsd * 0.03;
+  if (bashToolCalls30d >= 100 && hasMaterialOpportunityImpact(rtkImpact)) {
     opportunities.push({
       id: 'rtk-bash-output',
       category: 'tooling',
-      title: 'Bash output is large enough for RTK trials',
+      title: 'Bash volume is large enough for RTK trials',
       recommendation:
         'Enable RTK for a controlled Bash-heavy cohort, then compare tool-result token volume, failed-command recovery, and total session cost.',
-      evidence: `Observed ${bashToolCalls30d.toLocaleString('en-US')} Bash calls over 30d.`,
-      impactUsd30d: components.outputCostUsd * 0.08 + components.cacheReadCostUsd * 0.03,
+      evidence: `Observed ${bashToolCalls30d.toLocaleString('en-US')} Bash calls over 30d; impact is estimated from output/cache-read spend, not direct Bash-token attribution.`,
+      impactUsd30d: rtkImpact,
       confidence: 0.61,
     });
   }
 
-  if (turnCostTop5PctShare30d >= 0.2) {
+  const outlierImpact = costUsd30d * turnCostTop5PctShare30d * 0.15;
+  if (
+    turnCount30d >= MIN_OUTLIER_TURN_COUNT &&
+    turnCostTop5PctShare30d >= 0.2 &&
+    hasMaterialOpportunityImpact(outlierImpact)
+  ) {
     opportunities.push({
       id: 'expensive-turn-outliers',
       category: 'workflow',
@@ -664,13 +763,15 @@ function buildOptimizationOpportunities(args: {
       recommendation:
         'Add a top-turn drilldown that shows token component, model, project, tools used, and preceding context size for the top 5% most expensive turns.',
       evidence: `The top 5% most expensive turns account for ${(turnCostTop5PctShare30d * 100).toFixed(0)}% of 30d spend.`,
-      impactUsd30d: costUsd30d * turnCostTop5PctShare30d * 0.15,
+      impactUsd30d: outlierImpact,
       confidence: 0.68,
     });
   }
 
   const topProject = byProject30d[0];
-  if (topProject && costUsd30d > 0 && topProject.costUsd / costUsd30d >= 0.25) {
+  const topProjectShare = topProject ? shareOfTotal(topProject.costUsd, costUsd30d) : 0;
+  const topProjectImpact = (topProject?.costUsd ?? 0) * 0.1;
+  if (topProject && topProjectShare >= 0.25 && hasMaterialOpportunityImpact(topProjectImpact)) {
     const projectName = projectLabelForDisplay(topProject.project);
     opportunities.push({
       id: 'top-project-concentration',
@@ -678,8 +779,8 @@ function buildOptimizationOpportunities(args: {
       title: `${projectName} is the first optimization target`,
       recommendation:
         'Run the first Graphify, RTK, and model-routing experiments here, because this project has enough spend concentration to produce a measurable signal quickly.',
-      evidence: `${projectName} accounts for ${((topProject.costUsd / costUsd30d) * 100).toFixed(0)}% of 30d spend.`,
-      impactUsd30d: topProject.costUsd * 0.1,
+      evidence: `${projectName} accounts for ${(topProjectShare * 100).toFixed(0)}% of 30d spend.`,
+      impactUsd30d: topProjectImpact,
       confidence: 0.66,
       project: topProject.project,
     });
@@ -689,15 +790,20 @@ function buildOptimizationOpportunities(args: {
     subagentCostUsd30d,
     mainSessionCostUsd30d + subagentCostUsd30d
   );
-  if (subagentShare >= 0.3 && agentToolCalls30d > 0) {
+  const subagentImpact = subagentCostUsd30d * 0.08;
+  if (subagentShare >= 0.3 && subagentRows30d > 0 && hasMaterialOpportunityImpact(subagentImpact)) {
+    const dispatchEvidence =
+      agentToolCalls30d > 0
+        ? `across ${agentToolCalls30d.toLocaleString('en-US')} captured Agent tool calls`
+        : `across ${subagentRows30d.toLocaleString('en-US')} subagent rows; no Agent tool calls were captured`;
     opportunities.push({
       id: 'subagent-cost-governance',
       category: 'workflow',
       title: 'Subagents are a major cost center',
       recommendation:
         'Track Agent-tool dispatches separately from subagent turns and require per-agent budgets, scope limits, and success criteria before broad dispatch.',
-      evidence: `Subagent rows account for ${(subagentShare * 100).toFixed(0)}% of 30d spend across ${agentToolCalls30d.toLocaleString('en-US')} Agent tool calls.`,
-      impactUsd30d: subagentCostUsd30d * 0.08,
+      evidence: `Subagent rows account for ${(subagentShare * 100).toFixed(0)}% of 30d spend ${dispatchEvidence}.`,
+      impactUsd30d: subagentImpact,
       confidence: 0.58,
     });
   }
@@ -987,11 +1093,19 @@ async function collectJsonlFiles(dir: string): Promise<string[]> {
  * `turnDurationMs`) are NOT populated here — they are merged by
  * `ingestFileInternal()` after the two-pass accumulation.
  */
-export function buildTokenRow(event: RawUsageEventParsed, filePath: string): TokenRow | null {
+interface BuildTokenRowOptions {
+  modelIdOverride?: string;
+}
+
+export function buildTokenRow(
+  event: RawUsageEventParsed,
+  filePath: string,
+  options: BuildTokenRowOptions = {}
+): TokenRow | null {
   const msg = event.message;
   if (!msg?.usage) return null;
 
-  const modelId = msg.model ?? '';
+  const modelId = options.modelIdOverride ?? msg.model ?? '';
   const usage = msg.usage;
 
   const ts = parseIso(event.timestamp ?? undefined);
@@ -1150,6 +1264,7 @@ function aggregate(
   const costComponents30d = emptyCostComponents();
   let mainSessionCostUsd30d = 0;
   let subagentCostUsd30d = 0;
+  let subagentRows30d = 0;
   let agentToolCalls30d = 0;
   let bashToolCalls30d = 0;
   let opusToSonnetSavings30d = 0;
@@ -1166,6 +1281,7 @@ function aggregate(
       addCostComponents(costComponents30d, row);
       if (row.isSubagent) {
         subagentCostUsd30d += row.costUsd;
+        subagentRows30d += 1;
       } else {
         mainSessionCostUsd30d += row.costUsd;
       }
@@ -1220,7 +1336,27 @@ function aggregate(
     totalCacheReadTokens += row.cacheReadTokens;
     if (row.sessionId) sessionsSet.add(row.sessionId);
     if (row.project) projectsSet.add(row.project);
-    if (row.projectName) projectsNameSet.add(row.projectName); // empty projectName excluded by design: rows with no resolvable cwd basename are not counted as a distinct project
+    if (row.projectName) {
+      // Project dedup hardening: lowercase + skip non-project paths.
+      // Rules applied only at set-accumulation; the stored projectName field on TokenRow is unchanged.
+      // 1. Lowercase for case-insensitive dedup (e.g. "MyProject" and "myproject" are the same project).
+      // 2. Trim trailing slashes/whitespace so path variants collapse to one entry.
+      // 3. Skip names that are clearly not real projects: empty string after trim, hidden directories
+      //    (starts with '.'), known system/build directories, or path strings containing system segments.
+      const normalized = row.projectName
+        .toLowerCase()
+        .replace(/[/\\]+$/, '')
+        .trimEnd();
+      const isNonProject =
+        normalized === '' ||
+        normalized.startsWith('.') ||
+        NON_PROJECT_NAMES.has(normalized) ||
+        normalized.includes('/node_modules/') ||
+        normalized.includes('/.git/');
+      if (!isNonProject) {
+        projectsNameSet.add(normalized);
+      }
+    }
 
     // rowDate is re-derived here for use in the daily/weekly bucket logic.
     const rowDate = new Date(`${row.date}T00:00:00`);
@@ -1664,9 +1800,11 @@ function aggregate(
     components: costComponents30d,
     byProject30d,
     bashToolCalls30d,
+    turnCount30d: count30d,
     turnCostTop5PctShare30d,
     mainSessionCostUsd30d,
     subagentCostUsd30d,
+    subagentRows30d,
     agentToolCalls30d,
     opusToSonnetSavings30d,
   });
@@ -1771,6 +1909,7 @@ function computeSessionSummaries(
       existing.cacheCreationTokens += row.cacheCreation5m + row.cacheCreation1h;
       existing.cacheReadTokens += row.cacheReadTokens;
       existing.events += 1;
+      if (row.isSubagent) existing.isSubagent = true;
     } else {
       sessionMap.set(row.sessionId, {
         sessionId: row.sessionId,
@@ -1847,6 +1986,8 @@ export class IndexStore extends EventEmitter {
   /** @internal Exposed as package-internal for test access; do not mutate from outside. */
   readonly rows = new Map<string, TokenRow>();
   private readonly rowTimestampMs = new Map<string, number>();
+  private readonly requestedModelByAgentId = new Map<string, string>();
+  private readonly subagentFilePathsByAgentId = new Map<string, Set<string>>();
   /** Per-session first/last event timestamps (epoch ms). Used for duration stats. */
   private readonly sessionTimes = new Map<string, { firstTs: number; lastTs: number }>();
   /**
@@ -2015,6 +2156,104 @@ export class IndexStore extends EventEmitter {
     }
   }
 
+  private async indexRequestedSubagentModels(filePath: string): Promise<Set<string>> {
+    const changedAgentIds = new Set<string>();
+    if (isSubagentFilePath(filePath)) return changedAgentIds;
+
+    const requestedModelByToolUseId = new Map<string, string>();
+    let rl: ReturnType<typeof createInterface> | undefined;
+
+    try {
+      const stream = createReadStream(filePath, { encoding: 'utf-8' });
+      rl = createInterface({ input: stream, crlfDelay: Number.POSITIVE_INFINITY });
+
+      for await (const line of rl) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(trimmed);
+        } catch {
+          continue;
+        }
+
+        if (typeof parsed !== 'object' || parsed === null) continue;
+        const event = parsed as Record<string, unknown>;
+        const message = event.message;
+        if (typeof message !== 'object' || message === null) continue;
+        const content = (message as Record<string, unknown>).content;
+        if (!Array.isArray(content)) continue;
+
+        for (const block of content) {
+          if (typeof block !== 'object' || block === null) continue;
+          const blockRecord = block as Record<string, unknown>;
+          if (blockRecord.type === 'tool_use' && blockRecord.name === 'Agent') {
+            const toolUseId = blockRecord.id;
+            const input = blockRecord.input;
+            if (typeof toolUseId === 'string' && typeof input === 'object' && input !== null) {
+              const requestedModel = (input as Record<string, unknown>).model;
+              if (typeof requestedModel === 'string' && requestedModel.trim() !== '') {
+                requestedModelByToolUseId.set(toolUseId, requestedModel);
+              }
+            }
+            continue;
+          }
+
+          if (blockRecord.type !== 'tool_result') continue;
+          const toolUseId = blockRecord.tool_use_id;
+          if (typeof toolUseId !== 'string') continue;
+          const requestedModel = requestedModelByToolUseId.get(toolUseId);
+          if (!requestedModel) continue;
+
+          const toolUseResult = event.toolUseResult;
+          if (typeof toolUseResult !== 'object' || toolUseResult === null) continue;
+          const agentId = (toolUseResult as Record<string, unknown>).agentId;
+          if (typeof agentId !== 'string' || agentId.trim() === '') continue;
+
+          const previous = this.requestedModelByAgentId.get(agentId);
+          if (previous !== requestedModel) {
+            this.requestedModelByAgentId.set(agentId, requestedModel);
+            changedAgentIds.add(agentId);
+          }
+        }
+      }
+    } catch {
+      // Best-effort correlation only; normal JSONL parsing below records
+      // user-visible ingest audit errors for assistant usage rows.
+    } finally {
+      rl?.close();
+    }
+
+    return changedAgentIds;
+  }
+
+  private recordSubagentFilePath(agentId: string, filePath: string): void {
+    let paths = this.subagentFilePathsByAgentId.get(agentId);
+    if (!paths) {
+      paths = new Set();
+      this.subagentFilePathsByAgentId.set(agentId, paths);
+    }
+    paths.add(filePath);
+  }
+
+  private async reingestSubagentFilesForAgentIds(agentIds: Set<string>): Promise<void> {
+    const paths = new Set<string>();
+    for (const agentId of agentIds) {
+      const agentPaths = this.subagentFilePathsByAgentId.get(agentId);
+      if (!agentPaths) continue;
+      for (const filePath of agentPaths) {
+        paths.add(filePath);
+      }
+    }
+
+    await Promise.all(
+      [...paths].map((filePath) =>
+        this.ingestFileInternal(filePath, { skipRequestedSubagentModelScan: true })
+      )
+    );
+  }
+
   /**
    * Full startup scan — discover all JSONL files and ingest in parallel batches
    * of BATCH_SIZE to avoid fd-limit exhaustion with 2,500+ files.
@@ -2022,6 +2261,11 @@ export class IndexStore extends EventEmitter {
   async initialize(): Promise<void> {
     const files = await collectJsonlFiles(PROJECTS_DIR).catch(() => [] as string[]);
     this.filesDiscovered = files.length;
+
+    for (let i = 0; i < files.length; i += BATCH_SIZE) {
+      const batch = files.slice(i, i + BATCH_SIZE);
+      await Promise.all(batch.map((f) => this.indexRequestedSubagentModels(f)));
+    }
 
     for (let i = 0; i < files.length; i += BATCH_SIZE) {
       const batch = files.slice(i, i + BATCH_SIZE);
@@ -2056,8 +2300,18 @@ export class IndexStore extends EventEmitter {
    * O(distinct requestIds with tool events), not O(all lines in the file).
    * See ADR 0003 for the full rationale and alternatives considered.
    */
-  private async ingestFileInternal(filePath: string): Promise<void> {
+  private async ingestFileInternal(
+    filePath: string,
+    options: { skipRequestedSubagentModelScan?: boolean } = {}
+  ): Promise<void> {
     const fileAudit = emptyFileIngestionAudit();
+
+    if (!options.skipRequestedSubagentModelScan) {
+      const changedAgentIds = await this.indexRequestedSubagentModels(filePath);
+      if (changedAgentIds.size > 0) {
+        await this.reingestSubagentFilesForAgentIds(changedAgentIds);
+      }
+    }
 
     // Capture the first qualifying user message for this file's sessions.
     // This runs as a best-effort preliminary scan and does not affect the
@@ -2389,19 +2643,30 @@ export class IndexStore extends EventEmitter {
         }
 
         const dedupKey = `${requestId}:${messageId}`;
-        const row = buildTokenRow(event, filePath);
+        const agentId = isSubagentFilePath(filePath)
+          ? agentIdFromSubagentEvent(event, filePath)
+          : undefined;
+        const requestedModel = agentId ? this.requestedModelByAgentId.get(agentId) : undefined;
+        const row = buildTokenRow(
+          event,
+          filePath,
+          requestedModel !== undefined ? { modelIdOverride: requestedModel } : {}
+        );
         if (row) {
           const tsMs = parseIso(event.timestamp ?? undefined)?.getTime();
           const existingRow = this.rows.get(dedupKey);
           mergeTurnMetadata(row, requestId, existingRow);
 
           if (existingRow) {
-            const shouldReplace = shouldReplaceDuplicateRow({
-              existingRow,
-              existingTimestampMs: this.rowTimestampMs.get(dedupKey),
-              candidateRow: row,
-              candidateTimestampMs: tsMs,
-            });
+            const shouldReplace =
+              requestedModel !== undefined && existingRow.modelId !== requestedModel
+                ? true
+                : shouldReplaceDuplicateRow({
+                    existingRow,
+                    existingTimestampMs: this.rowTimestampMs.get(dedupKey),
+                    candidateRow: row,
+                    candidateTimestampMs: tsMs,
+                  });
 
             if (!shouldReplace) {
               fileAudit.duplicateRowsSkipped += 1;
@@ -2413,6 +2678,7 @@ export class IndexStore extends EventEmitter {
 
           this.rows.set(dedupKey, row);
           if (tsMs !== undefined) this.rowTimestampMs.set(dedupKey, tsMs);
+          if (agentId) this.recordSubagentFilePath(agentId, filePath);
 
           if (!existingRow) fileAudit.rowsIndexed += 1;
 
@@ -2547,6 +2813,7 @@ export class IndexStore extends EventEmitter {
     let sumOutputCostUsd = 0;
     let sumCacheCreationCostUsd = 0;
     let sumCacheReadCostUsd = 0;
+    let sumWebSearchCostUsd = 0;
 
     // Full tool accumulator (not capped).
     const toolAcc = new Map<string, { count: number; errorCount: number }>();
@@ -2565,13 +2832,13 @@ export class IndexStore extends EventEmitter {
         projectName = row.projectName;
       }
 
-      // Accumulate per-component USD costs: prefer stored values, fall back to
-      // pricing-table estimate (same pattern as addCostComponents).
-      const fallback = fallbackCostComponentsForRow(row);
-      sumInputCostUsd += row.inputCostUsd ?? fallback.inputCostUsd;
-      sumOutputCostUsd += row.outputCostUsd ?? fallback.outputCostUsd;
-      sumCacheCreationCostUsd += row.cacheCreationCostUsd ?? fallback.cacheCreationCostUsd;
-      sumCacheReadCostUsd += row.cacheReadCostUsd ?? fallback.cacheReadCostUsd;
+      // Use the same micro-USD-aware component resolver used by metrics rollups.
+      const components = costComponentsForRow(row);
+      sumInputCostUsd += components.inputCostUsd;
+      sumOutputCostUsd += components.outputCostUsd;
+      sumCacheCreationCostUsd += components.cacheCreationCostUsd;
+      sumCacheReadCostUsd += components.cacheReadCostUsd;
+      sumWebSearchCostUsd += components.webSearchCostUsd;
 
       const uses = row.toolUses ?? {};
       const errors = row.toolErrors ?? {};
@@ -2645,6 +2912,7 @@ export class IndexStore extends EventEmitter {
         output: sumOutputCostUsd,
         cacheCreate: sumCacheCreationCostUsd,
         cacheRead: sumCacheReadCostUsd,
+        webSearch: sumWebSearchCostUsd,
       },
       inputTokens,
       outputTokens,

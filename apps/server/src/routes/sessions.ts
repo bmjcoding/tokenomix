@@ -58,7 +58,9 @@ export function sessionsRoute(store: IndexStore): Hono {
     const project = c.req.query('project');
     const since = c.req.query('since');
 
-    const limit = limitParam ? Math.min(Number.parseInt(limitParam, 10) || 50, 500) : 50;
+    const limit = limitParam
+      ? Math.min(Math.max(1, Number.parseInt(limitParam, 10) || 50), 500)
+      : 50;
 
     const query: MetricsQuery = {};
     if (since) query.since = since;

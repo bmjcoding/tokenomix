@@ -807,11 +807,11 @@ describe('tool-ingest — MetricSummary aggregate fields', () => {
         outputTokens: 1_000_000,
         cacheCreation5m: 1_000_000,
         cacheReadTokens: 100_000_000,
-        costUsd: 100,
-        inputCostUsd: 1,
-        outputCostUsd: 10,
-        cacheCreationCostUsd: 20,
-        cacheReadCostUsd: 69,
+        costUsd: 1000,
+        inputCostUsd: 10,
+        outputCostUsd: 200,
+        cacheCreationCostUsd: 100,
+        cacheReadCostUsd: 690,
         webSearchCostUsd: 0,
         toolUses: { Bash: 150, Agent: 2 },
       })
@@ -820,9 +820,9 @@ describe('tool-ingest — MetricSummary aggregate fields', () => {
     const metrics = store.getMetrics();
 
     expect(metrics.byProject30d).toHaveLength(1);
-    expect(metrics.costComponents30d.outputCostUsd).toBe(10);
-    expect(metrics.costComponents30d.cacheCreationCostUsd).toBe(20);
-    expect(metrics.costComponents30d.cacheReadCostUsd).toBe(69);
+    expect(metrics.costComponents30d.outputCostUsd).toBe(200);
+    expect(metrics.costComponents30d.cacheCreationCostUsd).toBe(100);
+    expect(metrics.costComponents30d.cacheReadCostUsd).toBe(690);
     expect(metrics.turnCostTop5PctShare30d).toBe(1);
     expect(metrics.agentToolCalls30d).toBe(2);
     const opportunities = metrics.optimizationOpportunities;
@@ -891,6 +891,103 @@ describe('tool-ingest — subagent path detection via ingestFile', () => {
       // At least one subagent bucket (from the subagents/ file).
       expect(metrics.bySubagent.length).toBeGreaterThan(0);
     }
+  });
+
+  it('attributes subagent rows to the Agent tool requested model when available', async () => {
+    const agentId = 'a-haiku-requested';
+    const parentPath = join(fixturesDir, 'agent-model-parent.jsonl');
+    const subPath = join(subagentsDir, `agent-${agentId}.jsonl`);
+    const parentContent = [
+      JSON.stringify({
+        type: 'assistant',
+        uuid: 'uuid-parent-agent-model',
+        requestId: 'req_parent_agent_model',
+        timestamp: '2026-04-27T10:00:00.000Z',
+        sessionId: 'session-agent-model',
+        cwd: '/proj',
+        message: {
+          id: 'msg_parent_agent_model',
+          model: 'claude-sonnet-4-6',
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'toolu_agent_model',
+              name: 'Agent',
+              input: {
+                model: 'haiku',
+                description: 'Discovery',
+                prompt: 'redacted fixture prompt',
+              },
+            },
+          ],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+            service_tier: 'standard',
+          },
+        },
+      }),
+      JSON.stringify({
+        type: 'user',
+        uuid: 'uuid-parent-agent-result',
+        parentUuid: 'uuid-parent-agent-model',
+        timestamp: '2026-04-27T10:01:00.000Z',
+        sessionId: 'session-agent-model',
+        cwd: '/proj',
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'toolu_agent_model' }],
+        },
+        toolUseResult: { agentId },
+      }),
+    ].join('\n');
+    const subContent = [
+      JSON.stringify({
+        type: 'assistant',
+        uuid: 'uuid-subagent-agent-model',
+        agentId,
+        requestId: 'req_subagent_agent_model',
+        timestamp: '2026-04-27T10:02:00.000Z',
+        sessionId: 'session-agent-model',
+        cwd: '/proj',
+        message: {
+          id: 'msg_subagent_agent_model',
+          model: 'claude-sonnet-4-6',
+          role: 'assistant',
+          usage: {
+            input_tokens: 1_000_000,
+            output_tokens: 1_000_000,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 1_000_000,
+            service_tier: 'standard',
+          },
+        },
+      }),
+    ].join('\n');
+
+    await writeFile(parentPath, parentContent, 'utf-8');
+    await writeFile(subPath, subContent, 'utf-8');
+
+    const store = new IndexStore();
+    await store.ingestFile(subPath);
+    await store.ingestFile(parentPath);
+
+    const subRow = [...(store.rows as Map<string, TokenRow>).values()].find(
+      (row) => row.isSubagent && row.sessionId === 'session-agent-model'
+    );
+    expect(subRow?.modelId).toBe('haiku');
+    expect(subRow?.modelFamily).toBe('haiku');
+    expect(subRow?.pricingStatus).toBe('catalog');
+    expect(subRow?.costUsd).toBeCloseTo(6.1, 10);
+
+    const haikuBucket = store
+      .getMetrics()
+      .bySubagent.find((bucket) => bucket.agentType === 'haiku');
+    expect(haikuBucket?.dispatches).toBe(1);
+    expect(haikuBucket?.totalCostUsd).toBeCloseTo(6.1, 10);
   });
 });
 

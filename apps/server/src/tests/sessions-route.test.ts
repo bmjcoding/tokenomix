@@ -26,7 +26,12 @@ import { EventEmitter } from 'node:events';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import type { SessionDetail, SessionSummary, TokenRow } from '@tokenomix/shared';
+import {
+  type SessionDetail,
+  type SessionSummary,
+  type TokenRow,
+  WEB_SEARCH_USD_PER_REQUEST,
+} from '@tokenomix/shared';
 import { Hono } from 'hono';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { IndexStore } from '../index-store.js';
@@ -292,11 +297,13 @@ describe('GET /api/sessions/:id — costBreakdown', () => {
         cacheCreation5m: 0,
         cacheCreation1h: 0,
         cacheReadTokens: 500,
-        costUsd: 0.004,
+        webSearchRequests: 2,
+        costUsd: 0.024,
         inputCostUsd: 0.003,
         outputCostUsd: 0.0006,
         cacheCreationCostUsd: 0,
         cacheReadCostUsd: 0.0004,
+        webSearchCostUsd: 2 * WEB_SEARCH_USD_PER_REQUEST,
       })
     );
 
@@ -350,18 +357,20 @@ describe('GET /api/sessions/:id — costBreakdown', () => {
     expect(body.costBreakdown).toBeDefined();
     expect(typeof body.costBreakdown).toBe('object');
 
-    // All four fields must be numeric.
+    // All component fields must be numeric.
     expect(typeof body.costBreakdown.input).toBe('number');
     expect(typeof body.costBreakdown.output).toBe('number');
     expect(typeof body.costBreakdown.cacheCreate).toBe('number');
     expect(typeof body.costBreakdown.cacheRead).toBe('number');
+    expect(typeof body.costBreakdown.webSearch).toBe('number');
 
     // The sum of per-component costs should approximately equal costUsd.
     const componentSum =
       body.costBreakdown.input +
       body.costBreakdown.output +
       body.costBreakdown.cacheCreate +
-      body.costBreakdown.cacheRead;
+      body.costBreakdown.cacheRead +
+      body.costBreakdown.webSearch;
     expect(componentSum).toBeCloseTo(body.costUsd, 4);
 
     // Verify expected accumulated values from our explicit fixtures.
@@ -369,6 +378,7 @@ describe('GET /api/sessions/:id — costBreakdown', () => {
     expect(body.costBreakdown.output).toBeCloseTo(0.0006 + 0.0003 + 0.0001, 6);
     expect(body.costBreakdown.cacheCreate).toBeCloseTo(0 + 0.0002 + 0, 6);
     expect(body.costBreakdown.cacheRead).toBeCloseTo(0.0004 + 0 + 0.0002, 6);
+    expect(body.costBreakdown.webSearch).toBeCloseTo(2 * WEB_SEARCH_USD_PER_REQUEST, 6);
   });
 
   it('costBreakdown is all zeros when rows have no priced cost components', async () => {
@@ -406,6 +416,7 @@ describe('GET /api/sessions/:id — costBreakdown', () => {
     expect(body.costBreakdown.output).toBe(0);
     expect(body.costBreakdown.cacheCreate).toBe(0);
     expect(body.costBreakdown.cacheRead).toBe(0);
+    expect(body.costBreakdown.webSearch).toBe(0);
   });
 });
 
@@ -531,6 +542,43 @@ describe('GET /api/sessions', () => {
     expect(body[1]?.sessionId).toBe('sess-mid');
     expect(body[2]?.sessionId).toBe('sess-cheap');
   });
+
+  it('marks a session summary as subagent when any row in the session is from a subagent', async () => {
+    const store = new IndexStore();
+    const rows = store.rows as Map<string, TokenRow>;
+
+    const sessionId = 'sess-mixed-subagent';
+    rows.set('req_main:msg_main', makeRow({ sessionId, costUsd: 0.001, isSubagent: false }));
+    rows.set('req_agent:msg_agent', makeRow({ sessionId, costUsd: 0.002, isSubagent: true }));
+
+    const app = buildSessionsApp(store);
+    const res = await app.request('/api/sessions');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as SessionSummary[];
+
+    const entry = body.find((s) => s.sessionId === sessionId);
+    expect(entry).toBeDefined();
+    expect(entry?.isSubagent).toBe(true);
+  });
+
+  it('clamps negative limit values instead of slicing from the end', async () => {
+    const store = new IndexStore();
+    const rows = store.rows as Map<string, TokenRow>;
+
+    rows.set('req_l1:msg_l1', makeRow({ sessionId: 'sess-limit-1', costUsd: 0.003 }));
+    rows.set('req_l2:msg_l2', makeRow({ sessionId: 'sess-limit-2', costUsd: 0.002 }));
+    rows.set('req_l3:msg_l3', makeRow({ sessionId: 'sess-limit-3', costUsd: 0.001 }));
+
+    const app = buildSessionsApp(store);
+    const res = await app.request('/api/sessions?limit=-5');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as SessionSummary[];
+
+    expect(body).toHaveLength(1);
+    expect(body[0]?.sessionId).toBe('sess-limit-1');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -563,7 +611,7 @@ async function writeTempJsonl(
       content: messageContent,
     },
   });
-  await fs.writeFile(tmpFile, event + '\n', 'utf-8');
+  await fs.writeFile(tmpFile, `${event}\n`, 'utf-8');
   tempFiles.push(tmpFile);
   return tmpFile;
 }
@@ -703,7 +751,7 @@ async function writeTempAssistantJsonl(sessionId: string, timestampIso: string):
       },
     },
   });
-  await fs.writeFile(tmpFile, event + '\n', 'utf-8');
+  await fs.writeFile(tmpFile, `${event}\n`, 'utf-8');
   tempFiles.push(tmpFile);
   return tmpFile;
 }
@@ -798,7 +846,7 @@ describe('GET /api/sessions — firstTs field', () => {
         },
       },
     });
-    await fs.writeFile(tmpFile, event1 + '\n' + event2 + '\n', 'utf-8');
+    await fs.writeFile(tmpFile, `${event1}\n${event2}\n`, 'utf-8');
     tempFiles.push(tmpFile);
 
     await store.ingestFile(tmpFile);

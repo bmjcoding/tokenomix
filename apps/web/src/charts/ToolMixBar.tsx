@@ -147,12 +147,14 @@ export function ToolMixBar({ data, height = 240 }: ToolMixBarProps) {
           labelLine: { show: false },
           emphasis: {
             scale: false,
-            focus: 'self',
+            // 'none' disables ECharts' built-in blur-out effect that dims all
+            // non-hovered slices to near-invisible opacity. The hovered slice
+            // gets a subtle 1px ring for perceptual feedback without shape disruption.
+            focus: 'none',
             itemStyle: {
-              shadowBlur: 8,
-              shadowColor: isDark ? 'oklch(0.10 0 0 / 60%)' : 'oklch(0.70 0 0 / 40%)',
-              borderColor: isDark ? 'oklch(0.24 0 0)' : 'oklch(0.87 0 0)',
+              shadowBlur: 0,
               borderWidth: 1,
+              borderColor: 'rgba(255,255,255,0.4)',
             },
           },
         },

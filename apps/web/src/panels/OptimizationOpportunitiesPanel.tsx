@@ -40,6 +40,9 @@ function confidenceLabel(confidence: number): string {
 export function OptimizationOpportunitiesPanel({ data }: OptimizationOpportunitiesPanelProps) {
   const opportunities = data.optimizationOpportunities;
 
+  // Non-additive scan metric: candidates can overlap, so this is not booked savings.
+  const listedImpact = opportunities.reduce((s, o) => s + o.impactUsd30d, 0);
+
   return (
     <Card as="section" className="p-0 overflow-hidden" aria-label="Optimization opportunities">
       <div className="px-5 py-4 border-b border-gray-200 dark:border-gray-800">
@@ -47,14 +50,16 @@ export function OptimizationOpportunitiesPanel({ data }: OptimizationOpportuniti
           <h2 className="text-base font-semibold text-gray-950 dark:text-white">
             Optimization Opportunities
           </h2>
-          {/* Badge precedes HelpTooltip so the tooltip's left-0 anchor sits further
-              from the viewport right edge, keeping the popover within the card. */}
           <div className="flex items-center gap-2">
-            <Badge variant="accent">{formatCurrency(data.costUsd30d)} 30d spend</Badge>
-            <HelpTooltip label="Explain optimization opportunity scoring">
+            {/* Only show the impact badge when there is a non-zero total to report. */}
+            {listedImpact > 0 && (
+              <Badge variant="accent">Listed impact {formatCurrency(listedImpact)}</Badge>
+            )}
+            <HelpTooltip label="Explain optimization opportunity scoring" align="right">
               Scores are deterministic rule weights from local session data, not LLM inference and
               not probabilities. Higher means the observed signal is cleaner and more directly tied
-              to the proposed experiment.
+              to the proposed experiment. Listed impact is non-additive because candidates can
+              overlap.
             </HelpTooltip>
           </div>
         </div>
@@ -71,8 +76,8 @@ export function OptimizationOpportunitiesPanel({ data }: OptimizationOpportuniti
             {/* Explicit column proportions prevent the AREA cell from overflowing
                 into adjacent columns on constrained viewport widths. */}
             <colgroup>
-              <col style={{ width: '20%' }} />
-              <col style={{ width: '50%' }} />
+              <col style={{ width: '15%' }} />
+              <col style={{ width: '55%' }} />
               <col style={{ width: '15%' }} />
               <col style={{ width: '15%' }} />
             </colgroup>
@@ -84,10 +89,10 @@ export function OptimizationOpportunitiesPanel({ data }: OptimizationOpportuniti
                 <th className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
                   Recommendation
                 </th>
-                <th className="px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                <th className="px-4 py-2.5 text-center text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
                   Impact
                 </th>
-                {/* Right-aligned to match the Impact column for visual symmetry. */}
+                {/* Right-aligned to match the Rule Score column for visual symmetry. */}
                 <th className="px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
                   Rule Score
                 </th>
@@ -99,30 +104,26 @@ export function OptimizationOpportunitiesPanel({ data }: OptimizationOpportuniti
                   key={opportunity.id}
                   className="border-b border-gray-100 dark:border-gray-800 align-top"
                 >
-                  {/* whitespace-nowrap removed so long titles wrap within the cell
-                      rather than pushing into the Recommendation column. */}
+                  {/* AREA cell: badge only — title moved to Recommendation column. */}
                   <td className="px-4 py-3">
-                    <div className="space-y-1">
-                      <Badge variant="default">{categoryLabel(opportunity.category)}</Badge>
-                      {/* break-words ensures single long words (e.g. project slugs)
-                          also wrap instead of overflowing. */}
-                      <p className="text-sm font-semibold text-gray-950 dark:text-white break-words whitespace-normal">
-                        {opportunity.title}
-                      </p>
-                    </div>
+                    <Badge variant="default">{categoryLabel(opportunity.category)}</Badge>
                   </td>
                   <td className="px-4 py-3">
-                    <p className="max-w-3xl text-sm text-gray-800 dark:text-gray-200">
+                    {/* Title sits above the recommendation text within the same cell. */}
+                    <p className="text-sm font-semibold text-gray-950 dark:text-white break-words whitespace-normal">
+                      {opportunity.title}
+                    </p>
+                    <p className="mt-1 max-w-3xl text-sm text-gray-800 dark:text-gray-200">
                       {opportunity.recommendation}
                     </p>
                     <p className="mt-1 max-w-3xl text-xs text-gray-500 dark:text-gray-400">
                       {opportunity.evidence}
                     </p>
                   </td>
-                  <td className="px-4 py-3 text-right font-semibold tabular-nums text-gray-950 dark:text-white whitespace-nowrap">
+                  <td className="px-4 py-3 text-center font-semibold tabular-nums text-gray-950 dark:text-white whitespace-nowrap">
                     {formatCurrency(opportunity.impactUsd30d)}
                   </td>
-                  {/* Right-aligned cell to match Impact column and header. */}
+                  {/* Right-aligned cell to match Rule Score header. */}
                   <td className="px-4 py-3 text-right whitespace-nowrap">
                     <Badge variant={opportunity.confidence >= 0.7 ? 'accent' : 'default'}>
                       {confidenceLabel(opportunity.confidence)} -{' '}

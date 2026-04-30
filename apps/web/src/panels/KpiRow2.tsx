@@ -43,6 +43,23 @@ import { Section } from '../ui/Section.js';
 import { MetricCard } from './MetricCard.js';
 
 // ---------------------------------------------------------------------------
+// Thresholds
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimum number of calls a tool must have before it is eligible to "win"
+ * the Worst Tool Error Rate card. Single-use tool failures (e.g. an MCP
+ * adapter invoked once that errored) would otherwise dominate the metric at
+ * 100%, which is statistically meaningless and operationally misleading.
+ *
+ * When no tool meets this threshold, the worst-tool card is intentionally
+ * hidden — this is NOT a render bug. Oncall: low-volume users may
+ * legitimately see fewer KPIs when all their tools have fewer than
+ * MIN_TOOL_CALLS_FOR_ERROR_RATE calls in the observed window.
+ */
+const MIN_TOOL_CALLS_FOR_ERROR_RATE = 10;
+
+// ---------------------------------------------------------------------------
 // KpiRow2
 // ---------------------------------------------------------------------------
 
@@ -64,11 +81,14 @@ export function KpiRow2({ data }: KpiRow2Props) {
   const costPerTurnDelta = pctDelta(data.avgCostPerTurn30d, data.avgCostPerTurnPrev30d);
 
   // ── Card 3 — Worst Tool Error (conditional) ───────────────────────────────
-  // Derive worst tool: sort byTool[] descending by errorRate, take the first.
-  // Render the card only when the worst tool's errorRate is > 0.
+  // Derive worst tool: filter to tools with enough calls to be statistically
+  // meaningful (MIN_TOOL_CALLS_FOR_ERROR_RATE), then sort descending by
+  // errorRate and take the first. When no tool qualifies, worstTool is
+  // undefined and showWorstToolCard below suppresses the card entirely.
+  const qualifiedTools = data.byTool.filter((t) => t.count >= MIN_TOOL_CALLS_FOR_ERROR_RATE);
   const worstTool =
-    data.byTool.length > 0
-      ? [...data.byTool].sort((a, b) => b.errorRate - a.errorRate)[0]
+    qualifiedTools.length > 0
+      ? [...qualifiedTools].sort((a, b) => b.errorRate - a.errorRate)[0]
       : undefined;
   const showWorstToolCard = worstTool !== undefined && worstTool.errorRate > 0;
 

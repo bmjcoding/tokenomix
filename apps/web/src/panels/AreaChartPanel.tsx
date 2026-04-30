@@ -21,7 +21,7 @@ import { Download, ExternalLink } from 'lucide-react';
 import { useState } from 'react';
 import { AreaChart, type AreaField } from '../charts/AreaChart.js';
 import { exportDailySeriesCsv } from '../lib/csvExport.js';
-import { getLast24hSeries, getYtdSeries } from '../lib/derive.js';
+import { getLast24hSeries, getTrailingDailySeries, getYtdSeries } from '../lib/derive.js';
 import { Button } from '../ui/Button.js';
 import { Card } from '../ui/Card.js';
 import { type DashboardPeriod, PeriodSwitcher } from './PeriodSwitcher.js';
@@ -75,9 +75,9 @@ function filterSeries(data: MetricSummary, period: DashboardPeriod): DailyBucket
     case '24h':
       return buildSyntheticDailyBuckets(data.heatmapData);
     case '7d':
-      return data.dailySeries.slice(-7);
+      return getTrailingDailySeries(data.dailySeries, 7);
     case '30d':
-      return data.dailySeries.slice(-30);
+      return getTrailingDailySeries(data.dailySeries, 30);
     case 'ytd':
       return getYtdSeries(data.dailySeries);
     default: {

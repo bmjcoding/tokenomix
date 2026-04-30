@@ -10,8 +10,20 @@ import {
   computeCacheEfficiency,
   computeDailyEfficiencySeries,
   getLast24hSeries,
+  getTrailingDailySeries,
   getYtdSeries,
 } from './derive.js';
+
+function dailyBucket(date: string, costUsd: number): DailyBucket {
+  return {
+    date,
+    costUsd,
+    inputTokens: costUsd * 100,
+    outputTokens: costUsd * 10,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 0,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // getLast24hSeries
@@ -103,6 +115,63 @@ describe('getLast24hSeries', () => {
     const points: HeatmapPoint[] = [{ date: '2026-04-27', hour: 3, costUsd: 0.5 }];
     const result = getLast24hSeries(points, new Date(2026, 3, 27, 3, 30));
     expect(result.at(-1)).toEqual({ date: '2026-04-27', hour: 3, costUsd: 0.5 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getTrailingDailySeries
+// ---------------------------------------------------------------------------
+
+describe('getTrailingDailySeries', () => {
+  const anchorNow = new Date(2026, 3, 30, 12, 30);
+
+  it('returns exactly one bucket per calendar day in the trailing window', () => {
+    const result = getTrailingDailySeries([dailyBucket('2026-04-30', 2)], 30, anchorNow);
+
+    expect(result).toHaveLength(30);
+    expect(result[0]?.date).toBe('2026-04-01');
+    expect(result.at(-1)?.date).toBe('2026-04-30');
+  });
+
+  it('fills missing calendar days with zero buckets', () => {
+    const result = getTrailingDailySeries(
+      [dailyBucket('2026-04-01', 1), dailyBucket('2026-04-30', 3)],
+      30,
+      anchorNow
+    );
+
+    expect(result[0]).toMatchObject({ date: '2026-04-01', costUsd: 1 });
+    expect(result[1]).toEqual({
+      date: '2026-04-02',
+      costUsd: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+    });
+    expect(result.at(-1)).toMatchObject({ date: '2026-04-30', costUsd: 3 });
+  });
+
+  it('does not pull older sparse buckets into fixed-day windows', () => {
+    const result = getTrailingDailySeries(
+      [
+        dailyBucket('2026-02-02', 99),
+        dailyBucket('2026-03-30', 88),
+        dailyBucket('2026-04-05', 5),
+        dailyBucket('2026-04-30', 30),
+      ],
+      30,
+      anchorNow
+    );
+
+    expect(result.map((bucket) => bucket.date)).not.toContain('2026-02-02');
+    expect(result.map((bucket) => bucket.date)).not.toContain('2026-03-30');
+    expect(result.find((bucket) => bucket.date === '2026-04-05')?.costUsd).toBe(5);
+    expect(result.at(-1)?.costUsd).toBe(30);
+  });
+
+  it('returns an empty array when no source buckets exist', () => {
+    expect(getTrailingDailySeries([], 30, anchorNow)).toEqual([]);
   });
 });
 

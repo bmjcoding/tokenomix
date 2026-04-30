@@ -14,9 +14,10 @@ import { useId } from 'react';
 interface HelpTooltipProps {
   label: string;
   children: ReactNode;
+  align?: 'left' | 'right';
 }
 
-export function HelpTooltip({ label, children }: HelpTooltipProps) {
+export function HelpTooltip({ label, children, align = 'left' }: HelpTooltipProps) {
   const id = useId();
 
   return (
@@ -39,11 +40,11 @@ export function HelpTooltip({ label, children }: HelpTooltipProps) {
         id={id}
         role="tooltip"
         className={[
-          'pointer-events-none absolute left-0 top-full z-50 mt-2 w-80 max-w-[calc(100vw-3rem)]',
+          `pointer-events-none absolute ${align === 'right' ? 'right-0' : 'left-0'} top-full z-50 mt-2 w-80 max-w-[min(20rem,calc(100vw-3rem))]`,
           'rounded-lg border border-gray-200 dark:border-gray-700',
           'bg-white dark:bg-gray-950 px-3 py-2 text-left',
           'text-xs font-normal normal-case leading-relaxed tracking-normal',
-          'text-gray-700 dark:text-gray-200 shadow-lg',
+          'text-gray-700 dark:text-gray-200 shadow-sm',
           'opacity-0 transition-opacity duration-150',
           'group-hover/help:opacity-100 group-focus-within/help:opacity-100',
         ].join(' ')}

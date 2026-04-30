@@ -241,6 +241,9 @@ function buildMetricSummaryFixture(overrides: Partial<MetricSummary> = {}): Metr
 // Inline derivation helpers (mirror KpiRow2.tsx exactly)
 // ---------------------------------------------------------------------------
 
+// Must stay in sync with the constant in KpiRow2.tsx.
+const MIN_TOOL_CALLS_FOR_ERROR_RATE = 10;
+
 function deriveCard1(data: MetricSummary) {
   return {
     value: new Intl.NumberFormat('en-US').format(data.totalProjectsTouched),
@@ -255,9 +258,14 @@ function deriveCard2(data: MetricSummary) {
 }
 
 function deriveWorstTool(data: MetricSummary) {
+  // Mirror KpiRow2.tsx: filter to tools with >= MIN_TOOL_CALLS_FOR_ERROR_RATE
+  // calls before sorting, so single-use failures can't dominate the metric.
+  const qualifiedTools = data.byTool.filter(
+    (t) => t.count >= MIN_TOOL_CALLS_FOR_ERROR_RATE,
+  );
   const worstTool =
-    data.byTool.length > 0
-      ? [...data.byTool].sort((a, b) => b.errorRate - a.errorRate)[0]
+    qualifiedTools.length > 0
+      ? [...qualifiedTools].sort((a, b) => b.errorRate - a.errorRate)[0]
       : undefined;
   const showWorstToolCard = worstTool !== undefined && worstTool.errorRate > 0;
   const sectionCols = showWorstToolCard ? 3 : 2;
@@ -400,5 +408,72 @@ describe('KpiRow2 — populated state (worst tool errorRate > 0)', () => {
     const { showWorstToolCard, worstToolValue } = deriveWorstTool(single);
     expect(showWorstToolCard).toBe(true);
     expect(worstToolValue).toBe('10.0%');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Min-call guard: tools with fewer than MIN_TOOL_CALLS_FOR_ERROR_RATE calls
+// must not win the worst-tool slot (single-use failure filtering).
+// ---------------------------------------------------------------------------
+
+describe('KpiRow2 — MIN_TOOL_CALLS_FOR_ERROR_RATE guard', () => {
+  it('hides worst-tool card when the only tool with errorRate>0 has too few calls', () => {
+    // mcp__claude-in-chrome__tabs_context_mcp used once and failed → 100% error rate.
+    // With only 1 call it must NOT show as worst tool.
+    const data = buildMetricSummaryFixture({
+      byTool: [
+        { toolName: 'mcp__claude-in-chrome__tabs_context_mcp', count: 1, errorCount: 1, errorRate: 1.0 },
+      ],
+    });
+    const { worstTool, showWorstToolCard } = deriveWorstTool(data);
+    expect(worstTool).toBeUndefined();
+    expect(showWorstToolCard).toBe(false);
+  });
+
+  it('hides worst-tool card when all tools are below the threshold', () => {
+    const data = buildMetricSummaryFixture({
+      byTool: [
+        { toolName: 'RareTool', count: 5, errorCount: 5, errorRate: 1.0 },
+        { toolName: 'AnotherRare', count: 3, errorCount: 3, errorRate: 1.0 },
+      ],
+    });
+    const { worstTool, showWorstToolCard } = deriveWorstTool(data);
+    expect(worstTool).toBeUndefined();
+    expect(showWorstToolCard).toBe(false);
+  });
+
+  it('selects only from tools that meet the threshold when some are below it', () => {
+    // RareTool has 100% error rate but only 1 call — filtered out.
+    // Bash has 20% error rate and 50 calls — passes filter and wins the slot.
+    const data = buildMetricSummaryFixture({
+      byTool: [
+        { toolName: 'RareTool', count: 1, errorCount: 1, errorRate: 1.0 },
+        { toolName: 'Bash', count: 50, errorCount: 10, errorRate: 0.2 },
+      ],
+    });
+    const { worstTool, showWorstToolCard, worstToolValue } = deriveWorstTool(data);
+    expect(worstTool?.toolName).toBe('Bash');
+    expect(showWorstToolCard).toBe(true);
+    expect(worstToolValue).toBe('20.0%');
+  });
+
+  it('shows card when exactly MIN_TOOL_CALLS_FOR_ERROR_RATE calls are present', () => {
+    const data = buildMetricSummaryFixture({
+      byTool: [
+        { toolName: 'Edit', count: MIN_TOOL_CALLS_FOR_ERROR_RATE, errorCount: 1, errorRate: 0.1 },
+      ],
+    });
+    const { showWorstToolCard } = deriveWorstTool(data);
+    expect(showWorstToolCard).toBe(true);
+  });
+
+  it('hides card when one below threshold call exists (count = MIN - 1)', () => {
+    const data = buildMetricSummaryFixture({
+      byTool: [
+        { toolName: 'Edit', count: MIN_TOOL_CALLS_FOR_ERROR_RATE - 1, errorCount: 1, errorRate: 0.1 },
+      ],
+    });
+    const { worstTool } = deriveWorstTool(data);
+    expect(worstTool).toBeUndefined();
   });
 });

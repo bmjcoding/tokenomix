@@ -28,6 +28,17 @@ function toLocalDateKey(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
+function emptyDailyBucket(date: string): DailyBucket {
+  return {
+    date,
+    costUsd: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 0,
+  };
+}
+
 /**
  * Returns local hourly boundary buckets spanning the last 24 hours.
  *
@@ -65,6 +76,40 @@ export function getLast24hSeries(
     });
   }
   return series;
+}
+
+// ---------------------------------------------------------------------------
+// Trailing day series
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns one bucket per local calendar day for a trailing fixed-day window.
+ *
+ * MetricSummary.dailySeries is intentionally sparse: it only contains days with
+ * usage. Fixed dashboard windows such as 7D and 30D need calendar-day windows,
+ * so missing days are represented as zero-valued buckets instead of allowing
+ * the chart to drift back to older non-empty dates.
+ */
+export function getTrailingDailySeries(
+  dailySeries: DailyBucket[],
+  days: number,
+  now = new Date()
+): DailyBucket[] {
+  if (days <= 0 || dailySeries.length === 0) return [];
+
+  const bucketsByDate = new Map(dailySeries.map((bucket) => [bucket.date, bucket]));
+  const end = new Date(now.getTime());
+  end.setHours(0, 0, 0, 0);
+
+  const result: DailyBucket[] = [];
+  for (let offset = days - 1; offset >= 0; offset--) {
+    const bucketDate = new Date(end.getTime());
+    bucketDate.setDate(end.getDate() - offset);
+    const dateKey = toLocalDateKey(bucketDate);
+    result.push(bucketsByDate.get(dateKey) ?? emptyDailyBucket(dateKey));
+  }
+
+  return result;
 }
 
 // ---------------------------------------------------------------------------
