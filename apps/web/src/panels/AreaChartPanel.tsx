@@ -18,7 +18,7 @@
 import { Link } from '@tanstack/react-router';
 import type { DailyBucket, MetricSummary } from '@tokenomix/shared';
 import { Download, ExternalLink } from 'lucide-react';
-import { Fragment, useState } from 'react';
+import { Fragment, useRef, useState } from 'react';
 import { AreaChart, type AreaField } from '../charts/AreaChart.js';
 import { exportDailySeriesCsv } from '../lib/csvExport.js';
 import { getLast24hSeries, getTrailingDailySeries, getYtdSeries } from '../lib/derive.js';
@@ -104,6 +104,39 @@ interface AreaChartPanelProps {
 
 export function AreaChartPanel({ data, period, onPeriodChange }: AreaChartPanelProps) {
   const [field, setField] = useState<AreaField>('costUsd');
+  const fieldButtonRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
+
+  const handleFieldKeyDown = (
+    event: React.KeyboardEvent<HTMLButtonElement>,
+    currentIdx: number
+  ) => {
+    const last = FIELD_OPTIONS.length - 1;
+    let nextIdx: number | null = null;
+    switch (event.key) {
+      case 'ArrowRight':
+      case 'ArrowDown':
+        nextIdx = currentIdx === last ? 0 : currentIdx + 1;
+        break;
+      case 'ArrowLeft':
+      case 'ArrowUp':
+        nextIdx = currentIdx === 0 ? last : currentIdx - 1;
+        break;
+      case 'Home':
+        nextIdx = 0;
+        break;
+      case 'End':
+        nextIdx = last;
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+    const nextOpt = FIELD_OPTIONS[nextIdx];
+    if (nextOpt) {
+      setField(nextOpt.value);
+      fieldButtonRefs.current.get(nextOpt.value)?.focus();
+    }
+  };
 
   const filteredSeries = filterSeries(data, period);
   const isEmpty = period === '24h' ? data.heatmapData.length === 0 : data.dailySeries.length === 0;
@@ -167,9 +200,8 @@ export function AreaChartPanel({ data, period, onPeriodChange }: AreaChartPanelP
 
       {/* ── Field toggle ────────────────────────────────────────────────────── */}
       <div className="mb-3">
-        {/* biome-ignore lint/a11y/useSemanticElements: segmented UI control matches PeriodSwitcher; <fieldset> imposes default form styling */}
         <div
-          role="group"
+          role="radiogroup"
           aria-label="Data field"
           className="inline-flex items-center rounded-lg bg-gray-100 p-0.5 dark:bg-gray-800"
         >
@@ -179,10 +211,21 @@ export function AreaChartPanel({ data, period, onPeriodChange }: AreaChartPanelP
             const showDivider = next !== undefined && !active && next.value !== field;
             return (
               <Fragment key={opt.value}>
+                {/* biome-ignore lint/a11y/useSemanticElements: roving-tabindex radio group — <input type="radio"> requires a <form>/<fieldset> and resets pill styling; <button role="radio"> is the standard APG pattern for custom segmented controls */}
                 <button
                   type="button"
-                  aria-pressed={active}
+                  role="radio"
+                  aria-checked={active}
+                  tabIndex={active ? 0 : -1}
                   onClick={() => setField(opt.value)}
+                  onKeyDown={(e) => handleFieldKeyDown(e, idx)}
+                  ref={(el) => {
+                    if (el) {
+                      fieldButtonRefs.current.set(opt.value, el);
+                    } else {
+                      fieldButtonRefs.current.delete(opt.value);
+                    }
+                  }}
                   className={[
                     'rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
                     active

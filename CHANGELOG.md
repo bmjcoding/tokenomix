@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.7.2] - 2026-04-30
+
+### Changed
+
+- Segmented toggles (period switcher and Cost/Input/Output field toggle) migrated from `role="group"` + `aria-pressed` to the WAI-ARIA APG radio-group pattern: `role="radiogroup"` outer + `role="radio"` inner with `aria-checked`, roving tabindex, and full keyboard navigation (ArrowLeft/Right/Up/Down, Home, End). Active option remains visually unchanged. (`apps/web/src/panels/PeriodSwitcher.tsx`, `apps/web/src/panels/AreaChartPanel.tsx`)
+
 ## [3.7.1] - 2026-04-30
 
 ### Changed
@@ -564,7 +570,8 @@ Internal cross-references updated:
 - `DEFAULT_OUTPUT` now points to `output/usage-dashboard.html` within the
   project, instead of a session-specific retro directory.
 
-[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.7.1...HEAD
+[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.7.2...HEAD
+[3.7.2]: https://github.com/bmjcoding/tokenomix/compare/v3.7.1...v3.7.2
 [3.7.1]: https://github.com/bmjcoding/tokenomix/compare/v3.7.0...v3.7.1
 [3.7.0]: https://github.com/bmjcoding/tokenomix/compare/v3.6.0...v3.7.0
 [3.6.0]: https://github.com/bmjcoding/tokenomix/compare/v3.5.0...v3.6.0
