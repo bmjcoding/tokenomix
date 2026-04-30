@@ -8,7 +8,7 @@
 import { useQuery } from '@tanstack/react-query';
 import type { RecommendationChatMessage } from '@tokenomix/shared';
 import { AlertCircle, Bot, Loader2, Send, Sparkles, X } from 'lucide-react';
-import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { fetchRecommendationChatStatus, streamRecommendationChat } from '../lib/api.js';
@@ -48,25 +48,40 @@ const markdownPlugins = [remarkGfm];
 
 const markdownComponents: Components = {
   h1({ node: _node, ...props }) {
-    return <h3 className="mb-2 text-base font-semibold leading-6 text-gray-100" {...props} />;
+    return (
+      <h3
+        className="mb-2 text-base font-semibold leading-6 text-gray-900 dark:text-gray-100"
+        {...props}
+      />
+    );
   },
   h2({ node: _node, ...props }) {
-    return <h3 className="mb-2 text-base font-semibold leading-6 text-gray-100" {...props} />;
+    return (
+      <h3
+        className="mb-2 text-base font-semibold leading-6 text-gray-900 dark:text-gray-100"
+        {...props}
+      />
+    );
   },
   h3({ node: _node, ...props }) {
-    return <h3 className="mb-2 text-sm font-semibold leading-6 text-gray-100" {...props} />;
+    return (
+      <h3
+        className="mb-2 text-sm font-semibold leading-6 text-gray-900 dark:text-gray-100"
+        {...props}
+      />
+    );
   },
   p({ node: _node, ...props }) {
     return <p className="mb-3 last:mb-0" {...props} />;
   },
   strong({ node: _node, ...props }) {
-    return <strong className="font-semibold text-gray-100" {...props} />;
+    return <strong className="font-semibold text-gray-900 dark:text-gray-100" {...props} />;
   },
   code({ node: _node, className, ...props }) {
     return (
       <code
         className={cx(
-          'rounded bg-black/40 px-1 py-0.5 font-mono text-[0.85em] text-gray-100',
+          'rounded bg-gray-100 dark:bg-black/40 px-1 py-0.5 font-mono text-[0.85em] text-gray-900 dark:text-gray-100',
           className
         )}
         {...props}
@@ -76,7 +91,7 @@ const markdownComponents: Components = {
   pre({ node: _node, ...props }) {
     return (
       <pre
-        className="mb-3 overflow-x-auto rounded-lg border border-black/60 bg-black/40 p-3 text-xs leading-5"
+        className="mb-3 overflow-x-auto rounded-lg border border-gray-300 dark:border-black/60 bg-gray-100 dark:bg-black/40 p-3 text-xs leading-5"
         {...props}
       />
     );
@@ -89,7 +104,7 @@ const markdownComponents: Components = {
   },
   table({ node: _node, ...props }) {
     return (
-      <div className="mb-3 overflow-x-auto rounded-lg border border-black/60 last:mb-0">
+      <div className="mb-3 overflow-x-auto rounded-lg border border-gray-300 dark:border-black/60 last:mb-0">
         <table className="min-w-full border-collapse text-left text-xs" {...props} />
       </div>
     );
@@ -97,13 +112,18 @@ const markdownComponents: Components = {
   th({ node: _node, ...props }) {
     return (
       <th
-        className="border-b border-black/60 bg-black/30 px-2 py-1.5 font-semibold text-gray-100"
+        className="border-b border-gray-300 dark:border-black/60 bg-gray-200 dark:bg-black/30 px-2 py-1.5 font-semibold text-gray-900 dark:text-gray-100"
         {...props}
       />
     );
   },
   td({ node: _node, ...props }) {
-    return <td className="border-b border-black/40 px-2 py-1.5 last:border-b-0" {...props} />;
+    return (
+      <td
+        className="border-b border-gray-200 dark:border-black/40 px-2 py-1.5 last:border-b-0"
+        {...props}
+      />
+    );
   },
   a({ node: _node, ...props }) {
     return (
@@ -131,6 +151,18 @@ export function RecommendationChatPanel() {
   const [isOpen, setIsOpen] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const messageListRef = useRef<HTMLDivElement | null>(null);
+  const [thinkingElapsedSeconds, setThinkingElapsedSeconds] = useState<number | null>(null);
+  const thinkingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const clearThinkingTimer = useCallback(() => {
+    if (thinkingIntervalRef.current) {
+      clearInterval(thinkingIntervalRef.current);
+      thinkingIntervalRef.current = null;
+    }
+    setThinkingElapsedSeconds(null);
+  }, []);
+
+  useEffect(() => () => clearThinkingTimer(), [clearThinkingTimer]);
 
   const statusQuery = useQuery({
     queryKey: queryKeys.recommendationChatStatus(),
@@ -142,7 +174,6 @@ export function RecommendationChatPanel() {
   const canSubmit = useMemo(() => {
     return draft.trim().length > 0 && statusQuery.data?.available === true && !isSending;
   }, [draft, statusQuery.data?.available, isSending]);
-  const hasDraft = draft.trim().length > 0;
   const scrollSignal = messages.map((message) => message.content.length).join(':');
 
   useEffect(() => {
@@ -169,7 +200,15 @@ export function RecommendationChatPanel() {
     void streamRecommendationChat(
       { message },
       {
+        onStart: () => {
+          clearThinkingTimer();
+          setThinkingElapsedSeconds(0);
+          thinkingIntervalRef.current = setInterval(() => {
+            setThinkingElapsedSeconds((prev) => (prev === null ? 0 : prev + 1));
+          }, 1000);
+        },
         onDelta: (text) => {
+          clearThinkingTimer();
           setMessages((current) =>
             current.map((entry) =>
               entry.id === assistantId ? { ...entry, content: entry.content + text } : entry
@@ -177,6 +216,7 @@ export function RecommendationChatPanel() {
           );
         },
         onDone: (response) => {
+          clearThinkingTimer();
           setMessages((current) =>
             current.map((entry) =>
               entry.id === assistantId
@@ -193,6 +233,7 @@ export function RecommendationChatPanel() {
           setIsSending(false);
         },
         onError: (error) => {
+          clearThinkingTimer();
           setMessages((current) =>
             current.map((entry) =>
               entry.id === assistantId
@@ -204,6 +245,7 @@ export function RecommendationChatPanel() {
         },
       }
     ).catch((error) => {
+      clearThinkingTimer();
       setMessages((current) =>
         current.map((entry) =>
           entry.id === assistantId
@@ -219,27 +261,29 @@ export function RecommendationChatPanel() {
   }
 
   return (
-    <div className="fixed bottom-6 right-6 z-[70] flex flex-col items-end gap-3">
+    <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-3">
       {isOpen && (
         <section
-          className="w-[calc(100vw-2rem)] max-w-[440px] overflow-hidden rounded-2xl border border-black/80 bg-gray-900/50 shadow-2xl backdrop-blur-sm dark"
+          className="w-[calc(100vw-2rem)] max-w-[440px] overflow-hidden rounded-2xl border border-gray-200 dark:border-black/80 bg-white/95 dark:bg-gray-900/50 shadow-sm backdrop-blur-sm"
           aria-label="Recommendation chat"
         >
-          <div className="px-4 py-3 border-b border-black/80">
+          <div className="px-4 py-3 border-b border-gray-200 dark:border-black/80">
             <div className="flex items-center justify-between gap-3">
               <div className="flex min-w-0 items-center gap-2">
                 <Bot size={16} aria-hidden="true" className="text-gray-500 dark:text-gray-400" />
-                <h2 className="truncate text-sm font-semibold text-white">Assistant</h2>
+                <h2 className="truncate text-sm font-semibold text-gray-900 dark:text-white">
+                  Assistant
+                </h2>
               </div>
               <div className="flex items-center gap-2">
-                <span className="inline-flex items-center rounded-full border border-black/80 bg-black/30 px-2 py-0.5 text-xs font-medium text-primary-light">
+                <span className="inline-flex items-center rounded-full border border-gray-200 dark:border-black/80 bg-gray-100 dark:bg-black/30 px-2 py-0.5 text-xs font-medium text-primary dark:text-primary-light">
                   {statusQuery.isLoading ? 'Checking' : statusLabel(statusQuery.data?.available)}
                 </span>
                 <button
                   type="button"
                   onClick={() => setIsOpen(false)}
                   aria-label="Close AI chat"
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-gray-400 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 dark:focus-visible:ring-white"
                 >
                   <X size={16} aria-hidden="true" />
                 </button>
@@ -259,7 +303,7 @@ export function RecommendationChatPanel() {
 
             <div
               ref={messageListRef}
-              className="h-[min(420px,calc(100vh-13rem))] min-h-64 overflow-y-auto overscroll-contain rounded-lg border border-black/80 bg-black/50"
+              className="h-[min(420px,calc(100vh-13rem))] min-h-64 overflow-y-auto overscroll-contain rounded-lg border border-gray-200 dark:border-black/80 bg-gray-50 dark:bg-black/50"
             >
               {messages.length === 0 ? (
                 <div className="flex h-full items-center justify-center px-4 text-center text-sm text-gray-500 dark:text-gray-500">
@@ -288,13 +332,18 @@ export function RecommendationChatPanel() {
                         ) : message.role === 'assistant' ? (
                           <span className="inline-flex items-center gap-2 text-gray-500 dark:text-gray-400">
                             <Loader2 size={14} aria-hidden="true" className="animate-spin" />
-                            Thinking...
+                            <span>Thinking…</span>
+                            {thinkingElapsedSeconds !== null && (
+                              <span className="tabular-nums" aria-live="polite">
+                                {thinkingElapsedSeconds}s
+                              </span>
+                            )}
                           </span>
                         ) : (
                           message.content
                         )}
                         {message.role === 'assistant' && message.warning && (
-                          <div className="mt-2 rounded-md bg-amber-500/10 px-2 py-1 text-xs leading-5 text-amber-700 dark:text-amber-300">
+                          <div className="mt-2 rounded-lg bg-amber-100 dark:bg-amber-500/10 px-2 py-1 text-xs leading-5 text-amber-700 dark:text-amber-300">
                             {message.warning}
                           </div>
                         )}
@@ -340,10 +389,8 @@ export function RecommendationChatPanel() {
                   'inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-lg transition-colors',
                   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-light',
                   canSubmit
-                    ? 'text-white hover:text-primary-light'
-                    : hasDraft || isSending
-                      ? 'text-white'
-                      : 'cursor-not-allowed text-gray-600'
+                    ? 'bg-primary text-white hover:bg-primary-dark dark:bg-primary-light dark:text-gray-950 dark:hover:bg-primary'
+                    : 'bg-gray-200 text-gray-500 dark:bg-gray-800 dark:text-gray-600 cursor-not-allowed'
                 )}
               >
                 {isSending ? (
@@ -364,7 +411,7 @@ export function RecommendationChatPanel() {
         className={[
           'inline-flex h-10 items-center gap-2 rounded-xl px-3',
           'border border-gray-200 dark:border-white/10 bg-white dark:bg-black/35 text-gray-700 dark:text-gray-400',
-          'shadow-lg backdrop-blur-md transition-colors',
+          'shadow-sm backdrop-blur-md transition-colors',
           'hover:bg-gray-50 hover:border-gray-300 hover:text-gray-900 dark:hover:bg-white/[0.06] dark:hover:border-white/20 dark:hover:text-gray-100',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 dark:focus-visible:ring-white/70 focus-visible:ring-offset-2',
         ].join(' ')}

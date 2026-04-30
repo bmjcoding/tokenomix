@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.7.0] - 2026-04-30
+
+### Added
+
+- Recommendation chat now displays an elapsed-seconds counter while waiting for the first response token (e.g., "Thinking… 12s") so the ~30 s Claude Code spawn and first-API-call latency feels accountable instead of frozen. The counter starts when the server emits its `start` SSE event, increments every second, and clears the moment the first delta arrives, the stream completes, the request errors or aborts, or the panel unmounts. Uses `aria-live="polite"` and `tabular-nums` for accessible, layout-stable updates. (`apps/web/src/panels/RecommendationChatPanel.tsx`)
+
+### Fixed
+
+- Ask AI popout now renders correctly in light mode: chat window, message list, markdown prose, and send button all use proper light/dark token pairs instead of hardcoded dark-only values; send button background and text are visible on a white surface.
+- Spend-over-time chart: increased `grid.left` so the first x-axis date tick no longer collides with y-axis labels.
+- Donut card legend pills (model mix and tools breakdown) are now horizontally centered via `justify-center` on the legend list.
+- Removed the redundant "Listed impact $X.XX" summary Badge row that appeared above the Optimization Opportunities table headers.
+
+### Changed
+
+- Period switcher (24HR / 7D / 30D / YTD) is now a single segmented-pill control using design tokens (`bg-primary` / `bg-primary-light`) for the active segment, replacing four separate Button instances.
+- Period label renamed from "24Hr" to "24HR" for consistent capitalisation.
+- Raised the default chat budget cap (`TOKENOMIX_CLAUDE_CHAT_MAX_BUDGET_USD`) from `0.05` to `0.15` so typical first-turn answers no longer trip the "Claude Code reached the configured chat budget cap" warning. Existing env-var override behaviour is unchanged. (`apps/server/src/routes/recommendations-chat.ts`, `README.md`)
+
 ## [3.6.0] - 2026-04-30
 
 ### Added
