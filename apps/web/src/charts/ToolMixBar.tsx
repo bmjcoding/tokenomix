@@ -145,22 +145,19 @@ export function ToolMixBar({ data, height = 240 }: ToolMixBarProps) {
           data: coloredSlices,
           label: { show: false },
           labelLine: { show: false },
-          emphasis: {
-            scale: false,
-            // 'none' disables ECharts' built-in blur-out effect that dims all
-            // non-hovered slices to near-invisible opacity. The hovered slice
-            // gets a subtle 1px ring for perceptual feedback without shape disruption.
-            focus: 'none',
-            itemStyle: {
-              shadowBlur: 0,
-              borderWidth: 1,
-              borderColor: 'rgba(255,255,255,0.4)',
-            },
+          // emphasis.disabled: completely turns off ECharts' default hover emphasis,
+          // which (despite focus:'none') was still fading non-hovered slices to near-zero
+          // opacity in ECharts 6. The tooltip (top-level config) still fires on hover.
+          emphasis: { disabled: true },
+          // blur defensively forces all non-hovered slices to keep their original color
+          // at full opacity if any future config change re-enables emphasis behavior.
+          blur: {
+            itemStyle: { opacity: 1 },
           },
         },
       ],
     };
   }, [data, isDark]);
 
-  return <ReactECharts option={option} style={{ height: `${height}px`, width: '100%' }} />;
+  return <ReactECharts option={option} style={{ height: `${height}px`, width: '100%' }} notMerge />;
 }

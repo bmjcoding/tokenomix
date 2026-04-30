@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.4.1] - 2026-04-30
+
+### Fixed
+
+- Donut charts (Model Mix, Tool Use Breakdown) no longer flicker on hover; added `notMerge` to ECharts components.
+- Heatmap tooltip now uses canonical white/gray-950 surface tokens instead of the inverted dark-in-light scheme.
+- Spend-over-time x-axis date labels no longer clip against the y-axis or chart edge.
+- "Ask AI" button and modal now have proper light-mode styling; modal scoped via `.dark` to preserve dark aesthetic, trigger button has paired light/dark classes.
+- Dark mode toggle now has sufficient contrast in dark mode (gray-700 surface, explicit icon color).
+- Optimization Opportunities table replaced category pill badges with plain uppercase labels for cleaner appearance.
+- Page scroll no longer requires double-swipe; removed `html` from the `overflow-x: hidden` selector.
+- Donut chart slices no longer fade out on hover; replaced `emphasis.focus:'none'` (ineffective in ECharts 6) with `emphasis.disabled:true` plus a defensive `blur.itemStyle.opacity:1`.
+- Spend over time x-axis rightmost date label (e.g. `04-29`) no longer truncates; widened `grid.right` from 12 to 24 and removed `axisLabel.overflow:'truncate'`.
+- Optimization Opportunities table rows are now vertically centered; AREA column header and cells are horizontally centered.
+- "Listed impact" badge repositioned to a centered row above the IMPACT column (was right-aligned in the panel header next to the title).
+- "Rule Score" column header now displays the help tooltip inline (was floating in the panel header).
+- Spend over time leftmost x-axis label fully clears the y-axis tick labels (was still bleeding at 24 px).
+
+### Changed
+
+- Recommendation chat trigger button focus ring is now paired across light and dark modes (was dark-only).
+- Recommendation chat status dot uses `bg-amber-500` in light mode for better legibility (was amber-300 only).
+
 ## [3.4.0] - 2026-04-29
 
 ### Added
@@ -459,7 +482,8 @@ Internal cross-references updated:
 - `DEFAULT_OUTPUT` now points to `output/usage-dashboard.html` within the
   project, instead of a session-specific retro directory.
 
-[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.4.0...HEAD
+[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.4.1...HEAD
+[3.4.1]: https://github.com/bmjcoding/tokenomix/compare/v3.4.0...v3.4.1
 [3.4.0]: https://github.com/bmjcoding/tokenomix/compare/v3.3.0...v3.4.0
 [3.3.0]: https://github.com/bmjcoding/tokenomix/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/bmjcoding/tokenomix/compare/v3.1.0...v3.2.0

@@ -84,10 +84,10 @@ export function AreaChart({ data, field, height = 220, xAxisLabelFormat }: AreaC
         textStyle: { color: base.textStyle.color },
       },
       grid: {
-        left: 4,
-        right: 8,
+        left: 48,
+        right: 24,
         top: 8,
-        bottom: 24,
+        bottom: 32,
         containLabel: true,
       },
       xAxis: {
@@ -99,8 +99,11 @@ export function AreaChart({ data, field, height = 220, xAxisLabelFormat }: AreaC
         axisLabel: {
           color: muted,
           fontSize: 11,
+          // interval is a fallback; hideOverlap (below) is authoritative when set
           interval: Math.max(0, Math.floor(dates.length / 6) - 1),
           formatter: xAxisLabelFormat ?? ((val: string) => val.slice(5)), // MM-DD default
+          hideOverlap: true,
+          margin: 6,
         },
         splitLine: { show: false },
       },

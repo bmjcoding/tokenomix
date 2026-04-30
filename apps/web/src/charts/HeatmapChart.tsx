@@ -417,7 +417,7 @@ export function HeatmapChart({ data, height = 200 }: HeatmapChartProps) {
                 <div
                   role="tooltip"
                   aria-live="polite"
-                  className="pointer-events-none absolute z-10 px-2 py-1 rounded-lg text-xs font-medium bg-gray-900 dark:bg-gray-50 text-gray-50 dark:text-gray-900 shadow-sm whitespace-nowrap"
+                  className="pointer-events-none absolute z-10 px-2 py-1 rounded-lg text-xs font-medium bg-white dark:bg-gray-950 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-200 shadow-sm whitespace-nowrap"
                   style={tooltipStyle}
                 >
                   {DAY_LABELS[tooltip.dayOfWeek]} {ALL_HOUR_LABELS[tooltip.hour]}: $
