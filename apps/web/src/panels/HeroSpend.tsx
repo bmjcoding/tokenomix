@@ -32,19 +32,11 @@ import {
   FileSearch,
 } from 'lucide-react';
 import { Card } from '../ui/Card.js';
+import { FlipNumber } from '../ui/FlipNumber.js';
 
 // ---------------------------------------------------------------------------
 // Formatting helpers
 // ---------------------------------------------------------------------------
-
-function formatCostUsd(n: number): string {
-  return n.toLocaleString('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-}
 
 function formatInt(value: number): string {
   return value.toLocaleString('en-US');
@@ -231,13 +223,9 @@ export function HeroSpend({ data }: HeroSpendProps) {
   const current = data.monthlyRollup.current;
   const previous = data.monthlyRollup.previous;
 
-  const formattedCost = formatCostUsd(current.costUsd);
   const cacheCost30d =
     data.costComponents30d.cacheCreationCostUsd + data.costComponents30d.cacheReadCostUsd;
   const cacheShare30d = data.costUsd30d > 0 ? (cacheCost30d / data.costUsd30d) * 100 : 0;
-
-  // Full locale-grouped MTD token count — no abbreviation (e.g. "28,478,431").
-  const formattedTokensMtdFull = current.totalTokens.toLocaleString('en-US');
 
   return (
     <Card as="section" aria-label="Current spend month to date" className="p-6">
@@ -252,9 +240,11 @@ export function HeroSpend({ data }: HeroSpendProps) {
 
           {/* Hero number + inline warning icon */}
           <div className="flex items-start gap-0 mb-3">
-            <p className="text-5xl font-bold tracking-tight tabular-nums text-gray-950 dark:text-white">
-              {formattedCost}
-            </p>
+            <FlipNumber
+              value={current.costUsd}
+              format={{ style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }}
+              className="text-5xl font-bold tracking-tight tabular-nums text-gray-950 dark:text-white"
+            />
             <DataQualityTooltip
               pricingAudit={data.pricingAudit}
               ingestionAudit={data.ingestionAudit}
@@ -297,12 +287,11 @@ export function HeroSpend({ data }: HeroSpendProps) {
                 aria-hidden="true"
                 className="text-gray-300 dark:text-gray-700 shrink-0 self-center"
               />
-              <p
+              <FlipNumber
+                value={current.totalTokens}
                 aria-hidden="true"
                 className="text-6xl sm:text-7xl lg:text-8xl font-bold leading-none tracking-tight tabular-nums text-gray-200 dark:text-gray-800"
-              >
-                {formattedTokensMtdFull}
-              </p>
+              />
             </div>
             <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
               input + output, this month
