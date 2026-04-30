@@ -84,7 +84,7 @@ export function AreaChart({ data, field, height = 220, xAxisLabelFormat }: AreaC
         textStyle: { color: base.textStyle.color },
       },
       grid: {
-        left: 24,
+        left: 48,
         right: 24,
         top: 8,
         bottom: 32,

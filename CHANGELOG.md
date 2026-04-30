@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optimization Opportunities table rows are now vertically centered; AREA column header and cells are horizontally centered.
 - "Listed impact" badge repositioned to a centered row above the IMPACT column (was right-aligned in the panel header next to the title).
 - "Rule Score" column header now displays the help tooltip inline (was floating in the panel header).
-- Spend over time chart leftmost x-axis date no longer overlaps the y-axis tick labels.
+- Spend over time leftmost x-axis label fully clears the y-axis tick labels (was still bleeding at 24 px).
 
 ### Changed
 
