@@ -67,7 +67,6 @@ export type {
   CacheCreation,
   CostComponentSummary,
   DailyBucket,
-  FileTouchBucket,
   HeatmapPoint,
   IngestionAuditSummary,
   // Metrics response
@@ -89,10 +88,6 @@ export type {
   RecommendationChatRequest,
   RecommendationChatResponse,
   RecommendationChatStatus,
-  RetroForecastPoint,
-  // Retro stubs
-  RetroRollup,
-  RetroTimelinePoint,
   ServerToolUse,
   SessionBucket,
   // Session detail

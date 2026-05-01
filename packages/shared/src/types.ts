@@ -489,19 +489,6 @@ export interface TurnBucket {
   durationMs: number | null;
 }
 
-/**
- * Per-file-path touch count (how many turns touched the file).
- * Defined for future downstream consumers; NOT included in MetricSummary
- * (see REVISION 2026-04-28: topFiles removed from MetricSummary).
- * Export this type so frontend panels can import it when needed.
- */
-export interface FileTouchBucket {
-  /** Absolute or relative file path as emitted by the tool_use event. */
-  path: string;
-  /** Number of distinct turns that included this path in their filesTouched array. */
-  touches: number;
-}
-
 // ---------------------------------------------------------------------------
 // Session summary (for /api/sessions)
 // ---------------------------------------------------------------------------
@@ -660,30 +647,6 @@ export interface SessionDetail {
 }
 
 // ---------------------------------------------------------------------------
-// Retro forward-compatibility stubs (v1 server returns null / [])
-// ---------------------------------------------------------------------------
-
-/** Minimal retro rollup shape. Server returns null in v1. */
-export interface RetroRollup {
-  totalCostUsd: number;
-}
-
-/** Retro timeline point. Server returns [] in v1. */
-export interface RetroTimelinePoint {
-  /** YYYY-MM-DD */
-  date: string;
-  costUsd: number;
-}
-
-/** Retro forecast point. Server returns [] in v1. */
-export interface RetroForecastPoint {
-  /** YYYY-MM-DD */
-  date: string;
-  costUsd: number;
-  confidence: number;
-}
-
-// ---------------------------------------------------------------------------
 // Period rollup types (calendar-period KPI comparisons)
 // ---------------------------------------------------------------------------
 
@@ -828,7 +791,7 @@ export interface MetricSummary {
    * 0 when no tool_use events with file_path have been ingested.
    *
    * NOTE: topFiles (top-N paths by touch count) is intentionally NOT included
-   * here — it has no current frontend consumer. Use FileTouchBucket if needed.
+   * here — it has no current frontend consumer.
    */
   totalFilesTouched: number;
 
@@ -962,11 +925,6 @@ export interface MetricSummary {
    *   costUsd30dPrev / outputTokensPrev30d (guard: outputTokensPrev30d === 0 → em-dash).
    */
   costUsd30dPrev: number;
-
-  // ── Retro forward-compatibility stubs ───────────────────────────────────
-  retroRollup: RetroRollup | null;
-  retroTimeline: RetroTimelinePoint[];
-  retroForecast: RetroForecastPoint[];
 
   // ── Calendar-period rollups ──────────────────────────────────────────────
   /** Current calendar month vs previous calendar month. */

@@ -34,17 +34,6 @@ import { collectJsonlFiles, type IndexStore, PROJECTS_DIR } from './index-store.
 import { logEvent } from './logger.js';
 
 /**
- * Options accepted by RescanScheduler constructor (exported for index.ts
- * and test consumers that need a named type).
- */
-export type RescanSchedulerOptions = {
-  store: IndexStore;
-  intervalMs?: number;
-  /** Override the directory scanned by tick(). Defaults to PROJECTS_DIR. Primarily useful for tests. */
-  dir?: string;
-};
-
-/**
  * Periodic safety-net that complements the chokidar file watcher.
  *
  * Every `intervalMs` milliseconds (default 5 000) it:

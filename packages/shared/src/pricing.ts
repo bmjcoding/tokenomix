@@ -275,10 +275,13 @@ export function model_family(modelId: string | null | undefined): string {
 
   if (parsed.kind === 'haiku') {
     const { major, minor } = parsed;
-    if (major > 4 || major === 4) {
+    if (major >= 4) {
       return 'haiku';
     }
-    if (major > 3 || (major === 3 && minor >= 5)) {
+    // M5: Removed unreachable `major > 3` sub-expression — all major >= 4 are
+    // already caught above. The relevant boundary for haiku_3_5 is major === 3
+    // with minor >= 5.
+    if (major === 3 && minor >= 5) {
       return 'haiku_3_5';
     }
     return 'haiku_3';
