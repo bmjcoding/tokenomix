@@ -27,7 +27,7 @@ export interface SelectOption<T extends string> {
   label: string;
 }
 
-export interface SelectProps<T extends string> {
+interface SelectProps<T extends string> {
   value: T;
   options: ReadonlyArray<SelectOption<T>>;
   onChange: (value: T) => void;

@@ -2,8 +2,8 @@
  * @tokenomix/shared — public API barrel.
  *
  * Re-exports all public symbols from types, schemas, and pricing modules.
- * Consumers import from "@tokenomix/shared" and receive TS source directly
- * (no build step required for internal workspace use).
+ * Consumers import from "@tokenomix/shared". Development/test resolvers use TS
+ * source; production runtime uses the built dist export.
  */
 
 export type { PriceTable } from './pricing.js';

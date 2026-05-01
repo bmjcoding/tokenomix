@@ -37,8 +37,8 @@
  *
  * Opens the session's JSONL file in the OS file manager (Finder on macOS,
  * Explorer on Windows, xdg-open on Linux). Returns 204 No Content on success.
- * Returns 500 with { error: string } when the spawn fails. Returns 404 when
- * the session has no recorded JSONL path.
+ * Requires X-Tokenomix-Local-Action: 1. Returns 500 with { error: string }
+ * when the spawn fails. Returns 404 when the session has no recorded JSONL path.
  */
 
 import { spawn } from 'node:child_process';
@@ -47,6 +47,8 @@ import type { MetricsQuery, SessionDetail, SessionSummary } from '@tokenomix/sha
 import { Hono } from 'hono';
 import type { IndexStore } from '../index-store.js';
 import { logEvent } from '../logger.js';
+import { hasLocalActionHeader } from './local-action.js';
+import { parsePositiveIntegerParam } from './query-params.js';
 
 const MAX_PARAM_LEN = 200;
 // Allowlist: Claude session IDs are UUIDs/slugs — only safe identifier chars permitted.
@@ -79,9 +81,11 @@ export function sessionsRoute(store: IndexStore): Hono {
     const project = c.req.query('project');
     const since = c.req.query('since');
 
-    const limit = limitParam
-      ? Math.min(Math.max(1, Number.parseInt(limitParam, 10) || 50), 500)
-      : 50;
+    const parsedLimit = parsePositiveIntegerParam(limitParam);
+    if (parsedLimit === null) {
+      return c.json({ error: 'limit must be a positive integer' }, 400);
+    }
+    const limit = Math.min(parsedLimit ?? 50, 500);
 
     const query: MetricsQuery = {};
     if (since) query.since = since;
@@ -98,8 +102,8 @@ export function sessionsRoute(store: IndexStore): Hono {
     // Validate windowMs: must be a positive integer when provided.
     let windowMs = ACTIVE_WINDOW_DEFAULT_MS;
     if (windowParam !== undefined) {
-      const parsed = Number.parseInt(windowParam, 10);
-      if (!Number.isInteger(parsed) || String(parsed) !== windowParam || parsed <= 0) {
+      const parsed = parsePositiveIntegerParam(windowParam);
+      if (parsed === null || parsed === undefined) {
         return c.json({ error: 'windowMs must be a positive integer' }, 400);
       }
       if (parsed > ACTIVE_WINDOW_MAX_MS) {
@@ -111,8 +115,8 @@ export function sessionsRoute(store: IndexStore): Hono {
     // Validate limit: must be a positive integer in [1, 100] when provided.
     let limit = ACTIVE_LIMIT_DEFAULT;
     if (limitParam !== undefined) {
-      const parsed = Number.parseInt(limitParam, 10);
-      if (!Number.isInteger(parsed) || String(parsed) !== limitParam || parsed < 1) {
+      const parsed = parsePositiveIntegerParam(limitParam);
+      if (parsed === null || parsed === undefined) {
         return c.json({ error: 'limit must be a positive integer' }, 400);
       }
       if (parsed > ACTIVE_LIMIT_MAX) {
@@ -159,6 +163,10 @@ export function sessionsRoute(store: IndexStore): Hono {
    * Does NOT log the path — it may contain sensitive directory names.
    */
   app.post('/:id/reveal', async (c) => {
+    if (!hasLocalActionHeader(c)) {
+      return c.json({ error: 'local action header required' }, 403);
+    }
+
     const id = validateId(c.req.param('id'));
 
     if (!id) {

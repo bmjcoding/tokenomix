@@ -19,6 +19,7 @@
 import type { MetricsQuery, TurnBucket } from '@tokenomix/shared';
 import { Hono } from 'hono';
 import type { IndexStore } from '../index-store.js';
+import { parsePositiveIntegerParam } from './query-params.js';
 
 export function turnsRoute(store: IndexStore): Hono {
   const app = new Hono();
@@ -36,9 +37,11 @@ export function turnsRoute(store: IndexStore): Hono {
     }
 
     // Cap limit at 50; default 10.
-    const limit = limitParam
-      ? Math.min(Math.max(1, Number.parseInt(limitParam, 10) || 10), 50)
-      : 10;
+    const parsedLimit = parsePositiveIntegerParam(limitParam);
+    if (parsedLimit === null) {
+      return c.json({ error: 'limit must be a positive integer' }, 400);
+    }
+    const limit = Math.min(parsedLimit ?? 10, 50);
 
     const query: MetricsQuery = {};
     // 'all' is a sentinel meaning no time filter — treat as absent.

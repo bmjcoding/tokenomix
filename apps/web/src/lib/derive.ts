@@ -185,7 +185,7 @@ export function getYtdSeries(dailySeries: DailyBucket[]): DailyBucket[] {
  * Note: PeriodRollup is NOT accepted here — it has no per-type token
  * breakdown. This function operates on flat scalar values only.
  */
-export interface CacheEfficiencyArgs {
+interface CacheEfficiencyArgs {
   cacheReadTokens: number;
   cacheCreationTokens: number;
   inputTokens: number;

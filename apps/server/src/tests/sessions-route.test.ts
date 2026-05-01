@@ -18,8 +18,9 @@
  *   4. Param guard rejects path separator in ID with 400
  *   5. SessionSummary list includes projectName field
  *   6. Graceful handling when toolUses is undefined on every row in a session
- *   7–10. initialPrompt / initialPromptTruncated / jsonlPath from ingestFile
- *   11–13. POST /api/sessions/:id/reveal
+ *   7. GET /api/sessions rejects malformed limits
+ *   8–11. initialPrompt / initialPromptTruncated / jsonlPath from ingestFile
+ *   12–14. POST /api/sessions/:id/reveal
  */
 
 import { EventEmitter } from 'node:events';
@@ -35,6 +36,7 @@ import {
 import { Hono } from 'hono';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { IndexStore } from '../index-store.js';
+import { LOCAL_ACTION_HEADER } from '../routes/local-action.js';
 import { sessionsRoute } from '../routes/sessions.js';
 
 // ---------------------------------------------------------------------------
@@ -49,6 +51,7 @@ vi.mock('node:child_process', () => ({
 
 // Import the mocked spawn AFTER vi.mock so we get the mock version.
 const { spawn: mockSpawn } = await import('node:child_process');
+const LOCAL_ACTION_REQUEST = { method: 'POST', headers: { [LOCAL_ACTION_HEADER]: '1' } } as const;
 
 // ---------------------------------------------------------------------------
 // App factory — uses the REAL route (no inline reimplementation)
@@ -563,22 +566,17 @@ describe('GET /api/sessions', () => {
     expect(entry?.isSubagent).toBe(true);
   });
 
-  it('clamps negative limit values instead of slicing from the end', async () => {
+  it('rejects malformed limit values instead of partial numeric coercion', async () => {
     const store = new IndexStore();
-    const rows = store.rows as Map<string, TokenRow>;
-
-    rows.set('req_l1:msg_l1', makeRow({ sessionId: 'sess-limit-1', costUsd: 0.003 }));
-    rows.set('req_l2:msg_l2', makeRow({ sessionId: 'sess-limit-2', costUsd: 0.002 }));
-    rows.set('req_l3:msg_l3', makeRow({ sessionId: 'sess-limit-3', costUsd: 0.001 }));
-
     const app = buildSessionsApp(store);
-    const res = await app.request('/api/sessions?limit=-5');
 
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as SessionSummary[];
+    for (const limit of ['-5', '0', '10abc']) {
+      const res = await app.request(`/api/sessions?limit=${encodeURIComponent(limit)}`);
 
-    expect(body).toHaveLength(1);
-    expect(body[0]?.sessionId).toBe('sess-limit-1');
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe('limit must be a positive integer');
+    }
   });
 });
 
@@ -946,7 +944,7 @@ describe('POST /api/sessions/:id/reveal', () => {
     const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin');
 
     const app = buildSessionsApp(store);
-    const res = await app.request(`/api/sessions/${sessionId}/reveal`, { method: 'POST' });
+    const res = await app.request(`/api/sessions/${sessionId}/reveal`, LOCAL_ACTION_REQUEST);
 
     expect(res.status).toBe(204);
 
@@ -962,12 +960,24 @@ describe('POST /api/sessions/:id/reveal', () => {
     platformSpy.mockRestore();
   });
 
+  it('returns 403 without the local action header', async () => {
+    const store = new IndexStore();
+    const app = buildSessionsApp(store);
+
+    const res = await app.request('/api/sessions/anything/reveal', { method: 'POST' });
+
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe('local action header required');
+    expect(vi.mocked(mockSpawn)).not.toHaveBeenCalled();
+  });
+
   it('returns 404 with { error } when session has no recorded JSONL path', async () => {
     const store = new IndexStore();
     // Do not ingest any file — sessionInitialPrompts will have no entry.
 
     const app = buildSessionsApp(store);
-    const res = await app.request('/api/sessions/missing-session/reveal', { method: 'POST' });
+    const res = await app.request('/api/sessions/missing-session/reveal', LOCAL_ACTION_REQUEST);
 
     expect(res.status).toBe(404);
     const body = (await res.json()) as { error: string };
@@ -979,7 +989,7 @@ describe('POST /api/sessions/:id/reveal', () => {
     const store = new IndexStore();
 
     const app = buildSessionsApp(store);
-    const res = await app.request('/api/sessions/foo%2Fbar/reveal', { method: 'POST' });
+    const res = await app.request('/api/sessions/foo%2Fbar/reveal', LOCAL_ACTION_REQUEST);
 
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string };
@@ -1002,7 +1012,7 @@ describe('POST /api/sessions/:id/reveal', () => {
     const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin');
 
     const app = buildSessionsApp(store);
-    const res = await app.request(`/api/sessions/${sessionId}/reveal`, { method: 'POST' });
+    const res = await app.request(`/api/sessions/${sessionId}/reveal`, LOCAL_ACTION_REQUEST);
 
     expect(res.status).toBe(500);
     const body = (await res.json()) as { error: string };

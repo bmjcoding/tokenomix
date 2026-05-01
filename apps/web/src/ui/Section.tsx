@@ -45,14 +45,14 @@ const colsClasses = {
   4: 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-4',
 } as const;
 
-export type SectionGap = keyof typeof gapClasses;
+type SectionGap = keyof typeof gapClasses;
 export type SectionCols = keyof typeof colsClasses;
 
 // ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
 
-export interface SectionProps extends Omit<HTMLAttributes<HTMLElement>, 'title'> {
+interface SectionProps extends Omit<HTMLAttributes<HTMLElement>, 'title'> {
   /**
    * Section heading text (rendered as <h2>).
    * Required for accessibility — screen readers use this as the landmark label.

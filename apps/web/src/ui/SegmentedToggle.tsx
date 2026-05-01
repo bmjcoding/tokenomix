@@ -23,12 +23,12 @@ import { Fragment, useRef } from 'react';
 // Types
 // ---------------------------------------------------------------------------
 
-export interface SegmentedToggleOption<T extends string> {
+interface SegmentedToggleOption<T extends string> {
   value: T;
   label: string;
 }
 
-export interface SegmentedToggleProps<T extends string> {
+interface SegmentedToggleProps<T extends string> {
   /** Accessible label for the `role="radiogroup"` wrapper. */
   ariaLabel: string;
   options: SegmentedToggleOption<T>[];

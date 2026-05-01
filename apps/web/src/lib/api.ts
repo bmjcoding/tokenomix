@@ -16,8 +16,9 @@ import type {
   RecommendationChatStatus,
   SessionDetail,
   SessionSummary,
-  TurnBucket,
 } from '@tokenomix/shared';
+
+const LOCAL_ACTION_HEADERS = { 'X-Tokenomix-Local-Action': '1' } as const;
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -62,18 +63,6 @@ async function apiFetch<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-async function apiPost<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    throw new Error(await responseErrorMessage(res, path));
-  }
-  return res.json() as Promise<T>;
-}
-
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -91,13 +80,6 @@ export async function fetchMetrics(query: MetricsQuery): Promise<MetricSummary> 
 
 export async function fetchRecommendationChatStatus(): Promise<RecommendationChatStatus> {
   return apiFetch<RecommendationChatStatus>('/api/recommendations/chat/status');
-}
-
-export async function sendRecommendationChat(params: {
-  message: string;
-  history: RecommendationChatMessage[];
-}): Promise<RecommendationChatResponse> {
-  return apiPost<RecommendationChatResponse>('/api/recommendations/chat', params);
 }
 
 type RecommendationChatStreamEvent =
@@ -230,24 +212,6 @@ export async function fetchActiveSessions(
 }
 
 /**
- * GET /api/turns
- *
- * Returns an array of TurnBucket objects sorted by costUsd descending.
- * The `limit` parameter controls the max number of turns returned (default 10, max 50 on server).
- * The `since` parameter accepts the same values as MetricsQuery.since.
- */
-export async function fetchTurns(
-  params: { since?: string; project?: string; limit?: number } = {}
-): Promise<TurnBucket[]> {
-  const qs = buildQuery({
-    since: params.since,
-    project: params.project,
-    limit: params.limit,
-  });
-  return apiFetch<TurnBucket[]>(`/api/turns${qs}`);
-}
-
-/**
  * GET /api/sessions/:sessionId
  *
  * Returns a SessionDetail object for the given session.
@@ -266,7 +230,7 @@ export async function fetchSessionDetail(sessionId: string): Promise<SessionDeta
  */
 export async function revealSessionJsonl(sessionId: string): Promise<void> {
   const path = `/api/sessions/${encodeURIComponent(sessionId)}/reveal`;
-  const res = await fetch(path, { method: 'POST' });
+  const res = await fetch(path, { method: 'POST', headers: LOCAL_ACTION_HEADERS });
   if (!res.ok) {
     throw new Error(await responseErrorMessage(res, path));
   }

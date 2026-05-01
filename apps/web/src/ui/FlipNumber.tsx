@@ -35,9 +35,7 @@ import { useMotionPreference } from '../providers/MotionPreferenceProvider.js';
 // Props
 // ---------------------------------------------------------------------------
 
-export type { Format };
-
-export interface FlipNumberProps
+interface FlipNumberProps
   extends Omit<
     NumberFlowProps,
     'value' | 'format' | 'prefix' | 'locales' | 'respectMotionPreference'

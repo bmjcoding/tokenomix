@@ -41,7 +41,7 @@ const MAX_CONTEXT_SESSIONS = 5;
 const MAX_CONTEXT_TURNS = 5;
 const MAX_CONTEXT_TOOLS = 8;
 
-export interface ClaudeRunResult {
+interface ClaudeRunResult {
   answer: string;
   durationMs: number | null;
   costUsd: number | null;
@@ -49,7 +49,7 @@ export interface ClaudeRunResult {
   warning: string | null;
 }
 
-export type ClaudeStreamEvent =
+type ClaudeStreamEvent =
   | { type: 'delta'; text: string }
   | { type: 'done'; result: ClaudeRunResult };
 

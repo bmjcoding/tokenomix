@@ -147,10 +147,10 @@ const ServerEnvSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
-// Exported type
+// Internal inferred type
 // ---------------------------------------------------------------------------
 
-export type ServerEnv = z.infer<typeof ServerEnvSchema>;
+type ServerEnv = z.infer<typeof ServerEnvSchema>;
 
 // ---------------------------------------------------------------------------
 // Validation helper

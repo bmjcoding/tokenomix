@@ -204,14 +204,14 @@ window size is controlled by the `ACTIVE_SESSION_WINDOW_MS` constant in
 
 | Endpoint | Description |
 | --- | --- |
-| `POST /api/admin/rescan` | Forces an immediate mtime-based rescan of all known JSONL files without restarting the server. Returns `{ ok: true, ts: <unix-ms> }`. |
+| `POST /api/admin/rescan` | Forces an immediate mtime-based rescan of all known JSONL files without restarting the server. Requires `X-Tokenomix-Local-Action: 1` and returns `{ ok: true, ts: <unix-ms> }`. |
 
-The server binds to `127.0.0.1` only; no authentication is required for admin endpoints.
+The server binds to `127.0.0.1` only. State-changing local endpoints require `X-Tokenomix-Local-Action: 1` so blind cross-site localhost POSTs cannot trigger local actions.
 
 Example:
 
 ```bash
-curl -X POST http://localhost:3001/api/admin/rescan
+curl -X POST -H 'X-Tokenomix-Local-Action: 1' http://localhost:3001/api/admin/rescan
 ```
 
 The port may differ if `PORT_BASE` is set; the API server always runs on `PORT_BASE + 1`.

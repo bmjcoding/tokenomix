@@ -85,7 +85,7 @@ export function surfaceColorLight(): string {
 // Shared ECharts base option — used as the starting point for all charts
 // ---------------------------------------------------------------------------
 
-export interface EchartsBaseOption {
+interface EchartsBaseOption {
   backgroundColor: string;
   textStyle: { color: string; fontFamily: string };
   grid: { borderColor: string };

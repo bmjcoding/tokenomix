@@ -20,6 +20,9 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    chunkSizeWarningLimit: 600,
+  },
   resolve: {
     alias: {
       '@tokenomix/shared': path.resolve(__dirname, '../../packages/shared/src/index.ts'),

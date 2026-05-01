@@ -180,36 +180,6 @@ export function formatDateRange(startIso: string | null, endIso: string | null):
 }
 
 /**
- * Produces a short elapsed-time label describing how long ago `targetMs` was
- * relative to `nowMs`.
- *
- * Scale:
- *   elapsed < 60 s   → "Xs"   (e.g. "42s")
- *   elapsed < 60 min → "Xm"   (e.g. "14m")
- *   elapsed ≥ 60 min → "Xh"   (e.g. "2h")
- *
- * Both arguments are Unix-epoch milliseconds. When `targetMs` is in the
- * future (i.e. elapsed is negative), the result is clamped to "0s".
- *
- * Intended for recency labels like "last active 3m ago" — not for verbose
- * duration display (use formatDuration for that).
- *
- * Examples:
- *   formatTimeSince(Date.now(), Date.now() - 30_000)   → "30s"
- *   formatTimeSince(Date.now(), Date.now() - 90_000)   → "1m"
- *   formatTimeSince(Date.now(), Date.now() - 7_200_000) → "2h"
- */
-export function formatTimeSince(nowMs: number, targetMs: number): string {
-  const elapsedMs = Math.max(0, nowMs - targetMs);
-  const seconds = Math.floor(elapsedMs / 1_000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(elapsedMs / 60_000);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(elapsedMs / 3_600_000);
-  return `${hours}h`;
-}
-
-/**
  * Derives the basename of an absolute project path for display purposes.
  *
  * Algorithm:
