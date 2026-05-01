@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- ECharts chart components (`AreaChart`, `ModelMixBar`, `SparklineChart`, `ToolMixBar`)
+  now import from `echarts-for-react/esm/core` instead of `echarts-for-react/lib/core`;
+  the CJS `lib/core` path resolves to the module namespace object under Vite's ESM
+  bundler rather than the React component class, causing a P0 runtime crash introduced
+  in the C3 tree-shaking migration (08585ce).
+
 ## [3.10.0] - 2026-04-30
 
 ### Added

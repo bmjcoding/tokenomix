@@ -10,7 +10,7 @@
  */
 
 import type { ModelBucket } from '@tokenomix/shared';
-import EChartsReactCore from 'echarts-for-react/lib/core';
+import EChartsReactCore from 'echarts-for-react/esm/core';
 import { useMemo } from 'react';
 import { echarts, getBaseOption, gridColor } from '../lib/echarts.js';
 import { useTheme } from '../providers/ThemeProvider.js';
