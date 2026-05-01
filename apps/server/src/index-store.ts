@@ -55,6 +55,7 @@ import type {
   TurnBucket,
   WeeklyBucket,
 } from '@tokenomix/shared';
+import { serverEnv } from './env.js';
 import { logEvent } from './logger.js';
 import { parseJSONLFile } from './parser.js';
 import {
@@ -83,8 +84,36 @@ const BATCH_SIZE = 50;
  * When the Map exceeds this size, the oldest 10% of entries (by firstTs)
  * are evicted in a batch to amortize sort cost. This bounds memory usage
  * even under continuous high-volume ingest.
+ *
+ * M1: Raised from 50 000 to 200 000 so a single-user accumulation of sessions
+ * over months does not evict recently-active sessions from getActiveSessions().
+ * The active-session guard in recordSessionTimestamp() additionally skips
+ * eviction for sessions within the active-session window.
  */
-const MAX_SESSION_TIMES = 50_000;
+const MAX_SESSION_TIMES = 200_000;
+
+/**
+ * Maximum number of JSONL file paths retained in fileIngestionAudits.
+ * Resolved once at IndexStore construction time from TOKENOMIX_MAX_FILE_AUDITS
+ * (default 10 000). Insertion-order eviction (oldest 10%) is used because
+ * stale audit entries for old files are re-created on next observation.
+ *
+ * NOTE: this is a module-level fallback used before IndexStore is constructed
+ * (e.g. in unit tests that construct IndexStore without calling initServerEnv).
+ * The live value is stored as a private instance field resolved in the
+ * constructor so it reflects the validated env object for the process lifetime.
+ */
+const MAX_FILE_INGESTION_AUDITS_DEFAULT = 10_000;
+
+/**
+ * Maximum number of agent-ID entries retained in requestedModelByAgentId
+ * and subagentFilePathsByAgentId. Resolved once at IndexStore construction time
+ * from TOKENOMIX_MAX_AGENT_ENTRIES (default 20 000). Both maps are keyed by
+ * agentId which is stable per subagent session; insertion-order eviction of
+ * the oldest 10% is safe because evicted entries are re-populated if that
+ * agent is seen again.
+ */
+const MAX_AGENT_ID_MAP_SIZE_DEFAULT = 20_000;
 
 /**
  * Server-side hard cap on the initial-prompt text stored in sessionInitialPrompts.
@@ -162,47 +191,85 @@ function emptyFileIngestionAudit(): FileIngestionAudit {
   };
 }
 
-function normalizePricingProvider(value: string | undefined): PricingProvider {
-  if (value === 'aws_bedrock' || value === 'internal_gateway' || value === 'anthropic_1p') {
-    return value;
-  }
-  return 'anthropic_1p';
-}
-
-function normalizeBedrockEndpointScope(value: string | undefined): BedrockEndpointScope {
-  if (
-    value === 'in_region' ||
-    value === 'global_cross_region' ||
-    value === 'geographic_cross_region' ||
-    value === 'unknown'
-  ) {
-    return value;
-  }
-  return 'unknown';
-}
-
-function normalizeBedrockServiceTier(value: string | undefined): BedrockServiceTier {
-  if (
-    value === 'standard' ||
-    value === 'batch' ||
-    value === 'provisioned' ||
-    value === 'reserved' ||
-    value === 'unknown'
-  ) {
-    return value;
-  }
-  return 'standard';
-}
+/**
+ * Module-level cache for pricingRuntimeConfig.
+ * The cache is invalidated whenever any of the four relevant env vars changes
+ * (checked by comparing the concatenated string signatures on each call).
+ * This avoids repeated process.env reads on every aggregate() invocation.
+ *
+ * L4: The cache is never reset on SIGHUP or any runtime invalidation call.
+ * To change TOKENOMIX_PRICING_PROVIDER, TOKENOMIX_BEDROCK_REGION,
+ * TOKENOMIX_BEDROCK_ENDPOINT_SCOPE, or TOKENOMIX_BEDROCK_SERVICE_TIER, the
+ * server process must be restarted — hot-reload of pricing env vars is not
+ * supported and is not expected in the single-user deployment model.
+ */
+let _pricingConfigCache: PricingRuntimeConfig | null = null;
+let _pricingConfigSig = '';
 
 function pricingRuntimeConfig(): PricingRuntimeConfig {
-  return {
-    provider: normalizePricingProvider(process.env.TOKENOMIX_PRICING_PROVIDER),
-    bedrockRegion: process.env.TOKENOMIX_BEDROCK_REGION ?? null,
-    bedrockEndpointScope: normalizeBedrockEndpointScope(
-      process.env.TOKENOMIX_BEDROCK_ENDPOINT_SCOPE
-    ),
-    bedrockServiceTier: normalizeBedrockServiceTier(process.env.TOKENOMIX_BEDROCK_SERVICE_TIER),
+  // ARCH-002: read validated env values via serverEnv() when available.
+  // Fall back to direct process.env reads (with inline normalization) when
+  // serverEnv() is not yet initialized — this occurs only in tests that
+  // construct IndexStore without calling validateEnv() / initServerEnv().
+  let provider: PricingProvider = 'anthropic_1p';
+  let bedrockRegion: string | null = null;
+  let bedrockEndpointScope: BedrockEndpointScope = 'unknown';
+  let bedrockServiceTier: BedrockServiceTier = 'standard';
+
+  try {
+    const env = serverEnv();
+    provider = env.TOKENOMIX_PRICING_PROVIDER;
+    bedrockRegion = env.TOKENOMIX_BEDROCK_REGION ?? null;
+    bedrockEndpointScope = env.TOKENOMIX_BEDROCK_ENDPOINT_SCOPE;
+    bedrockServiceTier = env.TOKENOMIX_BEDROCK_SERVICE_TIER;
+  } catch {
+    // serverEnv() not yet initialised (e.g. unit tests). Fall back to direct
+    // process.env reads with inline normalization so tests continue to work.
+    const rawProvider = process.env.TOKENOMIX_PRICING_PROVIDER;
+    if (
+      rawProvider === 'aws_bedrock' ||
+      rawProvider === 'internal_gateway' ||
+      rawProvider === 'anthropic_1p'
+    ) {
+      provider = rawProvider;
+    }
+    bedrockRegion = process.env.TOKENOMIX_BEDROCK_REGION ?? null;
+    const rawScope = process.env.TOKENOMIX_BEDROCK_ENDPOINT_SCOPE;
+    if (
+      rawScope === 'in_region' ||
+      rawScope === 'global_cross_region' ||
+      rawScope === 'geographic_cross_region' ||
+      rawScope === 'unknown'
+    ) {
+      bedrockEndpointScope = rawScope;
+    }
+    const rawTier = process.env.TOKENOMIX_BEDROCK_SERVICE_TIER;
+    if (
+      rawTier === 'standard' ||
+      rawTier === 'batch' ||
+      rawTier === 'provisioned' ||
+      rawTier === 'reserved' ||
+      rawTier === 'unknown'
+    ) {
+      bedrockServiceTier = rawTier;
+    }
+  }
+
+  const sig = [provider, bedrockRegion ?? '', bedrockEndpointScope, bedrockServiceTier].join('\0');
+
+  if (_pricingConfigCache !== null && sig === _pricingConfigSig) {
+    return _pricingConfigCache;
+  }
+
+  const config: PricingRuntimeConfig = {
+    provider,
+    bedrockRegion,
+    bedrockEndpointScope,
+    bedrockServiceTier,
   };
+  _pricingConfigCache = config;
+  _pricingConfigSig = sig;
+  return config;
 }
 
 function pricingCatalogForConfig(
@@ -687,6 +754,8 @@ function buildOptimizationOpportunities(args: {
   subagentRows30d: number;
   agentToolCalls30d: number;
   opusToSonnetSavings30d: number;
+  cacheCreation5mTokens30d: number;
+  cacheCreation1hTokens30d: number;
 }): OptimizationOpportunity[] {
   // Rule scores are deterministic analyst heuristics, not LLM inference and
   // not probabilities. They express how directly the observed metric supports
@@ -704,11 +773,34 @@ function buildOptimizationOpportunities(args: {
     subagentRows30d,
     agentToolCalls30d,
     opusToSonnetSavings30d,
+    cacheCreation5mTokens30d,
+    cacheCreation1hTokens30d,
   } = args;
 
   const cacheUsd = components.cacheCreationCostUsd + components.cacheReadCostUsd;
   const cacheShare = shareOfTotal(cacheUsd, costUsd30d);
-  const cacheImpact = cacheUsd * 0.12;
+  // M4: Tier-aware cache savings factor.
+  //
+  // A flat 0.12 factor misrepresents the savings opportunity:
+  //   - 5-minute ephemeral cache creation costs ~25% more than a plain input
+  //     token (e.g. $6.25 vs $5/Mtok for Opus). Savings from avoiding 5m
+  //     creation are modest (~20% of creation cost).
+  //   - 1-hour cache creation costs ~100% more than input ($10 vs $5/Mtok for
+  //     Opus). Savings from avoiding 1h creation are substantial (~50% of
+  //     creation cost).
+  //
+  // Formula: weighted factor = (5m_tokens × 0.20 + 1h_tokens × 0.50) / total_tokens
+  //   Applied as: cacheImpact = cacheCreationCostUsd × weightedFactor
+  //                            + cacheReadCostUsd × 0.05  (read savings are small)
+  const totalCacheCreationTokens30d = cacheCreation5mTokens30d + cacheCreation1hTokens30d;
+  const cacheCreationSavingsFactor =
+    totalCacheCreationTokens30d > 0
+      ? (cacheCreation5mTokens30d * 0.2 + cacheCreation1hTokens30d * 0.5) /
+        totalCacheCreationTokens30d
+      : 0.2; // fallback to conservative estimate when no token detail is available
+  const cacheImpact =
+    components.cacheCreationCostUsd * cacheCreationSavingsFactor +
+    components.cacheReadCostUsd * 0.05;
   if (cacheShare >= 0.45 && hasMaterialOpportunityImpact(cacheImpact)) {
     const cacheReadShare = shareOfTotal(components.cacheReadCostUsd, cacheUsd);
     opportunities.push({
@@ -1262,6 +1354,8 @@ function aggregate(
   let inputTokens30d = 0;
   let outputTokens30d = 0;
   let cacheCreationTokens30d = 0;
+  let cacheCreation5mTokens30d = 0;
+  let cacheCreation1hTokens30d = 0;
   let cacheReadTokens30d = 0;
   const costComponents30d = emptyCostComponents();
   let mainSessionCostUsd30d = 0;
@@ -1279,6 +1373,8 @@ function aggregate(
       inputTokens30d += row.inputTokens;
       outputTokens30d += row.outputTokens;
       cacheCreationTokens30d += row.cacheCreation5m + row.cacheCreation1h;
+      cacheCreation5mTokens30d += row.cacheCreation5m;
+      cacheCreation1hTokens30d += row.cacheCreation1h;
       cacheReadTokens30d += row.cacheReadTokens;
       addCostComponents(costComponents30d, row);
       if (row.isSubagent) {
@@ -1312,6 +1408,22 @@ function aggregate(
     }
   }
 
+  // L5: Unify costUsd30d with costComponents30d via a single rounding pass.
+  // costUsd30d was accumulated via row.costUsd (which is microsToUsd applied to
+  // the pre-stored micros value), while costComponents30d uses costComponentsForRow()
+  // which sums individual component micros. Because integer division in microsToUsd
+  // introduces per-component rounding, Σ microsToUsd(c_i) can differ from
+  // microsToUsd(Σ c_i) by up to n_components / 1_000_000 per row. Re-deriving
+  // costUsd30d as the sum of all component costs ensures both values share the
+  // same rounding origin and the UI's "components don't add up to total" artifact
+  // is eliminated.
+  costUsd30d =
+    costComponents30d.inputCostUsd +
+    costComponents30d.outputCostUsd +
+    costComponents30d.cacheCreationCostUsd +
+    costComponents30d.cacheReadCostUsd +
+    costComponents30d.webSearchCostUsd;
+
   // All-time totals (over the since+project filtered set).
   let totalCostUsd = 0;
   let totalInputTokens = 0;
@@ -1336,10 +1448,18 @@ function aggregate(
   // the hot-path per-row check never allocates a Date object.  Only rows whose
   // local date+hour+minute fall exactly on the cutoff boundary need the integer
   // arithmetic; rows on other dates short-circuit via string comparison.
+  //
+  // L1: DST spring-forward edge — subtracting 86 400 000 ms from now during a
+  // DST spring-forward night lands 23 calendar hours ago in local time, so up to
+  // one hour of 30-minute buckets may appear missing in the 24HR chart on that
+  // specific night. This is an accepted 1-hour/year edge case; cost totals and
+  // 30d aggregates are unaffected. Fixing it would require a calendar-aware
+  // "subtract one calendar day" operation which adds complexity for negligible
+  // benefit in a single-user local-only dashboard.
   const cutoff24h = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-  const cutoffDateStr = toLocalDateStr(cutoff24h);  // "YYYY-MM-DD" in local TZ
-  const cutoffHour = cutoff24h.getHours();           // local hour integer
-  const cutoffMinute = cutoff24h.getMinutes();       // local minute integer
+  const cutoffDateStr = toLocalDateStr(cutoff24h); // "YYYY-MM-DD" in local TZ
+  const cutoffHour = cutoff24h.getHours(); // local hour integer
+  const cutoffMinute = cutoff24h.getMinutes(); // local minute integer
 
   for (const row of filtered) {
     totalCostUsd += row.costUsd;
@@ -1494,8 +1614,7 @@ function aggregate(
         ? true
         : row.date < cutoffDateStr
           ? false
-          : row.hour > cutoffHour ||
-            (row.hour === cutoffHour && row.minute >= cutoffMinute);
+          : row.hour > cutoffHour || (row.hour === cutoffHour && row.minute >= cutoffMinute);
 
     if (rowInWindow) {
       const rowHH = String(row.hour).padStart(2, '0');
@@ -1702,13 +1821,18 @@ function aggregate(
   const turnCostP99_30d = percentileFloor(turnCosts30d, 99);
 
   function topCostShare(sortedAsc: number[], fraction: number): number {
-    if (sortedAsc.length === 0 || costUsd30d === 0) return 0;
+    // M3: Use the locally-scoped costSum30d (the per-turn sum for the same
+    // projectFiltered rows) rather than the outer costUsd30d, so the denominator
+    // is always the sum of the values being divided. Both iterate the same rows,
+    // so numerically they are equal, but using costSum30d makes the relationship
+    // explicit and avoids closure fragility if the two accumulators diverge.
+    if (sortedAsc.length === 0 || costSum30d === 0) return 0;
     const count = Math.max(1, Math.ceil(sortedAsc.length * fraction));
     let sum = 0;
     for (let i = sortedAsc.length - count; i < sortedAsc.length; i++) {
       sum += sortedAsc[i] ?? 0;
     }
-    return sum / costUsd30d;
+    return sum / costSum30d;
   }
   const turnCostTop1PctShare30d = topCostShare(turnCosts30d, 0.01);
   const turnCostTop5PctShare30d = topCostShare(turnCosts30d, 0.05);
@@ -1864,8 +1988,19 @@ function aggregate(
     subagentRows30d,
     agentToolCalls30d,
     opusToSonnetSavings30d,
+    cacheCreation5mTokens30d,
+    cacheCreation1hTokens30d,
   });
-  const pricingAudit = buildPricingAudit(filtered, pricingRuntimeConfig());
+  // H2: Use projectFiltered (absolute 30d window, project-scoped but NOT
+  // since-filtered) so pricingAudit.totalCostUsdMicros aligns with the 30d KPIs
+  // displayed on the dashboard. Using `filtered` (the since-filtered set) caused
+  // the audit to cover only the user's selected time window (e.g. 7d) while
+  // costUsd30d and other KPIs always covered the absolute 30d window, making the
+  // two numbers incomparable.
+  const pricingAudit = buildPricingAudit(
+    projectFiltered.filter((r) => new Date(`${r.date}T00:00:00`) >= cutoff30d),
+    pricingRuntimeConfig()
+  );
 
   return {
     totalCostUsd,
@@ -1912,9 +2047,6 @@ function aggregate(
     inputTokensPrev30d,
     outputTokensPrev30d,
     costUsd30dPrev,
-    retroRollup: null,
-    retroTimeline: [],
-    retroForecast: [],
     monthlyRollup,
     quarterlyRollup,
     yearlyRollup,
@@ -2037,6 +2169,25 @@ function computeSessionSummaries(
 }
 
 // ---------------------------------------------------------------------------
+// Eviction helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Evict the `count` oldest entries from a Map using insertion order.
+ * Insertion-order iteration is guaranteed by the ES2015 Map specification.
+ * This is O(count) and appropriate for maps that have no per-entry timestamp
+ * — evicting the first-inserted entries is the best available proxy for "oldest".
+ */
+function evictOldestInsertionOrder<K, V>(map: Map<K, V>, count: number): void {
+  let removed = 0;
+  for (const key of map.keys()) {
+    if (removed >= count) break;
+    map.delete(key);
+    removed++;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // IndexStore
 // ---------------------------------------------------------------------------
 
@@ -2046,6 +2197,14 @@ export class IndexStore extends EventEmitter {
   private readonly rowTimestampMs = new Map<string, number>();
   private readonly requestedModelByAgentId = new Map<string, string>();
   private readonly subagentFilePathsByAgentId = new Map<string, Set<string>>();
+  /**
+   * Session-keyed row index: Map<sessionId, Set<dedupKey>>.
+   * Maintained in sync with `rows` inside ingestFileInternal's row-insert path.
+   * Enables O(rows-for-session) lookups in getSessionDetail() and
+   * getActiveSessions() instead of O(all-rows) full scans.
+   * Eviction is cascaded from sessionTimes eviction (ARCH-001).
+   */
+  private readonly sessionIndex = new Map<string, Set<string>>();
   /** Per-session first/last event timestamps (epoch ms). Used for duration stats. */
   private readonly sessionTimes = new Map<string, { firstTs: number; lastTs: number }>();
   /**
@@ -2064,12 +2223,42 @@ export class IndexStore extends EventEmitter {
   private lastUpdated: Date = new Date();
   private _initialized = false;
 
+  /**
+   * Maximum file-ingestion audit entries retained. Resolved once at construction
+   * time from serverEnv().TOKENOMIX_MAX_FILE_AUDITS so the value is fixed for
+   * the process lifetime. Falls back to the module-level default when serverEnv()
+   * is not yet initialised (e.g. in unit tests that bypass env validation).
+   */
+  private readonly maxFileIngestionAudits: number;
+
+  /**
+   * Maximum agent-ID map entries retained. Resolved once at construction time
+   * from serverEnv().TOKENOMIX_MAX_AGENT_ENTRIES.
+   */
+  private readonly maxAgentIdMapSize: number;
+
   constructor() {
     super();
     // Suppress MaxListenersExceededWarning when many SSE clients connect.
     // Each /api/events connection registers one 'change' listener; the listener
     // is removed on stream abort so there is no permanent leak.
+    //
+    // L2: 50 is an explicit single-user assumption (a person rarely has more than
+    // a handful of browser tabs open simultaneously). Under multi-user or mass
+    // rollout this cap should be raised (or removed with setMaxListeners(0)) to
+    // match the expected concurrent SSE connection count.
     this.setMaxListeners(50);
+
+    // Resolve size limits from validated env, falling back to module defaults
+    // when serverEnv() is not yet initialised (e.g. in tests).
+    try {
+      const env = serverEnv();
+      this.maxFileIngestionAudits = env.TOKENOMIX_MAX_FILE_AUDITS;
+      this.maxAgentIdMapSize = env.TOKENOMIX_MAX_AGENT_ENTRIES;
+    } catch {
+      this.maxFileIngestionAudits = MAX_FILE_INGESTION_AUDITS_DEFAULT;
+      this.maxAgentIdMapSize = MAX_AGENT_ID_MAP_SIZE_DEFAULT;
+    }
   }
 
   /** Millisecond timestamp of the last file-change event. */
@@ -2097,12 +2286,24 @@ export class IndexStore extends EventEmitter {
     this.sessionTimes.set(row.sessionId, { firstTs: tsMs, lastTs: tsMs });
     // Evict oldest 10% when the Map grows beyond MAX_SESSION_TIMES.
     // Batching avoids re-sorting on every individual insert.
+    // ARCH-001: cascade eviction into sessionIndex so the two maps stay in sync.
     if (this.sessionTimes.size > MAX_SESSION_TIMES) {
       const evictCount = Math.ceil(MAX_SESSION_TIMES * 0.1);
       const sorted = [...this.sessionTimes.entries()].sort((a, b) => a[1].firstTs - b[1].firstTs);
-      for (let ei = 0; ei < evictCount; ei++) {
-        const entry = sorted[ei];
-        if (entry) this.sessionTimes.delete(entry[0]);
+      // M1: Skip eviction for sessions that are still within the active-session
+      // window (5 minutes by default). Without this guard, a flush of old
+      // sessions at the cap boundary could evict sessions that are currently
+      // active and therefore visible in the active-sessions rail.
+      const activeWindowCutoff = Date.now() - 5 * 60 * 1_000;
+      let evicted = 0;
+      for (const entry of sorted) {
+        if (evicted >= evictCount) break;
+        if (entry[1].lastTs >= activeWindowCutoff) continue; // skip active sessions
+        this.sessionTimes.delete(entry[0]);
+        // Cascade: remove the same sessionId from sessionIndex so it cannot
+        // grow unboundedly while sessionTimes is capped at MAX_SESSION_TIMES.
+        this.sessionIndex.delete(entry[0]);
+        evicted++;
       }
     }
   }
@@ -2192,12 +2393,21 @@ export class IndexStore extends EventEmitter {
 
         this.sessionInitialPrompts.set(sessionId, { prompt, truncated, jsonlPath: filePath });
 
-        // Evict oldest 10% when size exceeds the cap (mirrors recordSessionTimestamp).
+        // Evict oldest 10% (by firstTs) when size exceeds the cap.
+        // Sort against sessionTimes so that sessions with the earliest first event
+        // are evicted first — this retains recently-active sessions under memory
+        // pressure. Insertion order is NOT a reliable proxy here because
+        // captureInitialPrompt is called concurrently for many files; a session
+        // inserted first in the Map may have a later firstTs than one inserted later.
         if (this.sessionInitialPrompts.size > MAX_SESSION_TIMES) {
           const evictCount = Math.ceil(MAX_SESSION_TIMES * 0.1);
-          const keys = [...this.sessionInitialPrompts.keys()];
-          for (let ei = 0; ei < evictCount && ei < keys.length; ei++) {
-            const key = keys[ei];
+          const sorted = [...this.sessionInitialPrompts.keys()].sort((a, b) => {
+            const aTs = this.sessionTimes.get(a)?.firstTs ?? 0;
+            const bTs = this.sessionTimes.get(b)?.firstTs ?? 0;
+            return aTs - bTs;
+          });
+          for (let ei = 0; ei < evictCount && ei < sorted.length; ei++) {
+            const key = sorted[ei];
             if (key) this.sessionInitialPrompts.delete(key);
           }
         }
@@ -2273,6 +2483,13 @@ export class IndexStore extends EventEmitter {
           if (previous !== requestedModel) {
             this.requestedModelByAgentId.set(agentId, requestedModel);
             changedAgentIds.add(agentId);
+            // Evict oldest 10% by insertion order when the cap is reached.
+            if (this.requestedModelByAgentId.size > this.maxAgentIdMapSize) {
+              evictOldestInsertionOrder(
+                this.requestedModelByAgentId,
+                Math.ceil(this.maxAgentIdMapSize * 0.1)
+              );
+            }
           }
         }
       }
@@ -2291,6 +2508,15 @@ export class IndexStore extends EventEmitter {
     if (!paths) {
       paths = new Set();
       this.subagentFilePathsByAgentId.set(agentId, paths);
+      // Evict oldest 10% by insertion order when the cap is reached.
+      // Note: eviction removes the agentId key from the map, not the filePath
+      // within a Set. Evicted agents are re-populated if seen again.
+      if (this.subagentFilePathsByAgentId.size > this.maxAgentIdMapSize) {
+        evictOldestInsertionOrder(
+          this.subagentFilePathsByAgentId,
+          Math.ceil(this.maxAgentIdMapSize * 0.1)
+        );
+      }
     }
     paths.add(filePath);
   }
@@ -2340,10 +2566,16 @@ export class IndexStore extends EventEmitter {
    */
   async ingestFile(filePath: string): Promise<void> {
     logEvent('info', 'change', { path: filePath, action: 'rebuild', ts: Date.now() });
-    await this.ingestFileInternal(filePath);
-    this.snapshot = null;
-    this.lastUpdated = new Date();
-    this.emit('change');
+    const changed = await this.ingestFileInternal(filePath);
+    // Only invalidate the aggregate snapshot and notify SSE clients when at
+    // least one row was actually inserted or replaced. Unchanged-file re-
+    // observations (e.g. watcher spurious events) are no-ops and do not cause
+    // a full aggregate() rebuild on the next getMetrics() call.
+    if (changed) {
+      this.snapshot = null;
+      this.lastUpdated = new Date();
+      this.emit('change');
+    }
   }
 
   /**
@@ -2358,11 +2590,18 @@ export class IndexStore extends EventEmitter {
    * O(distinct requestIds with tool events), not O(all lines in the file).
    * See ADR 0003 for the full rationale and alternatives considered.
    */
+  /**
+   * Returns true if at least one row was inserted or replaced during this
+   * ingest call. Used by ingestFile() to decide whether to invalidate the
+   * snapshot and emit 'change'. Callers that don't need the return value
+   * (initialize, reingestSubagentFilesForAgentIds) may safely ignore it.
+   */
   private async ingestFileInternal(
     filePath: string,
     options: { skipRequestedSubagentModelScan?: boolean } = {}
-  ): Promise<void> {
+  ): Promise<boolean> {
     const fileAudit = emptyFileIngestionAudit();
+    let rowsChanged = false;
 
     if (!options.skipRequestedSubagentModelScan) {
       const changedAgentIds = await this.indexRequestedSubagentModels(filePath);
@@ -2402,6 +2641,14 @@ export class IndexStore extends EventEmitter {
     // vice versa). The file-watcher calls ingestFile() again on any change, so
     // any mid-ingest append is self-healed on the next watcher event. The dedup
     // key (requestId:messageId) ensures re-ingested rows are not double-counted.
+    //
+    // M2: Two-pass ingest race is accepted (self-heals on next watcher event).
+    // In practice turn-level toolUses, toolErrors, and durationMs may display as
+    // zero/null for one refresh cycle during an active session. Cost figures are
+    // unaffected because they come from the assistant usage block in pass 2,
+    // which is always self-contained. Fixing the race would require file locking
+    // or a single-pass approach — deferred because the UI already refreshes in
+    // real-time and the stale window is sub-second.
     //
     // Duplicate-tool risk: if a JSONL file contains multiple assistant events
     // sharing the same requestId (non-standard but possible in edge cases), the
@@ -2740,6 +2987,21 @@ export class IndexStore extends EventEmitter {
 
           if (!existingRow) fileAudit.rowsIndexed += 1;
 
+          // Maintain session-keyed row index. A new entry in the index is only
+          // created on first insert; replacements do not need to update it
+          // because dedupKey → sessionId is stable (same row, same session).
+          if (row.sessionId) {
+            let sessionKeys = this.sessionIndex.get(row.sessionId);
+            if (!sessionKeys) {
+              sessionKeys = new Set<string>();
+              this.sessionIndex.set(row.sessionId, sessionKeys);
+            }
+            sessionKeys.add(dedupKey);
+          }
+
+          // Mark that the store changed so ingestFile() propagates the event.
+          rowsChanged = true;
+
           // Track per-session first/last timestamps for duration stats.
           // Parse the timestamp independently so we have epoch ms precision;
           // buildTokenRow only stores date+hour in the TokenRow.
@@ -2760,6 +3022,16 @@ export class IndexStore extends EventEmitter {
 
     fileAudit.lastIndexedAt = formatLocalIso();
     this.fileIngestionAudits.set(filePath, fileAudit);
+    // Evict oldest 10% by insertion order when the cap is reached.
+    // Stale audit entries for evicted files are re-created on next ingest.
+    if (this.fileIngestionAudits.size > this.maxFileIngestionAudits) {
+      evictOldestInsertionOrder(
+        this.fileIngestionAudits,
+        Math.ceil(this.maxFileIngestionAudits * 0.1)
+      );
+    }
+
+    return rowsChanged;
   }
 
   /** Invalidate the aggregate snapshot (triggers recompute on next getMetrics). */
@@ -2795,6 +3067,65 @@ export class IndexStore extends EventEmitter {
   getSessions(query: MetricsQuery = {}): SessionSummary[] {
     const allRows = [...this.rows.values()];
     return computeSessionSummaries(allRows, query, this.sessionTimes);
+  }
+
+  /**
+   * Return SessionSummary objects for sessions whose last activity falls within
+   * the most recent `windowMs` milliseconds, sorted by lastTs descending
+   * (most-recently-active first), capped at `limit` entries.
+   *
+   * This is more useful than `getSessions()` when the caller wants to surface
+   * recently-active sessions: the parent method sorts by costUsd, so
+   * low-cost recent sessions are truncated when many expensive historical
+   * sessions exist.
+   *
+   * Implementation notes:
+   * - Iterates `sessionTimes` (O(N), N ≤ MAX_SESSION_TIMES = 50 000) to
+   *   identify active session IDs; then filters rows to only those sessions,
+   *   avoiding a full-row scan for inactive sessions.
+   * - Returns the same SessionSummary shape as `getSessions()` — no shape
+   *   divergence.
+   *
+   * @param windowMs - Activity window in milliseconds (e.g. 300_000 for 5 min).
+   * @param limit    - Maximum number of sessions to return (e.g. 10).
+   */
+  getActiveSessions(windowMs: number, limit: number): SessionSummary[] {
+    const cutoff = Date.now() - windowMs;
+
+    // Collect active session IDs and their lastTs values in one pass.
+    const activeIds = new Map<string, number>(); // sessionId → lastTs (epoch ms)
+    for (const [sid, times] of this.sessionTimes) {
+      if (times.lastTs >= cutoff) {
+        activeIds.set(sid, times.lastTs);
+      }
+    }
+
+    if (activeIds.size === 0) return [];
+
+    // Use the session-keyed index to fetch only rows for active sessions,
+    // avoiding a full O(all-rows) scan.
+    const filteredRows: TokenRow[] = [];
+    for (const sid of activeIds.keys()) {
+      const keys = this.sessionIndex.get(sid);
+      if (!keys) continue;
+      for (const key of keys) {
+        const row = this.rows.get(key);
+        if (row) filteredRows.push(row);
+      }
+    }
+
+    // Reuse the same computation path as getSessions() — passes an empty query
+    // (no since/project filtering) because recency is already handled above.
+    const summaries = computeSessionSummaries(filteredRows, {}, this.sessionTimes);
+
+    // Re-sort by lastTs descending (computeSessionSummaries sorts by costUsd).
+    summaries.sort((a, b) => {
+      const aLast = activeIds.get(a.sessionId) ?? 0;
+      const bLast = activeIds.get(b.sessionId) ?? 0;
+      return bLast - aLast;
+    });
+
+    return summaries.slice(0, limit);
   }
 
   /**
@@ -2849,9 +3180,23 @@ export class IndexStore extends EventEmitter {
    * returned as null when the entry has been evicted (50K-entry LRU cap).
    */
   getSessionDetail(sessionId: string): SessionDetail | null {
+    // Use the session-keyed index when available (O(rows-for-session)) to
+    // avoid iterating all rows. Falls back to a full scan only when the index
+    // has no entry — which happens when rows were injected directly into
+    // store.rows (e.g. in tests) rather than via ingestFileInternal.
+    const dedupKeys = this.sessionIndex.get(sessionId);
     const sessionRows: TokenRow[] = [];
-    for (const row of this.rows.values()) {
-      if (row.sessionId === sessionId) sessionRows.push(row);
+    if (dedupKeys && dedupKeys.size > 0) {
+      for (const key of dedupKeys) {
+        const row = this.rows.get(key);
+        if (row) sessionRows.push(row);
+      }
+    } else {
+      // Fallback: full scan (used when rows were injected without going through
+      // ingestFileInternal, e.g. in unit tests).
+      for (const row of this.rows.values()) {
+        if (row.sessionId === sessionId) sessionRows.push(row);
+      }
     }
     if (sessionRows.length === 0) return null;
 
