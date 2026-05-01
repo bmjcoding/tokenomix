@@ -27,17 +27,21 @@ duplication.
 
 ## Decision
 
-Add a `RescanScheduler` class co-located in `apps/server/src/index-store.ts`.
-The scheduler maintains a per-file mtime cache and, on each 60-second tick,
-stats every JSONL file, compares mtimes, and calls `ingestFile()` only for
-files whose mtime has advanced. The first tick populates the cache without
-ingesting, so chokidar remains the primary delivery mechanism and the
-scheduler acts only as a safety net.
+Add a `RescanScheduler` class, now housed in
+`apps/server/src/rescan-scheduler.ts` (extracted from `index-store.ts` on
+2026-04-30 as part of the Pass 1 remediation). The scheduler maintains a
+per-file mtime cache and, on each 60-second tick, stats every JSONL file,
+compares mtimes, and calls `ingestFile()` only for files whose mtime has
+advanced. The first tick populates the cache without ingesting, so chokidar
+remains the primary delivery mechanism and the scheduler acts only as a
+safety net.
 
-The class is co-located in `index-store.ts` rather than extracted to a
-dedicated module because it requires direct access to the (non-circular)
-`collectJsonlFiles` export within the same module. Extraction to a dedicated
-module is a planned follow-up tracked as CLAUD-002.
+The class imports `collectJsonlFiles` and `IndexStore` from `index-store.ts`
+via a named import; the original concern about circular dependency did not
+materialise. The previously exported `RescanSchedulerOptions` type has been
+removed — the constructor takes positional arguments and no caller requires
+the options type. Full extraction of the remaining `index-store.ts` god module
+is tracked as CLAUD-002 (Pass 2).
 
 A re-entrancy guard (`_tickRunning`) prevents a slow ingest cycle from
 producing overlapping ticks. The interval timer is `unref()`-ed so it does
@@ -61,8 +65,8 @@ so operators can verify scheduler liveness without tailing logs.
 
 **Harder / deferred:**
 
-- The 3070-line `index-store.ts` module grows further until CLAUD-002
-  (extraction to a dedicated module) is addressed.
+- The remaining `index-store.ts` god module still requires full extraction
+  (CLAUD-002, deferred to Pass 2); `RescanScheduler` extraction is complete.
 - Zero-change ticks produce no log output, making 24-hour scheduler silence
   indistinguishable from a hung scheduler without external monitoring
   (tracked as SRE-heartbeat; a debug-level heartbeat log is a planned
@@ -73,8 +77,10 @@ so operators can verify scheduler liveness without tailing logs.
 
 ## References
 
-- `apps/server/src/index-store.ts` — `RescanScheduler` class and exported
-  `collectJsonlFiles()`
+- `apps/server/src/rescan-scheduler.ts` — `RescanScheduler` class (extracted
+  from `index-store.ts` on 2026-04-30)
+- `apps/server/src/index-store.ts` — `collectJsonlFiles()` and `IndexStore`
+  imported by `rescan-scheduler.ts`
 - `apps/server/src/routes/admin.ts` — `POST /api/admin/rescan` route module
 - `apps/server/src/routes/health.ts` — `lastRescanTs` field in health response
 - `apps/server/src/tests/rescan-scheduler.test.ts` — scheduler unit tests

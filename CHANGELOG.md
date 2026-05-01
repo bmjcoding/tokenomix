@@ -7,6 +7,161 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.10.0] - 2026-04-30
+
+### Added
+
+- `apps/server/src/env.ts` — Zod-based startup env-var validation; server
+  exits with a clear error message on misconfiguration rather than silently
+  misreading or defaulting bad values at runtime.
+- `.env.example` at repo root documents all 13 env vars (`TOKENOMIX_*` and
+  `PORT_BASE`) with types, defaults, and brief descriptions.
+- `.npmrc` at repo root with `engine-strict=true` — Node version mismatches
+  now fail at install time rather than producing silent runtime errors.
+- `apps/web/src/components/ErrorBoundary.tsx` — React class component that
+  catches render exceptions in any child panel and surfaces a recovery UI with
+  a reload button instead of a blank screen.
+- SSE-degraded fallback banner registered in `main.tsx` for when the live
+  event stream degrades; fires a custom DOM event so future banner wiring
+  requires no server changes.
+- `apps/web/src/layout/ActiveSessionsRail.tsx` — collapsed live-session pill
+  plus expandable panel listing active sessions; surfaces an error message
+  when the endpoint is unreachable rather than silently showing empty state.
+- Cancel / Stop button in `RecommendationChatPanel` while a streaming response
+  is in flight; triggers the component's `AbortController` to cleanly cancel
+  the fetch.
+- 10-second deadline (`REVEAL_TIMEOUT_MS`) on the reveal endpoint; prevents
+  an indefinitely hung file-manager launch from blocking the request.
+- `TOKENOMIX_MAX_FILE_AUDITS` and `TOKENOMIX_MAX_AGENT_ENTRIES` env vars for
+  tuning `IndexStore` map caps at runtime without code changes.
+- `apps/server/src/tests/env-validation.test.ts` — Zod schema test coverage
+  for valid, missing-required, invalid-enum, and negative-timeout cases.
+
+### Changed
+
+- `streamRecommendationChat` now accepts a `history` array and an
+  `AbortSignal`; the client passes the full conversation history on each send
+  so multi-turn chatbot context is preserved across turns.
+- `AreaChart` tooltip and y-axis labels now use `formatCurrency` (was
+  `toFixed(2)`); sub-cent values are no longer silently truncated to `$0.00`.
+- `FullReportPage` uses the shared `formatCurrency` helper; cost precision is
+  now consistent between the full report and all other panels.
+- `pricingRuntimeConfig()` reads from the validated `serverEnv()` singleton
+  rather than `process.env` directly; Zod enum normalisation applies
+  consistently across all pricing-config reads.
+- `IndexStore`: `getSessionDetail()` now uses a session-keyed row index
+  (`Map<sessionId, Set<dedupKey>>`), making lookups proportional to the
+  session's own rows rather than the full store.
+- `IndexStore`: ingest no-op guard — unchanged-file watcher events no longer
+  trigger an aggregate rebuild; the snapshot is only invalidated when at least
+  one new row is inserted.
+- `IndexStore`: `pricingRuntimeConfig` result is module-level cached and
+  recomputed only when the relevant env vars change.
+- `IndexStore`: all bounded maps now have explicit eviction strategies;
+  `sessionIndex` is cascade-evicted alongside `sessionTimes`; insertion-order
+  eviction used for file-audit and agent-ID maps; `firstTs`-sort eviction used
+  for `sessionInitialPrompts` and `sessionTimes`.
+- `IndexStore`: `buildPricingAudit` now uses the same 30-day KPI row set as
+  the dashboard aggregates (was using since-filtered rows while 30d KPIs used
+  a different filter pass).
+- `IndexStore`: context-cache savings estimate is tier-aware (5-minute cache
+  at 0.2 weight, 1-hour cache at 0.5 weight) instead of a flat 12% factor.
+- `IndexStore`: `MAX_SESSION_TIMES` raised to 200 000; eviction skips sessions
+  with recent `lastTs` to avoid dropping sessions that are still active.
+- ECharts chart components import from `echarts-for-react/lib/core` and pass a
+  pre-configured `echarts` instance, eliminating the implicit full-bundle
+  import from the default `echarts-for-react` entry point.
+- Chatbot subprocess `cwd` is now isolated to `os.tmpdir()/tokenomix-chat-<pid>`
+  (created with `mode: 0o700`) rather than inheriting `process.cwd()`; this
+  prevents Claude Code from writing session JSONL files under
+  `~/.claude/projects/` and inflating the dashboard's own cost figures.
+- `TOKENOMIX_CLAUDE_COMMAND` is validated at startup for shell metacharacters,
+  null bytes, and path traversal sequences before any subprocess spawn.
+- Reveal endpoint is now `async` and returns a `500` response with a
+  structured `{ error }` body on spawn failure; previously returned `204` in
+  all cases so the client could not distinguish success from error.
+- `ActiveSessionsRail` live-indicator dot uses `bg-primary` (was `bg-blue-500`)
+  so it tracks the theme token rather than a hard-coded Tailwind blue.
+- `ActiveSessionsRail` expanded panel uses `role="region"` with `aria-label`
+  (was `role="dialog"` with `aria-modal=false`); avoids screen-reader
+  modal-trap edge case on VoiceOver/Safari.
+- `HeroSpend` 30D Cost Driver section wrapped in `<dl>/<dt>/<dd>` for explicit
+  label/value association by assistive technology.
+- `HeroSpend` ghost-text contrast lifted from `text-gray-200`/`dark:gray-800`
+  to `text-gray-300`/`dark:gray-700`; decorative watermark intent preserved
+  but now readable.
+- `FloatingControls` gear button `aria-expanded` is now bound to actual
+  expanded state (was hard-coded `false`).
+- `Select.tsx` `aria-controls` uses `useId()`-generated unique IDs per
+  instance (was a static `"select-panel"` string, which broke ARIA relationships
+  when multiple Select components appeared on the same page).
+- `HeroSpend` 30D Cost Driver is no longer `aria-hidden`.
+- `TOKENOMIX_CLAUDE_CHAT_MAX_BUDGET_USD` is validated as a numeric string via
+  Zod regex; `TOKENOMIX_CLAUDE_CHAT_MODEL` has a 100-character length cap.
+- `recommendations-chat.ts` and `watcher.ts` now read env vars via
+  `serverEnv()` rather than direct `process.env` reads.
+- `apps/server/src/index.ts` uses the canonical `logEvent` import from
+  `logger.ts` (was a private duplicate definition).
+- `useServerEvents.invalidateAll()` now includes the `recommendationChatStatus`
+  query key so the chat status refreshes on SSE events.
+- `AreaChartPanel` `isEmpty` check also gates on the filtered-since series
+  being empty (not only the raw data being absent).
+- `OptimizationOpportunitiesPanel` renders an em-dash for zero-impact rows
+  instead of `$0.0000`.
+- `HeatmapPanel` shows an empty-state message when `heatmapData` is absent
+  (was rendering a full 7 × 24 gray grid).
+- `OptimizationSignalsPanel` omits the context-risk qualifier suffix when
+  `totalCounted` is zero.
+- `OverviewPage` error state includes a Retry button that calls
+  `queryClient.invalidateQueries`.
+- `RecommendationChatPanel` lazy-loads `react-markdown` and `remark-gfm` via
+  `React.lazy`; the markdown renderer is not bundled at initial page load.
+- `revealSessionJsonl` in `api.ts` surfaces the server-supplied error message
+  from a non-2xx response body rather than a generic status string.
+- `sessions-route.test.ts` spawn mock emits a `close` event consistent with
+  the async reveal endpoint wrapper.
+
+### Removed
+
+- Stub fields `retroRollup`, `retroTimeline`, and `retroForecast` from
+  `MetricSummary` across server, shared, and web; these were always `null` or
+  empty-array placeholders.
+- Dead types: `FileTouchBucket`, `RetroRollup`, `RetroTimelinePoint`,
+  `RetroForecastPoint`, `RescanSchedulerOptions`.
+- Dead exports: `fetchHealth`, `queryKeys.health`, `queryKeys.turns`,
+  `getLast24hSeries`, `surfaceColor()` alias.
+- Unused devDependency `@testing-library/user-event` (no usages in the
+  codebase).
+- Duplicate private `logEvent` definition in `apps/server/src/index.ts`.
+- `console.error` call in `SessionDetailPage.tsx`; error is surfaced via the
+  component's transient-state error display instead.
+- Unreachable Haiku-family pricing branch (Haiku major > 3) in
+  `packages/shared/src/pricing.ts`.
+- `Math.min` / `Math.max` spread calls on large arrays in `FullReportPage.tsx`
+  (replaced with `reduce` to eliminate call-stack risk).
+
+### Fixed
+
+- `sessionInitialPrompts` eviction was using Map insertion order; it now sorts
+  by `firstTs` before evicting so recently-active sessions are retained over
+  old sessions that happen to have been inserted last.
+- Reveal endpoint hung indefinitely when the OS file manager did not close;
+  now times out after 10 seconds and returns a 500 response.
+- Multi-turn chatbot memory was absent — the server accepted a `history`
+  parameter but the client was not sending it; each turn started from scratch.
+- Chatbot subprocess inherited `process.cwd()`, causing Claude Code to write
+  session JSONL files into `~/.claude/projects/` and inflate the dashboard's
+  own cost metrics; subprocess is now isolated to a temporary directory.
+- `buildPricingAudit` was fed since-filtered rows while the 30-day KPIs it
+  benchmarks against used a project-only-filtered row set; the audit and
+  dashboard figures now use the same 30-day source.
+- `topCostShare` closed over the wrong `costSum30d` variable binding.
+- `Math.min` / `Math.max` spread on up to 500 timestamps in `FullReportPage`
+  posed a call-stack risk; replaced with `reduce`.
+- ECharts chart components were importing the full ECharts bundle via the
+  default `echarts-for-react` entry point (approximately 750 KB uncompressed);
+  now use the tree-shaken `lib/core` path.
+
 ## [3.9.0] - 2026-04-30
 
 ### Added
@@ -619,7 +774,8 @@ Internal cross-references updated:
 - `DEFAULT_OUTPUT` now points to `output/usage-dashboard.html` within the
   project, instead of a session-specific retro directory.
 
-[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.9.0...HEAD
+[Unreleased]: https://github.com/bmjcoding/tokenomix/compare/v3.10.0...HEAD
+[3.10.0]: https://github.com/bmjcoding/tokenomix/compare/v3.9.0...v3.10.0
 [3.9.0]: https://github.com/bmjcoding/tokenomix/compare/v3.8.1...v3.9.0
 [3.8.0]: https://github.com/bmjcoding/tokenomix/compare/v3.7.2...v3.8.0
 [3.7.2]: https://github.com/bmjcoding/tokenomix/compare/v3.7.1...v3.7.2

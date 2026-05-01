@@ -153,6 +153,7 @@ the normal startup path.
 | `POST /api/recommendations/chat` | Read-only recommendation chat backed by local Claude Code |
 | `POST /api/recommendations/chat/stream` | SSE recommendation chat with server-lifetime Claude Code session context |
 | `GET /api/sessions?since=...&project=...&limit=...` | Per-session breakdown sorted by cost |
+| `GET /api/sessions/active?windowMs=...&limit=...` | Sessions active within a recent time window, sorted by last activity (default window 5 min, max 24 h; default limit 10, max 100) |
 | `GET /api/sessions/:id` | Full detail for a single session: header totals, all-tool breakdown, per-turn rows |
 | `GET /api/turns?since=...&limit=...&project=...` | Top expensive turns, default 10 and max 50 |
 | `GET /api/health` | Readiness and index statistics |
@@ -165,6 +166,22 @@ the normal startup path.
 | `/` | Overview — spend hero, KPI cards, activity heatmap, model mix |
 | `/report` | Full session list with project name, top tools, and pagination |
 | `/report/$sessionId` | Per-session detail — Overview / Tools / Turns tabs |
+
+## Active Sessions Rail
+
+A collapsible live-session panel is fixed at the top-right of every page on
+`lg` and wider viewports. It calls `GET /api/sessions/active` with a 5-minute
+window and a limit of 10, polling via TanStack Query's background refresh. The
+window size is controlled by the `ACTIVE_SESSION_WINDOW_MS` constant in
+`apps/web/src/lib/activeSessionConstants.ts`.
+
+- **Collapsed**: a pill button showing a pulsing dot and the count of active
+  sessions (or a muted label when none are active).
+- **Expanded**: a dialog panel listing each active session with project name,
+  short session ID, last-active time, per-session cost, turn count, and token
+  count — each linking to the session detail page.
+- The panel shows an error message when the endpoint is unreachable rather than
+  silently falling back to the empty-state label.
 
 ## Development Notes
 
