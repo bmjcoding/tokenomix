@@ -1,11 +1,4 @@
-import {
-  createContext,
-  type ReactNode,
-  useCallback,
-  useContext,
-  useMemo,
-  useState,
-} from 'react';
+import { createContext, type ReactNode, useCallback, useContext, useMemo, useState } from 'react';
 
 /** Motion preference values persisted to localStorage. */
 export type MotionPreference = 'system' | 'reduced' | 'full';
@@ -55,9 +48,7 @@ export function MotionPreferenceProvider({
   );
 
   return (
-    <MotionPreferenceContext.Provider value={value}>
-      {children}
-    </MotionPreferenceContext.Provider>
+    <MotionPreferenceContext.Provider value={value}>{children}</MotionPreferenceContext.Provider>
   );
 }
 

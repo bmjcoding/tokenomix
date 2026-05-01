@@ -149,7 +149,14 @@ export function OptimizationSignalsPanel({ data }: OptimizationSignalsPanelProps
       <MetricCard
         label="P90 SESSION DURATION"
         value={p90Str}
-        context={`${p50ContextStr} · ${sessionCountStr}; context risk`}
+        // When totalCounted is 0 there are no sessions to qualify — omit the
+        // "context risk" suffix to avoid a misleading non-sequitur in the
+        // empty/initial-load state.
+        context={
+          totalCounted === 0
+            ? `${p50ContextStr} · ${sessionCountStr}`
+            : `${p50ContextStr} · ${sessionCountStr}; context risk`
+        }
         deltaPercent={null}
         icon={<Clock size={14} aria-hidden="true" className="shrink-0" />}
         tooltip="Long sessions usually accumulate more context, cache reads, and model state. If P90 is much higher than P50, the expensive tail is likely coming from marathon sessions where earlier /compact, /clear, or project memory could reduce spend."

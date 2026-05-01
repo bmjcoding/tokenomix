@@ -107,18 +107,20 @@ type RecommendationChatStreamEvent =
   | { type: 'error'; error: string };
 
 export async function streamRecommendationChat(
-  params: { message: string },
+  params: { message: string; history?: RecommendationChatMessage[] },
   handlers: {
     onStart?: (sessionSeeded: boolean) => void;
     onDelta: (text: string) => void;
     onDone: (response: RecommendationChatResponse) => void;
     onError: (message: string) => void;
-  }
+  },
+  signal?: AbortSignal
 ): Promise<void> {
   const res = await fetch('/api/recommendations/chat/stream', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(params),
+    ...(signal !== undefined && { signal }),
   });
 
   if (!res.ok) {
@@ -212,6 +214,22 @@ export async function fetchSessions(
 }
 
 /**
+ * GET /api/sessions/active
+ *
+ * Returns an array of SessionSummary objects filtered by recency server-side,
+ * sorted by lastTs descending.
+ *
+ * @param params.windowMs - Lookback window in ms (positive int, max 86400000). Default: server default.
+ * @param params.limit    - Max sessions to return (positive int, max 100). Default: server default.
+ */
+export async function fetchActiveSessions(
+  params: { windowMs?: number; limit?: number } = {}
+): Promise<SessionSummary[]> {
+  const qs = buildQuery({ windowMs: params.windowMs, limit: params.limit });
+  return apiFetch<SessionSummary[]>(`/api/sessions/active${qs}`);
+}
+
+/**
  * GET /api/turns
  *
  * Returns an array of TurnBucket objects sorted by costUsd descending.
@@ -247,34 +265,9 @@ export async function fetchSessionDetail(sessionId: string): Promise<SessionDeta
  * Throws on non-2xx.
  */
 export async function revealSessionJsonl(sessionId: string): Promise<void> {
-  const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/reveal`, {
-    method: 'POST',
-  });
+  const path = `/api/sessions/${encodeURIComponent(sessionId)}/reveal`;
+  const res = await fetch(path, { method: 'POST' });
   if (!res.ok) {
-    throw new Error(`reveal failed: ${res.status}`);
+    throw new Error(await responseErrorMessage(res, path));
   }
-}
-
-/**
- * GET /api/health
- *
- * Returns a lightweight health check object.
- * Throws on non-2xx (server unreachable or in error state).
- */
-export async function fetchHealth(): Promise<{
-  ok: boolean;
-  projectsDir: string;
-  isReady: boolean;
-  indexedRows: number;
-  lastUpdated: string;
-  lastRescanTs: string | null;
-}> {
-  return apiFetch<{
-    ok: boolean;
-    projectsDir: string;
-    isReady: boolean;
-    indexedRows: number;
-    lastUpdated: string;
-    lastRescanTs: string | null;
-  }>('/api/health');
 }

@@ -116,7 +116,9 @@ export function OptimizationOpportunitiesPanel({ data }: OptimizationOpportuniti
                     </p>
                   </td>
                   <td className="px-4 py-3 text-center font-semibold tabular-nums text-gray-950 dark:text-white whitespace-nowrap">
-                    {formatCurrency(opportunity.impactUsd30d)}
+                    {opportunity.impactUsd30d === 0
+                      ? '—'
+                      : formatCurrency(opportunity.impactUsd30d)}
                   </td>
                   {/* Right-aligned cell to match Rule Score header. */}
                   <td className="px-4 py-3 text-right whitespace-nowrap">

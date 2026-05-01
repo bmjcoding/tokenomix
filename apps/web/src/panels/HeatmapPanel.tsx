@@ -32,7 +32,14 @@ export function HeatmapPanel() {
           <p className="text-sm text-red-500 dark:text-red-400">Failed to load heatmap data.</p>
         </div>
       )}
-      {data && <HeatmapChart data={data.heatmapData} height={200} />}
+      {data && data.heatmapData.length > 0 && <HeatmapChart data={data.heatmapData} height={200} />}
+      {data && data.heatmapData.length === 0 && !isError && (
+        <div className="flex items-center justify-center h-48">
+          <p className="text-sm text-gray-500 dark:text-gray-400">
+            No activity in the selected window.
+          </p>
+        </div>
+      )}
     </Card>
   );
 }

@@ -43,12 +43,13 @@ const MAX_CONSECUTIVE_ERRORS = 3;
 /** Custom DOM event name emitted when the SSE connection has failed repeatedly. */
 const SSE_DEGRADED_EVENT = 'tokenomix:sse-degraded';
 
-/** Shared helper — invalidates all four query keys used across dashboard panels. */
+/** Shared helper — invalidates all query keys used across dashboard panels. */
 function invalidateAll(queryClient: ReturnType<typeof useQueryClient>): void {
   void queryClient.invalidateQueries({ queryKey: ['metrics'] });
   void queryClient.invalidateQueries({ queryKey: ['sessions'] });
   void queryClient.invalidateQueries({ queryKey: ['turns'] });
   void queryClient.invalidateQueries({ queryKey: ['session'] });
+  void queryClient.invalidateQueries({ queryKey: ['recommendationChatStatus'] });
 }
 
 export function useServerEvents(): void {

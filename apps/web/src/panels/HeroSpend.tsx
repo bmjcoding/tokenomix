@@ -264,15 +264,19 @@ export function HeroSpend({ data }: HeroSpendProps) {
           {/* Hairline separator — primary metric above, satellite metric below */}
           <div className="mt-6 pt-6 border-t border-gray-200 dark:border-gray-800">
             {/* 30D Cost Driver — satellite treatment (text-4xl, not dominant) */}
-            <p className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
-              30D Cost Driver
-            </p>
-            <p
-              aria-hidden="true"
-              className="mt-1 text-4xl font-bold leading-none tracking-tight tabular-nums text-gray-200 dark:text-gray-800"
-            >
-              {cacheShare30d.toFixed(0)}%
-            </p>
+            <dl>
+              <dt className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                30D Cost Driver
+              </dt>
+              {/* Intentional decorative ghost-number treatment: contrast raised to
+                  text-gray-300 / dark:text-gray-700 so the watermark is legible
+                  without competing with the primary metric. aria-label on the
+                  parent <dl> remains the accessible name; sighted users see the
+                  decorative number at reduced visual weight. */}
+              <dd className="mt-1 text-4xl font-bold leading-none tracking-tight tabular-nums text-gray-300 dark:text-gray-700">
+                {cacheShare30d.toFixed(0)}%
+              </dd>
+            </dl>
             <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
               cache creation/read share
             </p>
@@ -291,15 +295,17 @@ export function HeroSpend({ data }: HeroSpendProps) {
                 aria-hidden="true"
                 className="text-gray-300 dark:text-gray-700 shrink-0 self-center"
               />
+              {/* Intentional decorative ghost-number treatment: same contrast lift
+                  as the 30D Cost Driver satellite (text-gray-300/dark:text-gray-700)
+                  so the watermark remains decorative-but-readable. aria-hidden
+                  because the screen-reader label on the parent <div> carries the value. */}
               <FlipNumber
                 value={current.totalTokens}
                 aria-hidden="true"
-                className="text-6xl sm:text-7xl lg:text-8xl font-bold leading-none tracking-tight tabular-nums text-gray-200 dark:text-gray-800"
+                className="text-6xl sm:text-7xl lg:text-8xl font-bold leading-none tracking-tight tabular-nums text-gray-300 dark:text-gray-700"
               />
             </div>
-            <p className="mt-3 text-sm text-gray-500 dark:text-gray-400">
-              input + output
-            </p>
+            <p className="mt-3 text-sm text-gray-500 dark:text-gray-400">input + output</p>
           </div>
         </div>
       </div>

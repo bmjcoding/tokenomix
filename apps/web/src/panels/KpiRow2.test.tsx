@@ -135,9 +135,6 @@ function buildMetricSummaryFixture(overrides: Partial<MetricSummary> = {}): Metr
     inputTokensPrev30d: 0,
     outputTokensPrev30d: 0,
     costUsd30dPrev: 0,
-    retroRollup: null,
-    retroTimeline: [],
-    retroForecast: [],
     monthlyRollup: {
       current: {
         costUsd: 0,
@@ -261,9 +258,7 @@ function deriveCard2(data: MetricSummary) {
 function deriveWorstTool(data: MetricSummary) {
   // Mirror KpiRow2.tsx: filter to tools with >= MIN_TOOL_CALLS_FOR_ERROR_RATE
   // calls before sorting, so single-use failures can't dominate the metric.
-  const qualifiedTools = data.byTool.filter(
-    (t) => t.count >= MIN_TOOL_CALLS_FOR_ERROR_RATE,
-  );
+  const qualifiedTools = data.byTool.filter((t) => t.count >= MIN_TOOL_CALLS_FOR_ERROR_RATE);
   const worstTool =
     qualifiedTools.length > 0
       ? [...qualifiedTools].sort((a, b) => b.errorRate - a.errorRate)[0]
@@ -423,7 +418,12 @@ describe('KpiRow2 — MIN_TOOL_CALLS_FOR_ERROR_RATE guard', () => {
     // With only 1 call it must NOT show as worst tool.
     const data = buildMetricSummaryFixture({
       byTool: [
-        { toolName: 'mcp__claude-in-chrome__tabs_context_mcp', count: 1, errorCount: 1, errorRate: 1.0 },
+        {
+          toolName: 'mcp__claude-in-chrome__tabs_context_mcp',
+          count: 1,
+          errorCount: 1,
+          errorRate: 1.0,
+        },
       ],
     });
     const { worstTool, showWorstToolCard } = deriveWorstTool(data);
@@ -471,7 +471,12 @@ describe('KpiRow2 — MIN_TOOL_CALLS_FOR_ERROR_RATE guard', () => {
   it('hides card when one below threshold call exists (count = MIN - 1)', () => {
     const data = buildMetricSummaryFixture({
       byTool: [
-        { toolName: 'Edit', count: MIN_TOOL_CALLS_FOR_ERROR_RATE - 1, errorCount: 1, errorRate: 0.1 },
+        {
+          toolName: 'Edit',
+          count: MIN_TOOL_CALLS_FOR_ERROR_RATE - 1,
+          errorCount: 1,
+          errorRate: 0.1,
+        },
       ],
     });
     const { worstTool } = deriveWorstTool(data);

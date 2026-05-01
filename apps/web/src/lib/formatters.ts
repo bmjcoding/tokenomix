@@ -118,7 +118,7 @@ export function formatDurationMinutes(minutes: number): string {
 export function formatSessionDate(iso: string | null): string {
   if (!iso) return '—';
   const d = new Date(iso);
-  if (isNaN(d.getTime())) return '—';
+  if (Number.isNaN(d.getTime())) return '—';
   const month = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   const year = d.getFullYear();
@@ -127,8 +127,18 @@ export function formatSessionDate(iso: string | null): string {
 
 /** Month name abbreviations (same approach as formatSessionDate's comment notes). */
 const MONTH_ABBR = [
-  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
 ];
 
 /**
@@ -152,7 +162,7 @@ export function formatDateRange(startIso: string | null, endIso: string | null):
   function fmtDate(iso: string | null): string | null {
     if (!iso) return null;
     const d = new Date(iso);
-    if (isNaN(d.getTime())) return null;
+    if (Number.isNaN(d.getTime())) return null;
     const month = MONTH_ABBR[d.getMonth()];
     const day = d.getDate();
     const year = d.getFullYear();
@@ -167,6 +177,36 @@ export function formatDateRange(startIso: string | null, endIso: string | null):
   if (!end) return start;
   if (start === end) return start;
   return `${start} – ${end}`;
+}
+
+/**
+ * Produces a short elapsed-time label describing how long ago `targetMs` was
+ * relative to `nowMs`.
+ *
+ * Scale:
+ *   elapsed < 60 s   → "Xs"   (e.g. "42s")
+ *   elapsed < 60 min → "Xm"   (e.g. "14m")
+ *   elapsed ≥ 60 min → "Xh"   (e.g. "2h")
+ *
+ * Both arguments are Unix-epoch milliseconds. When `targetMs` is in the
+ * future (i.e. elapsed is negative), the result is clamped to "0s".
+ *
+ * Intended for recency labels like "last active 3m ago" — not for verbose
+ * duration display (use formatDuration for that).
+ *
+ * Examples:
+ *   formatTimeSince(Date.now(), Date.now() - 30_000)   → "30s"
+ *   formatTimeSince(Date.now(), Date.now() - 90_000)   → "1m"
+ *   formatTimeSince(Date.now(), Date.now() - 7_200_000) → "2h"
+ */
+export function formatTimeSince(nowMs: number, targetMs: number): string {
+  const elapsedMs = Math.max(0, nowMs - targetMs);
+  const seconds = Math.floor(elapsedMs / 1_000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(elapsedMs / 60_000);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(elapsedMs / 3_600_000);
+  return `${hours}h`;
 }
 
 /**

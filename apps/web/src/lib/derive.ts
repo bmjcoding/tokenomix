@@ -8,17 +8,11 @@
  * and do NOT extend the shared SinceOption type.
  */
 
-import type { DailyBucket, HeatmapPoint, SubhourlyBucket } from '@tokenomix/shared';
+import type { DailyBucket, SubhourlyBucket } from '@tokenomix/shared';
 
 // ---------------------------------------------------------------------------
-// 24-hour series
+// Shared local helpers
 // ---------------------------------------------------------------------------
-
-export interface HourlySpendPoint {
-  date: string;
-  hour: number;
-  costUsd: number;
-}
 
 /** Format a Date as YYYY-MM-DD in the browser's local time zone. */
 function toLocalDateKey(date: Date): string {
@@ -37,45 +31,6 @@ function emptyDailyBucket(date: string): DailyBucket {
     cacheCreationTokens: 0,
     cacheReadTokens: 0,
   };
-}
-
-/**
- * Returns local hourly boundary buckets spanning the last 24 hours.
- *
- * Missing heatmap buckets are filled with 0 so the chart represents a real
- * rolling 24-hour window instead of the last non-empty usage hours.
- *
- * The output has 25 points: now-24h, every hour between, and the current hour.
- * That makes the visible chart endpoints a full 24 hours apart.
- */
-export function getLast24hSeries(
-  heatmapData: HeatmapPoint[],
-  now = new Date()
-): HourlySpendPoint[] {
-  if (heatmapData.length === 0) return [];
-
-  const costByHour = new Map<string, number>();
-  for (const point of heatmapData) {
-    const key = `${point.date}:${point.hour}`;
-    costByHour.set(key, (costByHour.get(key) ?? 0) + point.costUsd);
-  }
-
-  const end = new Date(now.getTime());
-  end.setMinutes(0, 0, 0);
-
-  const series: HourlySpendPoint[] = [];
-  for (let offset = 24; offset >= 0; offset--) {
-    const bucketTime = new Date(end.getTime());
-    bucketTime.setHours(end.getHours() - offset);
-    const date = toLocalDateKey(bucketTime);
-    const hour = bucketTime.getHours();
-    series.push({
-      date,
-      hour,
-      costUsd: costByHour.get(`${date}:${hour}`) ?? 0,
-    });
-  }
-  return series;
 }
 
 // ---------------------------------------------------------------------------

@@ -18,11 +18,7 @@ import { Download } from 'lucide-react';
 import { useState } from 'react';
 import { AreaChart, type AreaField } from '../charts/AreaChart.js';
 import { exportDailySeriesCsv } from '../lib/csvExport.js';
-import {
-  getLast24hSubhourlySeries,
-  getTrailingDailySeries,
-  getYtdSeries,
-} from '../lib/derive.js';
+import { getLast24hSubhourlySeries, getTrailingDailySeries, getYtdSeries } from '../lib/derive.js';
 import { Button } from '../ui/Button.js';
 import { Card } from '../ui/Card.js';
 import { SegmentedToggle } from '../ui/SegmentedToggle.js';
@@ -101,10 +97,13 @@ export function AreaChartPanel({ data, period, onPeriodChange }: AreaChartPanelP
   const [field, setField] = useState<AreaField>('costUsd');
 
   const filteredSeries = filterSeries(data, period);
+  // isEmpty gates the Export button. We check both the raw source series AND the
+  // filtered result: the filtered series can be empty even when dailySeries is
+  // non-empty (e.g. ytd period when all data is from a prior calendar year).
   const isEmpty =
-    period === '24h'
+    (period === '24h'
       ? (data.subhourlySeries ?? []).length === 0
-      : data.dailySeries.length === 0;
+      : data.dailySeries.length === 0) || filteredSeries.length === 0;
 
   // For 24h, pass xAxisLabelFormat so ticks show HH:MM instead of MM-DD.
   const xAxisLabelFormat = period === '24h' ? (raw: string) => raw.slice(11, 16) : undefined;

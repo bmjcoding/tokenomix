@@ -114,7 +114,7 @@ export default function FloatingControls() {
           ref={gearButtonRef}
           type="button"
           aria-label="Open settings"
-          aria-expanded={false}
+          aria-expanded={expanded}
           onClick={() => setExpanded(true)}
           className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-gray-200 bg-white text-gray-700 shadow-lg backdrop-blur-sm transition-colors hover:bg-gray-50 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700 dark:hover:text-gray-100 dark:focus-visible:ring-white"
         >

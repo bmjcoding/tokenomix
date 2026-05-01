@@ -1,11 +1,4 @@
-import {
-  createContext,
-  type ReactNode,
-  useCallback,
-  useContext,
-  useMemo,
-  useState,
-} from 'react';
+import { createContext, type ReactNode, useCallback, useContext, useMemo, useState } from 'react';
 
 /** Refresh mode values persisted to localStorage. */
 export type RefreshMode = 'realtime' | 'minute';
@@ -49,16 +42,9 @@ export function RefreshModeProvider({
     setRefreshModeState(mode);
   }, []);
 
-  const value = useMemo(
-    () => ({ refreshMode, setRefreshMode }),
-    [refreshMode, setRefreshMode]
-  );
+  const value = useMemo(() => ({ refreshMode, setRefreshMode }), [refreshMode, setRefreshMode]);
 
-  return (
-    <RefreshModeContext.Provider value={value}>
-      {children}
-    </RefreshModeContext.Provider>
-  );
+  return <RefreshModeContext.Provider value={value}>{children}</RefreshModeContext.Provider>;
 }
 
 /**

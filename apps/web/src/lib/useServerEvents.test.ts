@@ -6,7 +6,7 @@
  * Covers three scenarios:
  *   1. Realtime mode (default): EventSource is constructed on mount, close() on unmount.
  *   2. Minute mode: EventSource is NOT constructed; setInterval fires every 60 000 ms and
- *      calls invalidateQueries on all four cache keys; clearInterval on unmount.
+ *      calls invalidateQueries on all five cache keys; clearInterval on unmount.
  *   3. Mode switch realtime → minute: EventSource is closed when mode switches, interval
  *      is started after the switch (two separate renderHook calls asserting cleanup →
  *      new-effect transition per plan note).
@@ -19,23 +19,11 @@
  *   - QueryClient.invalidateQueries is replaced with a vi.fn() spy to observe calls.
  */
 
-import {
-  QueryClient,
-  QueryClientProvider,
-} from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import {
-  afterEach,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from 'vitest';
-import {
-  RefreshModeProvider,
-} from '../providers/RefreshModeProvider';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { RefreshModeProvider } from '../providers/RefreshModeProvider';
 import { useServerEvents } from './useServerEvents';
 
 // ---------------------------------------------------------------------------
@@ -54,7 +42,7 @@ interface RenderHookResult {
  */
 async function renderHookWithProviders(
   queryClient: QueryClient,
-  initialMode: 'realtime' | 'minute',
+  initialMode: 'realtime' | 'minute'
 ): Promise<RenderHookResult> {
   const container = document.createElement('div');
   document.body.appendChild(container);
@@ -70,12 +58,14 @@ async function renderHookWithProviders(
   function Wrapper(): React.ReactElement {
     return React.createElement(
       RefreshModeProvider,
-      { defaultMode: initialMode, children: null } as React.ComponentProps<typeof RefreshModeProvider>,
+      { defaultMode: initialMode, children: null } as React.ComponentProps<
+        typeof RefreshModeProvider
+      >,
       React.createElement(
         QueryClientProvider,
         { client: queryClient },
-        React.createElement(HookConsumer),
-      ),
+        React.createElement(HookConsumer)
+      )
     );
   }
 
@@ -107,7 +97,7 @@ let eventSourceInstances: { close: ReturnType<typeof vi.fn> }[] = [];
 function buildEventSourceMock(): { new (url: string): EventSource } {
   const MockEventSource = vi.fn(function MockEventSourceCtor(
     this: { close: ReturnType<typeof vi.fn> },
-    _url: string,
+    _url: string
   ) {
     this.close = vi.fn();
     eventSourceInstances.push(this);
@@ -223,12 +213,16 @@ describe('useServerEvents — minute mode', () => {
       await vi.advanceTimersByTimeAsync(60_000);
     });
 
-    // All four query keys must have been invalidated.
-    expect(qc.invalidateQueries).toHaveBeenCalledTimes(4);
+    // All five query keys must have been invalidated.
+    // P2-B1 H4 added recommendationChatStatus to invalidateAll() — 5 keys total.
+    expect(qc.invalidateQueries).toHaveBeenCalledTimes(5);
     expect(qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['metrics'] });
     expect(qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['sessions'] });
     expect(qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['turns'] });
     expect(qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['session'] });
+    expect(qc.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ['recommendationChatStatus'],
+    });
 
     // Unmount triggers useEffect cleanup → clearInterval.
     await unmount();

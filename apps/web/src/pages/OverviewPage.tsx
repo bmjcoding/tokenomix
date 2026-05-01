@@ -5,10 +5,9 @@
  * - Owns the single useQuery call for MetricSummary (since='all').
  * - Passes MetricSummary down as props to all prop-driven panels:
  *   HeroSpend, CostDriversPanel, KpiRow, KpiRow2, OptimizationOpportunitiesPanel,
- *   OptimizationSignalsPanel, AreaChartPanel.
- * - Self-fetching panels (HeatmapPanel, ModelMixPanel, ToolsBreakdownPanel) mount
- *   only when their tab is active — their useQuery hooks do not fire on inactive tabs.
- * - useServerEvents() SSE hook is mounted here for live cache invalidation.
+ *   OptimizationSignalsPanel, AreaChartPanel, ToolsBreakdownPanel.
+ * - Self-fetching panels (HeatmapPanel, ModelMixPanel) mount only when their tab
+ *   is active — their useQuery hooks do not fire on inactive tabs.
  * - Period state is lifted to this page and passed to AreaChartPanel.
  * - Hash sync via Tabs: reloading with #recommendations lands on that tab.
  *
@@ -18,14 +17,13 @@
  *   activity        — HeatmapPanel (full-width) → 2-col grid: ModelMixPanel + ToolsBreakdownPanel
  */
 
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
 import type { MetricSummary } from '@tokenomix/shared';
-import { ArrowRight } from 'lucide-react';
+import { ArrowRight, RefreshCw } from 'lucide-react';
 import { useState } from 'react';
 import { fetchMetrics } from '../lib/api.js';
 import { queryKeys } from '../lib/query-keys.js';
-import { useServerEvents } from '../lib/useServerEvents.js';
 import { AreaChartPanel } from '../panels/AreaChartPanel.js';
 import { CostDriversPanel } from '../panels/CostDriversPanel.js';
 import { HeatmapPanel } from '../panels/HeatmapPanel.js';
@@ -90,7 +88,13 @@ function RecommendationsTabContent({ data }: RecommendationsTabProps) {
   );
 }
 
-function ActivityTabContent() {
+interface ActivityTabProps {
+  data: MetricSummary;
+  isLoading: boolean;
+  isError: boolean;
+}
+
+function ActivityTabContent({ data, isLoading, isError }: ActivityTabProps) {
   return (
     <div className="space-y-6 pt-6">
       {/* Heatmap — full-width row */}
@@ -99,7 +103,7 @@ function ActivityTabContent() {
       {/* Model mix and tools breakdown — 2-column grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <ModelMixPanel />
-        <ToolsBreakdownPanel since="30d" />
+        <ToolsBreakdownPanel byTool={data.byTool} isLoading={isLoading} isError={isError} />
       </div>
     </div>
   );
@@ -110,12 +114,11 @@ function ActivityTabContent() {
 // ---------------------------------------------------------------------------
 
 export default function OverviewPage() {
-  // SSE live refresh — invalidates TanStack Query cache on 'updated' events.
-  useServerEvents();
-
   // Period state lifted here so it persists across tab switches within the
   // session (but is not hashed — only the tab key is hashed).
   const [period, setPeriod] = useState<DashboardPeriod>('30d');
+
+  const queryClient = useQueryClient();
 
   // Single source of truth for MetricSummary — prop-driven panels share this.
   const { data, isLoading, isError } = useQuery<MetricSummary>({
@@ -137,14 +140,27 @@ export default function OverviewPage() {
     );
   }
 
-  // Error state.
+  // Error state — show message and a Retry button that invalidates the metrics
+  // cache so TanStack Query triggers a fresh fetch immediately.
   if (isError) {
     return (
       <div className={containerCls}>
-        <div className="flex items-center justify-center py-24">
+        <div className="flex flex-col items-center justify-center gap-4 py-24">
           <span className="text-sm text-red-500 dark:text-red-400">
             Failed to load dashboard data.
           </span>
+          <button
+            type="button"
+            onClick={() =>
+              queryClient.invalidateQueries({
+                queryKey: queryKeys.metrics({ since: 'all' }),
+              })
+            }
+            className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg transition-colors bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-900 dark:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-950 dark:focus-visible:ring-white focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-950"
+          >
+            <RefreshCw size={14} aria-hidden="true" />
+            Retry
+          </button>
         </div>
       </div>
     );
@@ -167,7 +183,7 @@ export default function OverviewPage() {
     {
       key: 'activity',
       label: 'Activity',
-      content: <ActivityTabContent />,
+      content: <ActivityTabContent data={data} isLoading={isLoading} isError={isError} />,
     },
   ];
 

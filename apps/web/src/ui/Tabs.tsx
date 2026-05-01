@@ -228,7 +228,6 @@ export function Tabs({
           id={`${baseId}-panel-${activeItem.key}`}
           role="tabpanel"
           aria-labelledby={`${baseId}-tab-${activeItem.key}`}
-          tabIndex={0}
           // design-lint-disable dark-mode-pairs: compound modifier prefix (focus-visible:) hides the dark pairing from naive line scan
           className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-950 dark:focus-visible:ring-white focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-950"
         >

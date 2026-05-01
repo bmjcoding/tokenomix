@@ -41,7 +41,7 @@ import {
   Download,
   Search,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { fetchSessions } from '../lib/api.js';
 import { exportSessionsCsv } from '../lib/csvExport.js';
 import {
@@ -56,8 +56,8 @@ import { queryKeys } from '../lib/query-keys.js';
 import { MetricCard } from '../panels/MetricCard.js';
 import { Button } from '../ui/Button.js';
 import { Card } from '../ui/Card.js';
-import { Select } from '../ui/Select.js';
 import type { SelectOption } from '../ui/Select.js';
+import { Select } from '../ui/Select.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -100,17 +100,6 @@ const DATE_RANGE_OPTIONS: ReadonlyArray<SelectOption<DateRangePreset>> = [
 function truncateSessionId(id: string): string {
   if (id.length <= 10) return id;
   return `${id.slice(0, 6)}…${id.slice(-4)}`;
-}
-
-/** Format cost as $X.XX (4 decimal places when < $1). */
-function formatCost(v: number): string {
-  if (v >= 1) return `$${v.toFixed(2)}`;
-  return `$${v.toFixed(4)}`;
-}
-
-/** Locale-grouped integer. */
-function formatNum(n: number): string {
-  return n.toLocaleString();
 }
 
 // ---------------------------------------------------------------------------
@@ -166,7 +155,7 @@ function applyDateFilter(
   return sessions.filter((s) => {
     if (s.firstTs === null) return false; // exclude null timestamps in non-'all' presets
     const ts = new Date(s.firstTs).getTime();
-    if (isNaN(ts)) return false;
+    if (Number.isNaN(ts)) return false;
     return ts >= rangeStart && ts <= rangeEnd;
   });
 }
@@ -179,9 +168,7 @@ function applySearchFilter(sessions: SessionSummary[], query: string): SessionSu
   const q = query.trim().toLowerCase();
   if (q === '') return sessions;
   return sessions.filter(
-    (s) =>
-      (s.projectName ?? '').toLowerCase().includes(q) ||
-      s.sessionId.toLowerCase().includes(q)
+    (s) => (s.projectName ?? '').toLowerCase().includes(q) || s.sessionId.toLowerCase().includes(q)
   );
 }
 
@@ -246,7 +233,8 @@ function SortableHeader({
   className = '',
 }: SortableHeaderProps) {
   const active = current === sortKey;
-  const alignClass = align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left';
+  const alignClass =
+    align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left';
   return (
     <th
       scope="col"
@@ -292,17 +280,14 @@ function TopToolsCell({ session }: TopToolsCellProps) {
 
   if (tools.length === 0) {
     return (
-      <span className="text-gray-400 dark:text-gray-600" aria-label="No tool data">
+      <span role="img" className="text-gray-400 dark:text-gray-600" aria-label="No tool data">
         —
       </span>
     );
   }
 
   return (
-    <div
-      className="flex flex-col gap-1.5 items-start"
-      aria-label={`Top tools: ${tools.map((t) => t.toolName).join(', ')}${overflow > 0 ? ` and ${overflow} more` : ''}`}
-    >
+    <div className="flex flex-col gap-1.5 items-start">
       {/* Row 1: top-3 chips */}
       <div className="flex flex-wrap items-center gap-1.5">
         {tools.map((tool) => (
@@ -480,29 +465,44 @@ export default function FullReportPage() {
   // Step 2: Search filter
   const filtered = isLoading ? [] : applySearchFilter(dateFiltered, searchQuery);
 
-  // KPI stats reflect the filtered set (pre-sort, pre-page)
-  const filteredCount = filtered.length;
-  const filteredTotalCost = filtered.reduce((sum, s) => sum + s.costUsd, 0);
-  const filteredTotalTokens = filtered.reduce(
-    (sum, s) => sum + s.inputTokens + s.outputTokens,
-    0
+  // KPI stats reflect the filtered set (pre-sort, pre-page).
+  // Wrapped in useMemo so they don't recompute on unrelated state changes
+  // (e.g. sort direction or search query changes that don't affect `filtered`).
+  const {
+    filteredCount,
+    filteredTotalCost,
+    filteredTotalTokens,
+    totalDurationMs,
+    filteredTotalInputTokens,
+    filteredTotalOutputTokens,
+  } = useMemo(
+    () => ({
+      filteredCount: filtered.length,
+      filteredTotalCost: filtered.reduce((sum, s) => sum + s.costUsd, 0),
+      filteredTotalTokens: filtered.reduce((sum, s) => sum + s.inputTokens + s.outputTokens, 0),
+      totalDurationMs: filtered.reduce((sum, s) => sum + (s.durationMs ?? 0), 0),
+      filteredTotalInputTokens: filtered.reduce((sum, s) => sum + s.inputTokens, 0),
+      filteredTotalOutputTokens: filtered.reduce((sum, s) => sum + s.outputTokens, 0),
+    }),
+    [filtered]
   );
-  const totalDurationMs = filtered.reduce((sum, s) => sum + (s.durationMs ?? 0), 0);
-  const filteredTotalInputTokens = filtered.reduce((sum, s) => sum + s.inputTokens, 0);
-  const filteredTotalOutputTokens = filtered.reduce((sum, s) => sum + s.outputTokens, 0);
 
-  // Date range covered by the filtered set (from firstTs values)
+  // Date range covered by the filtered set (from firstTs values).
+  // Uses reduce instead of Math.min/max spread to avoid call-stack overflow
+  // on large arrays (spread creates a function argument per element).
+  // Empty-array semantics preserved: Infinity for min, -Infinity for max —
+  // the length guard below means these defaults never reach `new Date()`.
   const filteredTimestamps = filtered
     .map((s) => s.firstTs)
-    .filter((ts): ts is string => ts !== null && !isNaN(new Date(ts).getTime()))
+    .filter((ts): ts is string => ts !== null && !Number.isNaN(new Date(ts).getTime()))
     .map((ts) => new Date(ts).getTime());
   const filteredMinTs =
     filteredTimestamps.length > 0
-      ? new Date(Math.min(...filteredTimestamps)).toISOString()
+      ? new Date(filteredTimestamps.reduce((a, b) => (a < b ? a : b), Infinity)).toISOString()
       : null;
   const filteredMaxTs =
     filteredTimestamps.length > 0
-      ? new Date(Math.max(...filteredTimestamps)).toISOString()
+      ? new Date(filteredTimestamps.reduce((a, b) => (a > b ? a : b), -Infinity)).toISOString()
       : null;
   const dateRangeLabel = formatDateRange(filteredMinTs, filteredMaxTs);
 
@@ -727,7 +727,9 @@ export default function FullReportPage() {
                         colSpan={7}
                         className="px-4 py-8 text-center text-sm text-gray-500 dark:text-gray-500"
                       >
-                        {sessions.length === 0 ? 'No sessions yet.' : 'No sessions match the current filters.'}
+                        {sessions.length === 0
+                          ? 'No sessions yet.'
+                          : 'No sessions match the current filters.'}
                       </td>
                     </tr>
                   )}
@@ -779,17 +781,17 @@ export default function FullReportPage() {
 
                         {/* Cost */}
                         <td className="px-4 py-3 text-center text-sm font-medium tabular-nums text-gray-950 dark:text-white">
-                          {formatCost(session.costUsd)}
+                          {formatCurrency(session.costUsd)}
                         </td>
 
                         {/* Input Tokens */}
                         <td className="px-4 py-3 text-center text-sm tabular-nums text-gray-600 dark:text-gray-400">
-                          {formatNum(session.inputTokens)}
+                          {formatTokens(session.inputTokens)}
                         </td>
 
                         {/* Output Tokens */}
                         <td className="px-4 py-3 text-center text-sm tabular-nums text-gray-600 dark:text-gray-400">
-                          {formatNum(session.outputTokens)}
+                          {formatTokens(session.outputTokens)}
                         </td>
 
                         {/* Duration */}
@@ -815,7 +817,10 @@ export default function FullReportPage() {
                       </td>
 
                       {/* Top Tools column — em-dash (no meaningful sum) */}
-                      <td className="px-4 py-3 text-sm text-gray-400 dark:text-gray-600" aria-label="Not applicable">
+                      <td
+                        className="px-4 py-3 text-sm text-gray-400 dark:text-gray-600"
+                        aria-label="Not applicable"
+                      >
                         &mdash;
                       </td>
 

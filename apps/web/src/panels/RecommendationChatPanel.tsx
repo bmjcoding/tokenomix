@@ -7,10 +7,17 @@
 
 import { useQuery } from '@tanstack/react-query';
 import type { RecommendationChatMessage } from '@tokenomix/shared';
-import { AlertCircle, Bot, Loader2, Send, Sparkles, X } from 'lucide-react';
-import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import ReactMarkdown, { type Components } from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { AlertCircle, Bot, Loader2, Send, Sparkles, Square, X } from 'lucide-react';
+import {
+  type FormEvent,
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { fetchRecommendationChatStatus, streamRecommendationChat } from '../lib/api.js';
 import { queryKeys } from '../lib/query-keys.js';
 
@@ -44,106 +51,129 @@ function makeMessage(
   };
 }
 
-const markdownPlugins = [remarkGfm];
+/**
+ * LazyAssistantMarkdown — loads react-markdown and remark-gfm only when
+ * assistant content is first rendered. Because RecommendationChatPanel is
+ * mounted unconditionally in RootLayout, eager imports would put these
+ * relatively heavy packages in the initial JS bundle even for users who never
+ * open the chat.
+ *
+ * React.lazy resolves a default export from the dynamic import. We wrap the
+ * inline component definition and pass it as the default export shape expected
+ * by lazy().
+ */
+const AssistantMarkdown = lazy(async () => {
+  const [{ default: ReactMarkdown }, { default: remarkGfm }] = await Promise.all([
+    import('react-markdown'),
+    import('remark-gfm'),
+  ]);
 
-const markdownComponents: Components = {
-  h1({ node: _node, ...props }) {
-    return (
-      <h3
-        className="mb-2 text-base font-semibold leading-6 text-gray-900 dark:text-gray-100"
-        {...props}
-      />
-    );
-  },
-  h2({ node: _node, ...props }) {
-    return (
-      <h3
-        className="mb-2 text-base font-semibold leading-6 text-gray-900 dark:text-gray-100"
-        {...props}
-      />
-    );
-  },
-  h3({ node: _node, ...props }) {
-    return (
-      <h3
-        className="mb-2 text-sm font-semibold leading-6 text-gray-900 dark:text-gray-100"
-        {...props}
-      />
-    );
-  },
-  p({ node: _node, ...props }) {
-    return <p className="mb-3 last:mb-0" {...props} />;
-  },
-  strong({ node: _node, ...props }) {
-    return <strong className="font-semibold text-gray-900 dark:text-gray-100" {...props} />;
-  },
-  code({ node: _node, className, ...props }) {
-    return (
-      <code
-        className={cx(
-          'rounded bg-gray-100 dark:bg-black/40 px-1 py-0.5 font-mono text-[0.85em] text-gray-900 dark:text-gray-100',
-          className
-        )}
-        {...props}
-      />
-    );
-  },
-  pre({ node: _node, ...props }) {
-    return (
-      <pre
-        className="mb-3 overflow-x-auto rounded-lg border border-gray-300 dark:border-black/60 bg-gray-100 dark:bg-black/40 p-3 text-xs leading-5"
-        {...props}
-      />
-    );
-  },
-  ul({ node: _node, ...props }) {
-    return <ul className="mb-3 list-disc space-y-1 pl-5 last:mb-0" {...props} />;
-  },
-  ol({ node: _node, ...props }) {
-    return <ol className="mb-3 list-decimal space-y-1 pl-5 last:mb-0" {...props} />;
-  },
-  table({ node: _node, ...props }) {
-    return (
-      <div className="mb-3 overflow-x-auto rounded-lg border border-gray-300 dark:border-black/60 last:mb-0">
-        <table className="min-w-full border-collapse text-left text-xs" {...props} />
-      </div>
-    );
-  },
-  th({ node: _node, ...props }) {
-    return (
-      <th
-        className="border-b border-gray-300 dark:border-black/60 bg-gray-200 dark:bg-black/30 px-2 py-1.5 font-semibold text-gray-900 dark:text-gray-100"
-        {...props}
-      />
-    );
-  },
-  td({ node: _node, ...props }) {
-    return (
-      <td
-        className="border-b border-gray-200 dark:border-black/40 px-2 py-1.5 last:border-b-0"
-        {...props}
-      />
-    );
-  },
-  a({ node: _node, ...props }) {
-    return (
-      <a
-        className="text-primary-light underline decoration-primary-light/40 underline-offset-2 hover:decoration-primary-light"
-        target="_blank"
-        rel="noreferrer"
-        {...props}
-      />
-    );
-  },
-};
+  // Import the Components type for the component map.
+  type Components = Parameters<typeof ReactMarkdown>[0]['components'];
 
-function AssistantMarkdown({ content }: { content: string }) {
-  return (
-    <ReactMarkdown remarkPlugins={markdownPlugins} components={markdownComponents}>
-      {content}
-    </ReactMarkdown>
-  );
-}
+  const markdownPlugins = [remarkGfm];
+
+  const markdownComponents: Components = {
+    h1({ node: _node, ...props }) {
+      return (
+        <h3
+          className="mb-2 text-base font-semibold leading-6 text-gray-900 dark:text-gray-100"
+          {...props}
+        />
+      );
+    },
+    h2({ node: _node, ...props }) {
+      return (
+        <h3
+          className="mb-2 text-base font-semibold leading-6 text-gray-900 dark:text-gray-100"
+          {...props}
+        />
+      );
+    },
+    h3({ node: _node, ...props }) {
+      return (
+        <h3
+          className="mb-2 text-sm font-semibold leading-6 text-gray-900 dark:text-gray-100"
+          {...props}
+        />
+      );
+    },
+    p({ node: _node, ...props }) {
+      return <p className="mb-3 last:mb-0" {...props} />;
+    },
+    strong({ node: _node, ...props }) {
+      return <strong className="font-semibold text-gray-900 dark:text-gray-100" {...props} />;
+    },
+    code({ node: _node, className, ...props }) {
+      return (
+        <code
+          className={cx(
+            'rounded bg-gray-100 dark:bg-black/40 px-1 py-0.5 font-mono text-[0.85em] text-gray-900 dark:text-gray-100',
+            className
+          )}
+          {...props}
+        />
+      );
+    },
+    pre({ node: _node, ...props }) {
+      return (
+        <pre
+          className="mb-3 overflow-x-auto rounded-lg border border-gray-300 dark:border-black/60 bg-gray-100 dark:bg-black/40 p-3 text-xs leading-5"
+          {...props}
+        />
+      );
+    },
+    ul({ node: _node, ...props }) {
+      return <ul className="mb-3 list-disc space-y-1 pl-5 last:mb-0" {...props} />;
+    },
+    ol({ node: _node, ...props }) {
+      return <ol className="mb-3 list-decimal space-y-1 pl-5 last:mb-0" {...props} />;
+    },
+    table({ node: _node, ...props }) {
+      return (
+        <div className="mb-3 overflow-x-auto rounded-lg border border-gray-300 dark:border-black/60 last:mb-0">
+          <table className="min-w-full border-collapse text-left text-xs" {...props} />
+        </div>
+      );
+    },
+    th({ node: _node, ...props }) {
+      return (
+        <th
+          className="border-b border-gray-300 dark:border-black/60 bg-gray-200 dark:bg-black/30 px-2 py-1.5 font-semibold text-gray-900 dark:text-gray-100"
+          {...props}
+        />
+      );
+    },
+    td({ node: _node, ...props }) {
+      return (
+        <td
+          className="border-b border-gray-200 dark:border-black/40 px-2 py-1.5 last:border-b-0"
+          {...props}
+        />
+      );
+    },
+    a({ node: _node, ...props }) {
+      return (
+        <a
+          className="text-primary-light underline decoration-primary-light/40 underline-offset-2 hover:decoration-primary-light"
+          target="_blank"
+          rel="noreferrer"
+          {...props}
+        />
+      );
+    },
+  };
+
+  function MarkdownContent({ content }: { content: string }) {
+    return (
+      <ReactMarkdown remarkPlugins={markdownPlugins} components={markdownComponents}>
+        {content}
+      </ReactMarkdown>
+    );
+  }
+
+  return { default: MarkdownContent };
+});
 
 export function RecommendationChatPanel() {
   const [draft, setDraft] = useState('');
@@ -151,6 +181,7 @@ export function RecommendationChatPanel() {
   const [isOpen, setIsOpen] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const messageListRef = useRef<HTMLDivElement | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const [thinkingElapsedSeconds, setThinkingElapsedSeconds] = useState<number | null>(null);
   const thinkingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -163,6 +194,14 @@ export function RecommendationChatPanel() {
   }, []);
 
   useEffect(() => () => clearThinkingTimer(), [clearThinkingTimer]);
+
+  // Abort any in-flight stream request on unmount to prevent fetch leaks.
+  useEffect(() => {
+    return () => {
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
+    };
+  }, []);
 
   const statusQuery = useQuery({
     queryKey: queryKeys.recommendationChatStatus(),
@@ -188,6 +227,17 @@ export function RecommendationChatPanel() {
     const message = draft.trim();
     if (!message || !canSubmit) return;
 
+    // Abort any currently in-flight request before starting a new one.
+    abortControllerRef.current?.abort();
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    // Capture the current message history before appending the new turn.
+    const history: RecommendationChatMessage[] = messages.map(({ role, content }) => ({
+      role,
+      content,
+    }));
+
     const assistantId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
     setMessages((current) => [
       ...current,
@@ -198,7 +248,7 @@ export function RecommendationChatPanel() {
     setIsSending(true);
 
     void streamRecommendationChat(
-      { message },
+      { message, history },
       {
         onStart: () => {
           clearThinkingTimer();
@@ -243,8 +293,14 @@ export function RecommendationChatPanel() {
           );
           setIsSending(false);
         },
-      }
+      },
+      controller.signal
     ).catch((error) => {
+      // AbortError is expected when the user navigates away or sends a new
+      // message before the previous response completes — suppress it silently.
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        return;
+      }
       clearThinkingTimer();
       setMessages((current) =>
         current.map((entry) =>
@@ -328,7 +384,9 @@ export function RecommendationChatPanel() {
                         )}
                       >
                         {message.role === 'assistant' && message.content ? (
-                          <AssistantMarkdown content={message.content} />
+                          <Suspense fallback={<span>{message.content}</span>}>
+                            <AssistantMarkdown content={message.content} />
+                          </Suspense>
                         ) : message.role === 'assistant' ? (
                           <span className="inline-flex items-center gap-2 text-gray-500 dark:text-gray-400">
                             <Loader2 size={14} aria-hidden="true" className="animate-spin" />
@@ -381,6 +439,23 @@ export function RecommendationChatPanel() {
                   }
                 }}
               />
+              {/* Cancel/Stop button — visible only while a stream is in flight */}
+              {isSending && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    abortControllerRef.current?.abort();
+                  }}
+                  aria-label="Stop streaming response"
+                  className={cx(
+                    'inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-lg transition-colors',
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-950 dark:focus-visible:ring-white',
+                    'bg-gray-200 text-gray-700 hover:bg-gray-300 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
+                  )}
+                >
+                  <Square size={20} aria-hidden="true" />
+                </button>
+              )}
               <button
                 type="submit"
                 disabled={!canSubmit}

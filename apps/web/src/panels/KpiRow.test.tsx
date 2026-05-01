@@ -148,10 +148,6 @@ function buildMetricSummaryFixture(overrides: Partial<MetricSummary> = {}): Metr
     inputTokensPrev30d: 0,
     outputTokensPrev30d: 0,
     costUsd30dPrev: 0,
-    // Retro stubs
-    retroRollup: null,
-    retroTimeline: [],
-    retroForecast: [],
     // Period rollups
     monthlyRollup: {
       current: {
