@@ -448,7 +448,7 @@ describe('ActiveSessionsRail — empty state message in expanded panel', () => {
 // ---------------------------------------------------------------------------
 
 describe('ActiveSessionsRail — session card aria-labels', () => {
-  it('each card is an anchor with aria-label including project, cost, and time-since', async () => {
+  it('each card is an anchor with aria-label including project, cost, and session age', async () => {
     const session = buildSession({
       sessionId: 'aabbccddee112233',
       project: '/users/dev/tokenomix',
@@ -470,9 +470,10 @@ describe('ActiveSessionsRail — session card aria-labels', () => {
     // id7 = sessionId.slice(0, 8).toLowerCase() = "aabbccdd"
     // displayName = "tokenomix"
     // cost = formatCurrency(1.50) = "$1.50"
-    // timeSince = "2m" (ACTIVE_LAST_TS_MS is 2 min before NOW_MS)
+    // sessionAge = now - firstTs = 3 minutes (firstTs = ACTIVE_LAST_TS_MS - 60_000 = NOW_MS - 3min)
+    // formatDuration(3 * 60_000) = "3m"
     const expectedLabel =
-      'Open session aabbccdd, project tokenomix, $1.50 spend, last active 2m ago, 1,500 input + output tokens';
+      'Open session aabbccdd, project tokenomix, $1.50 spend, running for 3m, 1,500 input + output tokens';
 
     const link = container.querySelector(`a[aria-label="${expectedLabel}"]`);
     expect(link).not.toBeNull();

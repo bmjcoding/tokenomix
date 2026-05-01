@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ActiveSessionsRail` duration field always showed "0s" because it measured time
+  since `lastTs`, which SSE updates keep near `now`; it now computes session age
+  (`now − firstTs`) on a 1-second tick so the counter increments live as the session runs.
 - ECharts chart components (`AreaChart`, `ModelMixBar`, `SparklineChart`, `ToolMixBar`)
   now import from `echarts-for-react/esm/core` instead of `echarts-for-react/lib/core`;
   the CJS `lib/core` path resolves to the module namespace object under Vite's ESM

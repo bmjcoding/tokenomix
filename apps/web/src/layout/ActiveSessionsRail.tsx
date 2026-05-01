@@ -5,8 +5,8 @@
  * muted "No live sessions" when count is zero). Expanded state: a rounded-xl
  * dialog panel listing up to 10 active sessions.
  *
- * "Active" means the session's computed lastTs (firstTs + durationMs) falls
- * within ACTIVE_SESSION_WINDOW_MS (5 minutes) of the current time.
+ * "Active" means the session's lastTs falls within ACTIVE_SESSION_WINDOW_MS
+ * (5 minutes) of the current time — determined server-side.
  *
  * Dismissal:
  *   - Click outside the panel root (pointerdown on document, capture phase)
@@ -29,8 +29,8 @@ import { ACTIVE_SESSION_WINDOW_MS } from '../lib/activeSessionConstants.js';
 import { fetchActiveSessions } from '../lib/api.js';
 import {
   formatCurrency,
+  formatDuration,
   formatProjectName,
-  formatTimeSince,
   formatTokens,
 } from '../lib/formatters.js';
 import { queryKeys } from '../lib/query-keys.js';
@@ -40,10 +40,10 @@ import { useMotionPreference } from '../providers/MotionPreferenceProvider.js';
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Derives the lastTs epoch ms for a session. Returns null when fields absent. */
-function computeLastTs(session: SessionSummary): number | null {
-  if (session.firstTs === null || session.durationMs === null) return null;
-  return new Date(session.firstTs).getTime() + session.durationMs;
+/** Computes session age in ms (now − firstTs). Returns null when firstTs is absent. */
+function computeSessionAge(nowMs: number, session: SessionSummary): number | null {
+  if (session.firstTs === null) return null;
+  return Math.max(0, nowMs - new Date(session.firstTs).getTime());
 }
 
 // ---------------------------------------------------------------------------
@@ -64,9 +64,9 @@ export default function ActiveSessionsRail() {
     queryFn: () => fetchActiveSessions({ windowMs: ACTIVE_SESSION_WINDOW_MS, limit: 10 }),
   });
 
-  // Tick now every 30 seconds to keep time-since labels current
+  // Tick now every second to keep session-age counters live
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 30_000);
+    const id = setInterval(() => setNow(Date.now()), 1_000);
     return () => clearInterval(id);
   }, []);
 
@@ -180,15 +180,15 @@ export default function ActiveSessionsRail() {
           ) : (
             <ul className="flex flex-col gap-1.5">
               {activeSessions.map((s) => {
-                const lastTs = computeLastTs(s);
-                const timeSince = lastTs !== null ? formatTimeSince(now, lastTs) : '—';
+                const sessionAge = computeSessionAge(now, s);
+                const ageLabel = sessionAge !== null ? formatDuration(sessionAge) : '—';
                 const displayName = formatProjectName(s.project);
                 const cost = formatCurrency(s.costUsd);
                 const id7 = s.sessionId.slice(0, 8).toLowerCase();
                 const turnLabel = s.events === 1 ? '1 turn' : `${s.events} turns`;
                 const tokenCount = s.inputTokens + s.outputTokens;
                 const formattedTokens = formatTokens(tokenCount);
-                const ariaLabel = `Open session ${id7}, project ${displayName}, ${cost} spend, last active ${timeSince} ago, ${formattedTokens} input + output tokens`;
+                const ariaLabel = `Open session ${id7}, project ${displayName}, ${cost} spend, running for ${ageLabel}, ${formattedTokens} input + output tokens`;
 
                 return (
                   <li key={s.sessionId}>
@@ -207,13 +207,13 @@ export default function ActiveSessionsRail() {
                           {cost}
                         </span>
                       </div>
-                      {/* Mid row: short session id + time-since */}
+                      {/* Mid row: short session id + session age */}
                       <div className="mt-0.5 flex items-center justify-between gap-2">
                         <span className="font-mono text-xs text-gray-500 dark:text-gray-400">
                           {id7}&hellip;
                         </span>
                         <span className="shrink-0 text-xs text-gray-500 dark:text-gray-400">
-                          {timeSince}
+                          {ageLabel}
                         </span>
                       </div>
                       {/* Bottom row: turn count + token count */}
