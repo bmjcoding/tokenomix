@@ -22,6 +22,7 @@
  */
 
 import chokidar, { type FSWatcher } from 'chokidar';
+import { serverEnv } from './env.js';
 import { type IndexStore, PROJECTS_DIR } from './index-store.js';
 import { logEvent } from './logger.js';
 
@@ -33,7 +34,7 @@ export function startWatcher(store: IndexStore): FSWatcher {
   const pattern = `${PROJECTS_DIR}/**/*.jsonl`;
 
   // Polling is on by default; set TOKENOMIX_WATCHER_FSEVENTS=1 to use FSEvents instead.
-  const usePolling = process.env.TOKENOMIX_WATCHER_FSEVENTS !== '1';
+  const usePolling = !serverEnv().TOKENOMIX_WATCHER_FSEVENTS;
 
   logEvent('info', 'watcher-init', { usePolling, pattern });
 
