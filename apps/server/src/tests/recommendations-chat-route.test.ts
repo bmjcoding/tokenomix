@@ -2,16 +2,32 @@
  * Tests for the local Claude Code recommendations chat route.
  */
 
+import * as os from 'node:os';
 import type { RecommendationChatStatus, TokenRow } from '@tokenomix/shared';
 import { Hono } from 'hono';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { initServerEnv, validateEnv } from '../env.js';
 import { IndexStore } from '../index-store.js';
 import type { ClaudeRecommendationRunner } from '../routes/recommendations-chat.js';
 import {
+  LocalClaudeRecommendationRunner,
   parseClaudeOutput,
   parseClaudeStreamLine,
   recommendationsChatRoute,
 } from '../routes/recommendations-chat.js';
+
+// ---------------------------------------------------------------------------
+// Module-level mock for node:child_process — hoisted by Vitest before imports.
+// Existing route tests inject a mock ClaudeRecommendationRunner and never reach
+// spawn(); the mock has no effect on them. The cwd test below exercises
+// LocalClaudeRecommendationRunner directly and inspects the captured spawn args.
+// ---------------------------------------------------------------------------
+vi.mock('node:child_process', () => ({
+  spawn: vi.fn(),
+}));
+
+// Import the mocked spawn AFTER vi.mock so we get the mock version.
+const { spawn: mockSpawn } = await import('node:child_process');
 
 function makeRow(overrides: Partial<TokenRow>): TokenRow {
   return {
@@ -186,6 +202,12 @@ describe('recommendationsChatRoute', () => {
         costUsd: 300,
         inputCostUsd: 10,
         outputCostUsd: 20,
+        // M4 tier-aware savings factor: set cacheCreation1h so the formula uses
+        // the 1h tier weight (0.5) instead of the fallback 0.2.
+        //   factor = (0 × 0.2 + 2000 × 0.5) / 2000 = 0.5
+        //   cacheImpact = 40 × 0.5 + 230 × 0.05 = 20 + 11.5 = 31.5 ≥ 25 → fires
+        cacheCreation5m: 0,
+        cacheCreation1h: 2000,
         cacheCreationCostUsd: 40,
         cacheReadCostUsd: 230,
       })
@@ -398,4 +420,80 @@ describe('recommendationsChatRoute', () => {
     expect(prompts[1]).toContain('"cacheRead"');
     expect(prompts[1]).not.toContain('baseline-plus-targeted-retrieval');
   });
+});
+
+// ---------------------------------------------------------------------------
+// H1 fix: chatbot subprocess cwd — verify spawn uses os.tmpdir(), not process.cwd()
+//
+// LocalClaudeRecommendationRunner.ask() calls runCommand() which calls spawn()
+// with `cwd: CHAT_SUBPROCESS_CWD` (a path under os.tmpdir()). This prevents
+// Claude Code from writing session JSONL files to the user's watched project
+// directory, which would inflate reported costs.
+// ---------------------------------------------------------------------------
+
+describe('LocalClaudeRecommendationRunner — subprocess cwd isolation (H1)', () => {
+  beforeEach(() => {
+    // Initialize serverEnv so LocalClaudeRecommendationRunner constructor does not throw.
+    const result = validateEnv({});
+    if (!result.success) throw new Error('validateEnv failed in test setup');
+    initServerEnv(result.env);
+
+    // Reset spawn mock call count between tests.
+    vi.mocked(mockSpawn).mockReset();
+  });
+
+  afterEach(() => {
+    vi.mocked(mockSpawn).mockReset();
+  });
+
+  it('spawns with cwd inside os.tmpdir(), NOT process.cwd()', async () => {
+    // Build a minimal ChildProcess stub that satisfies runCommand():
+    //   - .stdout/.stderr EventEmitters for data listeners
+    //   - .on('close', handler) so the Promise resolves
+    //   - .kill() so the timeout handler doesn't throw
+    //
+    // The spawn mock uses mockImplementation so the 'close' event is emitted
+    // AFTER spawn() returns the stub (i.e., after runCommand's listeners attach).
+    const { EventEmitter } = await import('node:events');
+
+    class ChildProcessStub extends EventEmitter {
+      stdout = new EventEmitter();
+      stderr = new EventEmitter();
+      kill = vi.fn();
+    }
+
+    vi.mocked(mockSpawn).mockImplementation(() => {
+      const stub = new ChildProcessStub();
+      // Defer 'close' to the next microtask/macrotask so all .on() listeners
+      // are attached before the event fires.
+      setImmediate(() => stub.emit('close', 0));
+      return stub as unknown as ReturnType<typeof import('node:child_process').spawn>;
+    });
+
+    const runner = new LocalClaudeRecommendationRunner({ timeoutMs: 5_000 });
+
+    // ask() calls resolveClaudeCommand() → spawn(). TOKENOMIX_CLAUDE_COMMAND is
+    // unset, so it resolves to 'claude' (plain basename fallback). The empty
+    // stdout causes parseClaudeOutput to fail — catch that; spawn args are all we care about.
+    await runner.ask('test prompt').catch(() => {
+      // Expected: empty stdout → claude_exit_0 error. Ignored here.
+    });
+
+    // spawn must have been called exactly once.
+    expect(vi.mocked(mockSpawn)).toHaveBeenCalledOnce();
+
+    // Extract the spawn options (third argument).
+    const spawnCall = vi.mocked(mockSpawn).mock.calls[0];
+    const spawnOptions = spawnCall?.[2] as { cwd?: string } | undefined;
+
+    // cwd must be set and must be inside os.tmpdir().
+    const cwd = spawnOptions?.cwd;
+    expect(cwd).toBeDefined();
+    if (cwd === undefined) return; // narrow for TypeScript — expect above already guards
+
+    expect(cwd.startsWith(os.tmpdir())).toBe(true);
+
+    // cwd must NOT equal process.cwd() — the critical H1 invariant.
+    expect(cwd).not.toBe(process.cwd());
+  }, 10_000);
 });

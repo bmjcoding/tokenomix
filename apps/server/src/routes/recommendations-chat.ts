@@ -8,7 +8,8 @@
 
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { access } from 'node:fs/promises';
+import { accessSync, constants as fsConstants } from 'node:fs';
+import { access, mkdir } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as nodePath from 'node:path';
 import { createInterface } from 'node:readline';
@@ -24,7 +25,9 @@ import type {
 } from '@tokenomix/shared';
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
+import { serverEnv } from '../env.js';
 import type { IndexStore } from '../index-store.js';
+import { logEvent } from '../logger.js';
 
 const MAX_MESSAGE_CHARS = 2_000;
 const MAX_HISTORY_MESSAGES = 8;
@@ -484,6 +487,57 @@ function groundedOpportunityIds(summary: MetricSummary, answer: string): string[
     .map((opportunity) => opportunity.id);
 }
 
+/**
+ * Shell metacharacters that must not appear in a command path. A value
+ * containing any of these characters cannot be a legitimate executable name
+ * or absolute path and is treated as a potential injection attempt.
+ *
+ * Space is intentionally included: spawn() with shell:false does not need
+ * shell word-splitting, so spaces in the binary path would only be valid for
+ * an absolute path (which should be quoted at the OS level, not here).
+ * Callers that need an absolute path with spaces should set
+ * TOKENOMIX_CLAUDE_COMMAND to the quoted path — but that scenario is
+ * explicitly unsupported by this validator; users should use a wrapper script.
+ */
+const SHELL_METACHAR_RE = /[\0\r\n\t ;<>&|$`'"\\*?~(){}[\]]/;
+
+/**
+ * Validate a candidate command string for use as the first argument to
+ * spawn(). Returns true only when the value is safe to pass through:
+ *
+ *  - Not empty.
+ *  - Contains no null bytes or non-printable ASCII characters.
+ *  - Contains no shell metacharacters (see SHELL_METACHAR_RE).
+ *  - Contains no path-traversal sequences (/../ or leading ../).
+ *  - Is either a plain basename ("claude") or an absolute path
+ *    ("/usr/local/bin/claude"). Relative paths beginning with "./" are
+ *    also rejected because they depend on the working directory and are
+ *    indistinguishable from a traversal attempt in many contexts.
+ */
+function validateClaudeCommandPath(value: string): boolean {
+  if (!value) return false;
+
+  // Null byte or non-printable ASCII (control chars 0x01-0x1f, 0x7f)
+  // SHELL_METACHAR_RE already covers \x00, \r, \n, \t — this catches the rest.
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional control-char check
+  if (/[\x01-\x09\x0b\x0c\x0e-\x1f\x7f]/.test(value)) return false;
+
+  // Shell metacharacters
+  if (SHELL_METACHAR_RE.test(value)) return false;
+
+  // Path traversal: any segment that is ".." (works for both Unix and Windows paths)
+  if (/(^|[/\\])\.\.([/\\]|$)/.test(value)) return false;
+
+  // Reject relative paths starting with "./" or ".\" (working-dir-relative)
+  if (/^\.[\\/]/.test(value)) return false;
+
+  return true;
+}
+
+// Module-level cache: resolved and validated on first call, reused thereafter.
+// `null` means the command was not found; `false` means it has not been resolved yet.
+let cachedClaudeCommand: string | null | false = false;
+
 async function executableExists(command: string): Promise<boolean> {
   try {
     await access(command);
@@ -493,13 +547,57 @@ async function executableExists(command: string): Promise<boolean> {
   }
 }
 
+/**
+ * Resolve the Claude executable path and validate it for safe use with
+ * spawn(). The result is cached after the first successful resolution.
+ *
+ * Resolution order:
+ *  1. TOKENOMIX_CLAUDE_COMMAND env var (if set and passes validation)
+ *  2. ~/.local/bin/claude (if the file is accessible and executable)
+ *  3. 'claude' (plain basename — relies on PATH resolution by the OS)
+ *
+ * Returns null if TOKENOMIX_CLAUDE_COMMAND is set but fails validation.
+ * In that case the route should return 503 rather than attempting to spawn.
+ */
 async function resolveClaudeCommand(): Promise<string | null> {
-  const configured = process.env.TOKENOMIX_CLAUDE_COMMAND?.trim();
-  if (configured) return configured;
+  if (cachedClaudeCommand !== false) return cachedClaudeCommand;
+
+  const configured = serverEnv().TOKENOMIX_CLAUDE_COMMAND?.trim();
+  if (configured !== undefined && configured !== '') {
+    if (!validateClaudeCommandPath(configured)) {
+      logEvent('warn', 'claude_command_invalid_path', {
+        reason:
+          'TOKENOMIX_CLAUDE_COMMAND contains shell metacharacters, path traversal, or non-printable characters and has been rejected.',
+        value: configured,
+      });
+      cachedClaudeCommand = null;
+      return null;
+    }
+    // Optionally verify the absolute path is executable (skipped for plain basenames
+    // because PATH lookup happens inside spawn() and we cannot race against it here).
+    if (nodePath.isAbsolute(configured)) {
+      try {
+        accessSync(configured, fsConstants.X_OK);
+      } catch {
+        logEvent('warn', 'claude_command_not_executable', {
+          reason: 'TOKENOMIX_CLAUDE_COMMAND path exists but is not executable by this process.',
+          value: configured,
+        });
+        cachedClaudeCommand = null;
+        return null;
+      }
+    }
+    cachedClaudeCommand = configured;
+    return configured;
+  }
 
   const homeCandidate = nodePath.join(os.homedir(), '.local', 'bin', 'claude');
-  if (await executableExists(homeCandidate)) return homeCandidate;
+  if (await executableExists(homeCandidate)) {
+    cachedClaudeCommand = homeCandidate;
+    return homeCandidate;
+  }
 
+  cachedClaudeCommand = 'claude';
   return 'claude';
 }
 
@@ -672,16 +770,13 @@ export class LocalClaudeRecommendationRunner implements ClaudeRecommendationRunn
   private hasStarted = false;
 
   constructor(args: { timeoutMs?: number; maxBudgetUsd?: string } = {}) {
-    this.timeoutMs =
-      args.timeoutMs ?? Number(process.env.TOKENOMIX_CLAUDE_CHAT_TIMEOUT_MS ?? 60_000);
-    this.maxBudgetUsd =
-      args.maxBudgetUsd ?? process.env.TOKENOMIX_CLAUDE_CHAT_MAX_BUDGET_USD ?? '0.15';
-    this.model = process.env.TOKENOMIX_CLAUDE_CHAT_MODEL?.trim() || 'sonnet';
+    const env = serverEnv();
+    this.timeoutMs = args.timeoutMs ?? env.TOKENOMIX_CLAUDE_CHAT_TIMEOUT_MS;
+    this.maxBudgetUsd = args.maxBudgetUsd ?? env.TOKENOMIX_CLAUDE_CHAT_MAX_BUDGET_USD;
+    this.model = env.TOKENOMIX_CLAUDE_CHAT_MODEL;
     this.sessionId = randomUUID();
-    this.effort = normalizeClaudeEffort(process.env.TOKENOMIX_CLAUDE_CHAT_EFFORT);
-    this.bareMode = ['1', 'true', 'yes'].includes(
-      process.env.TOKENOMIX_CLAUDE_CHAT_BARE?.toLowerCase() ?? ''
-    );
+    this.effort = normalizeClaudeEffort(env.TOKENOMIX_CLAUDE_CHAT_EFFORT);
+    this.bareMode = env.TOKENOMIX_CLAUDE_CHAT_BARE;
   }
 
   async status(): Promise<RecommendationChatStatus> {
@@ -818,6 +913,35 @@ export class LocalClaudeRecommendationRunner implements ClaudeRecommendationRunn
   }
 }
 
+/**
+ * Isolated working directory for the chatbot subprocess.
+ *
+ * Claude Code writes session JSONL files to ~/.claude/projects/<cwd-hash>/.
+ * If the subprocess inherits the server's process.cwd() (the user's project
+ * directory), those JSONL files land in the same watched project directory and
+ * the watcher ingests them, inflating the user's reported costs.
+ *
+ * Pointing cwd at a tokenomix-owned temp directory ensures chatbot sessions
+ * hash to a separate directory that is NOT under ~/.claude/projects/<project>/,
+ * so the watcher never ingests them.
+ */
+const CHAT_SUBPROCESS_CWD = nodePath.join(os.tmpdir(), `tokenomix-chat-${process.pid}`);
+
+/**
+ * Ensure the isolated chat subprocess directory exists.
+ * Called once at module load; subsequent calls are no-ops if the dir exists.
+ */
+async function ensureChatCwd(): Promise<void> {
+  await mkdir(CHAT_SUBPROCESS_CWD, { recursive: true, mode: 0o700 });
+}
+// Fire-and-forget: warm up the directory before any spawns occur.
+ensureChatCwd().catch((err: unknown) => {
+  logEvent('warn', 'chat_cwd_mkdir_failed', {
+    err: err instanceof Error ? err.message : String(err),
+    path: CHAT_SUBPROCESS_CWD,
+  });
+});
+
 function runCommand(
   command: string,
   args: string[],
@@ -825,7 +949,10 @@ function runCommand(
 ): Promise<{ stdout: string; stderr: string; code: number }> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
-      cwd: process.cwd(),
+      // Use the tokenomix-owned temp dir so Claude Code session JSONL files
+      // are NOT written under the user's project directory and are therefore
+      // NOT ingested by the watcher into IndexStore. See CHAT_SUBPROCESS_CWD.
+      cwd: CHAT_SUBPROCESS_CWD,
       env: process.env,
       shell: false,
       windowsHide: true,
@@ -869,7 +996,8 @@ async function* streamCommand(
   signal?: AbortSignal
 ): AsyncIterable<string> {
   const child = spawn(command, args, {
-    cwd: process.cwd(),
+    // Use the tokenomix-owned temp dir. See CHAT_SUBPROCESS_CWD comment above.
+    cwd: CHAT_SUBPROCESS_CWD,
     env: process.env,
     shell: false,
     windowsHide: true,
@@ -979,6 +1107,13 @@ export function recommendationsChatRoute(
       };
       return c.json(response);
     } catch {
+      // L3: If the claude subprocess fails (e.g. session expired after a server
+      // restart or Claude Code session TTL), reset sessionSeeded so the next
+      // request re-seeds the full metrics context rather than relying on the
+      // now-invalid --resume session. Without this, the chatbot would silently
+      // produce low-quality answers that reference metrics it no longer has.
+      sessionSeeded = false;
+      seededSummary = null;
       return c.json(
         {
           error:
@@ -1066,6 +1201,10 @@ export function recommendationsChatRoute(
           });
         }
       } catch {
+        // L3: Reset sessionSeeded on stream failure so the next request
+        // re-seeds context rather than relying on a potentially-expired session.
+        sessionSeeded = false;
+        seededSummary = null;
         await stream.writeSSE({
           event: 'message',
           data: JSON.stringify({

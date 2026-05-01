@@ -894,11 +894,32 @@ describe('GET /api/sessions — firstTs field', () => {
 
 /**
  * Build a minimal ChildProcess-like EventEmitter stub that satisfies the
- * spawn return type used by the reveal route (unref + error event only).
+ * spawn return type used by the reveal route.
+ *
+ * `outcome` controls what the stub emits after its listeners are registered:
+ *   - 'close' (default): emits the 'close' event on the next microtask tick,
+ *     simulating a successful spawn that exits immediately.
+ *   - 'error': emits an 'error' event with an Error object, simulating a
+ *     failed spawn (e.g. command not found).
+ *
+ * The emit is deferred with setImmediate so the route's `.on('error')` and
+ * `.on('close')` handlers are registered before the event fires. This matches
+ * the B2 implementation which awaits a Promise that resolves on 'close' and
+ * rejects on 'error'.
  */
-function makeSpawnStub() {
+function makeSpawnStub(outcome: 'close' | 'error' = 'close') {
   const emitter = new EventEmitter() as EventEmitter & { unref: () => void };
   emitter.unref = vi.fn();
+
+  // Defer emission so the route's listeners are attached first.
+  setImmediate(() => {
+    if (outcome === 'error') {
+      emitter.emit('error', new Error('spawn ENOENT'));
+    } else {
+      emitter.emit('close', 0);
+    }
+  });
+
   return emitter;
 }
 
@@ -963,5 +984,295 @@ describe('POST /api/sessions/:id/reveal', () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string };
     expect(typeof body.error).toBe('string');
+  });
+
+  it('returns 500 with { error } body when spawn emits an error event', async () => {
+    const store = new IndexStore();
+    const sessionId = 'sess-reveal-err';
+
+    const tmpFile = await writeTempJsonl(sessionId, 'reveal me error');
+    await store.ingestFile(tmpFile);
+
+    // Stub emits 'error' instead of 'close' — simulates ENOENT / permission failure.
+    const spawnStub = makeSpawnStub('error');
+    vi.mocked(mockSpawn).mockReturnValue(
+      spawnStub as unknown as ReturnType<typeof import('node:child_process').spawn>
+    );
+
+    const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin');
+
+    const app = buildSessionsApp(store);
+    const res = await app.request(`/api/sessions/${sessionId}/reveal`, { method: 'POST' });
+
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: string };
+    expect(typeof body.error).toBe('string');
+    expect(body.error.length).toBeGreaterThan(0);
+
+    // spawn was called once before the error was emitted.
+    expect(vi.mocked(mockSpawn)).toHaveBeenCalledOnce();
+
+    platformSpy.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests for GET /api/sessions/active
+// ---------------------------------------------------------------------------
+
+/**
+ * How recency works in these tests:
+ *
+ * "Active" tests need sessions whose lastTs falls within the windowMs cap
+ * (max 86_400_000 ms / 24 h). We generate fixture timestamps dynamically from
+ * Date.now() so they remain within the cap regardless of when the suite runs:
+ *
+ *   - recentIso(offsetMs) → ISO string for (Date.now() - offsetMs)
+ *   - "active" fixture: offsetMs = 60_000 (1 min ago) → within any ≥60 s window
+ *   - "old" fixture: offsetMs = 1 (1 ms ago) → only within a 1 ms window
+ *     (we test with windowMs=1 to filter it out, meaning cutoff ≈ now)
+ *
+ * For "filters out" tests we still use ancient fixed timestamps (2026-04-15)
+ * and windowMs=1 — those sessions are billions of ms in the past and always
+ * excluded from a 1 ms window.
+ *
+ * For the sort/limit test we use three dynamic timestamps: 1 min, 2 min, and
+ * 3 min ago — all within the 86_400_000 ms cap.
+ */
+
+/** ISO string for (Date.now() - offsetMs). */
+function recentIso(offsetMs: number): string {
+  return new Date(Date.now() - offsetMs).toISOString();
+}
+
+/** A window large enough to include sessions from 1–3 min ago (5 min). */
+const FIVE_MIN_MS = 300_000;
+
+describe('GET /api/sessions/active', () => {
+  it('returns sessions whose lastTs is within windowMs', async () => {
+    const store = new IndexStore();
+    const sessionId = 'sess-active-within';
+
+    // Session from 1 minute ago — within a 5 min window.
+    const tmpFile = await writeTempAssistantJsonl(sessionId, recentIso(60_000));
+    await store.ingestFile(tmpFile);
+
+    const app = buildSessionsApp(store);
+    const res = await app.request(`/api/sessions/active?windowMs=${FIVE_MIN_MS}`);
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as SessionSummary[];
+
+    const entry = body.find((s) => s.sessionId === sessionId);
+    expect(entry).toBeDefined();
+  });
+
+  it('filters out sessions older than windowMs', async () => {
+    const store = new IndexStore();
+    const sessionId = 'sess-active-old';
+
+    // Session from 2026-04-15 — billions of ms in the past, outside any 1 ms window.
+    const tmpFile = await writeTempAssistantJsonl(sessionId, '2026-04-15T10:00:00.000Z');
+    await store.ingestFile(tmpFile);
+
+    const app = buildSessionsApp(store);
+    const res = await app.request('/api/sessions/active?windowMs=1');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as SessionSummary[];
+
+    const entry = body.find((s) => s.sessionId === sessionId);
+    expect(entry).toBeUndefined();
+  });
+
+  it('returns at most `limit` sessions, sorted by lastTs desc', async () => {
+    const store = new IndexStore();
+
+    // Three sessions: newest 1 min ago, mid 2 min ago, oldest 3 min ago.
+    // All within the 5 min window.
+    const sessions = [
+      { id: 'sess-active-sort-old', ts: recentIso(3 * 60_000) },
+      { id: 'sess-active-sort-new', ts: recentIso(1 * 60_000) },
+      { id: 'sess-active-sort-mid', ts: recentIso(2 * 60_000) },
+    ];
+
+    for (const s of sessions) {
+      const tmpFile = await writeTempAssistantJsonl(s.id, s.ts);
+      await store.ingestFile(tmpFile);
+    }
+
+    const app = buildSessionsApp(store);
+
+    // limit=2: should get the two most recent sessions, newest first.
+    const res = await app.request(`/api/sessions/active?windowMs=${FIVE_MIN_MS}&limit=2`);
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as SessionSummary[];
+
+    expect(body).toHaveLength(2);
+    expect(body[0]?.sessionId).toBe('sess-active-sort-new');
+    expect(body[1]?.sessionId).toBe('sess-active-sort-mid');
+    // The oldest session is cut off by limit=2.
+    const oldEntry = body.find((s) => s.sessionId === 'sess-active-sort-old');
+    expect(oldEntry).toBeUndefined();
+  });
+
+  it('returns [] when no sessions are active', async () => {
+    const store = new IndexStore();
+    // No sessions ingested at all.
+    const app = buildSessionsApp(store);
+    const res = await app.request('/api/sessions/active?windowMs=1000');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as SessionSummary[];
+    expect(body).toEqual([]);
+  });
+
+  it('returns [] when sessions exist but all fall outside windowMs', async () => {
+    const store = new IndexStore();
+    const sessionId = 'sess-active-all-old';
+
+    const tmpFile = await writeTempAssistantJsonl(sessionId, '2026-04-15T10:00:00.000Z');
+    await store.ingestFile(tmpFile);
+
+    const app = buildSessionsApp(store);
+    // windowMs=1 → cutoff is ~now, all historical fixtures are excluded.
+    const res = await app.request('/api/sessions/active?windowMs=1');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as SessionSummary[];
+    expect(body).toEqual([]);
+  });
+
+  // --- Parameter validation ---
+
+  it('validates windowMs: rejects negative value', async () => {
+    const store = new IndexStore();
+    const app = buildSessionsApp(store);
+    const res = await app.request('/api/sessions/active?windowMs=-1');
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(typeof body.error).toBe('string');
+    expect(body.error.length).toBeGreaterThan(0);
+  });
+
+  it('validates windowMs: rejects zero', async () => {
+    const store = new IndexStore();
+    const app = buildSessionsApp(store);
+    const res = await app.request('/api/sessions/active?windowMs=0');
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(typeof body.error).toBe('string');
+  });
+
+  it('validates windowMs: rejects value exceeding 24 h (86_400_001)', async () => {
+    const store = new IndexStore();
+    const app = buildSessionsApp(store);
+    const res = await app.request('/api/sessions/active?windowMs=86400001');
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(typeof body.error).toBe('string');
+  });
+
+  it('validates windowMs: accepts boundary value of 86_400_000 (exactly 24 h)', async () => {
+    const store = new IndexStore();
+    const app = buildSessionsApp(store);
+    const res = await app.request('/api/sessions/active?windowMs=86400000');
+
+    expect(res.status).toBe(200);
+  });
+
+  it('validates windowMs: rejects non-integer (float string)', async () => {
+    const store = new IndexStore();
+    const app = buildSessionsApp(store);
+    const res = await app.request('/api/sessions/active?windowMs=300000.5');
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(typeof body.error).toBe('string');
+  });
+
+  it('validates windowMs: rejects non-numeric string', async () => {
+    const store = new IndexStore();
+    const app = buildSessionsApp(store);
+    const res = await app.request('/api/sessions/active?windowMs=abc');
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(typeof body.error).toBe('string');
+  });
+
+  it('validates limit: rejects value greater than 100', async () => {
+    const store = new IndexStore();
+    const app = buildSessionsApp(store);
+    const res = await app.request('/api/sessions/active?limit=101');
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(typeof body.error).toBe('string');
+    expect(body.error.length).toBeGreaterThan(0);
+  });
+
+  it('validates limit: rejects zero', async () => {
+    const store = new IndexStore();
+    const app = buildSessionsApp(store);
+    const res = await app.request('/api/sessions/active?limit=0');
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(typeof body.error).toBe('string');
+  });
+
+  it('validates limit: rejects negative value', async () => {
+    const store = new IndexStore();
+    const app = buildSessionsApp(store);
+    const res = await app.request('/api/sessions/active?limit=-5');
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(typeof body.error).toBe('string');
+  });
+
+  it('validates limit: rejects non-integer (float string)', async () => {
+    const store = new IndexStore();
+    const app = buildSessionsApp(store);
+    const res = await app.request('/api/sessions/active?limit=5.5');
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(typeof body.error).toBe('string');
+  });
+
+  it('validates limit: rejects non-numeric string', async () => {
+    const store = new IndexStore();
+    const app = buildSessionsApp(store);
+    const res = await app.request('/api/sessions/active?limit=ten');
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(typeof body.error).toBe('string');
+  });
+
+  it('validates limit: accepts boundary value of 100', async () => {
+    const store = new IndexStore();
+    const app = buildSessionsApp(store);
+    const res = await app.request('/api/sessions/active?limit=100');
+
+    expect(res.status).toBe(200);
+  });
+
+  it('returns default results with no query params', async () => {
+    // Smoke test: no params → uses defaults (windowMs=300_000, limit=10).
+    // With no sessions in store, result is [] and status is 200.
+    const store = new IndexStore();
+    const app = buildSessionsApp(store);
+    const res = await app.request('/api/sessions/active');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as SessionSummary[];
+    expect(Array.isArray(body)).toBe(true);
   });
 });
