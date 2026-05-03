@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Ask AI chat panel now minimizes when clicking outside or pressing Escape (suppressed while a response is streaming, so in-flight Claude Code responses are never orphaned from view).
-- Hero calendar popover now uses a smoked-glass surface (`bg-gray-950/70` + `backdrop-blur-xl` + `backdrop-saturate-150`) with a subtle ring highlight. Text contrast verified above WCAG AA on all popover labels.
+- Hero calendar popover uses a smoked-glass surface (`bg-white/55` light, `bg-gray-950/50` dark, `backdrop-blur-xl`, `backdrop-saturate-150`) with a subtle ring highlight. Text contrast verified above WCAG AA on all popover labels.
 
 ### Fixed
 
