@@ -367,7 +367,7 @@ export function HeroPeriodSwitcher({
           </div>
 
           {/* Quick preset pills */}
-          <div className="flex items-center justify-center gap-1 mb-2">
+          <div className="flex items-stretch mb-2">
             {PRESETS.map(({ value, label }, idx) => {
               const isActive = period === value;
               const isLast = idx === PRESETS.length - 1;
@@ -377,7 +377,7 @@ export function HeroPeriodSwitcher({
                     type="button"
                     onClick={() => handlePresetClick(value)}
                     className={[
-                      'h-7 px-2.5 rounded-lg text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary dark:focus-visible:ring-primary-light',
+                      'flex-1 h-7 rounded-lg text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary dark:focus-visible:ring-primary-light',
                       isActive
                         ? 'bg-primary text-white dark:bg-primary-light dark:text-gray-950'
                         : PRESET_INACTIVE_CLS,
@@ -388,7 +388,7 @@ export function HeroPeriodSwitcher({
                   {!isLast && (
                     <span
                       aria-hidden="true"
-                      className="select-none px-1 text-gray-300 dark:text-gray-600"
+                      className="select-none flex items-center px-1 text-gray-300 dark:text-gray-600"
                     >
                       |
                     </span>

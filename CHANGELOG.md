@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Hero date picker preset row: PREV MO. / MTD / YTD pills are now equal-width so MTD is mathematically centered regardless of label length differences.
 - `ActiveSessionsRail` duration field always showed "0s" because it measured time
   since `lastTs`, which SSE updates keep near `now`; it now computes session age
   (`now − firstTs`) on a 1-second tick so the counter increments live as the session runs.
