@@ -23,10 +23,12 @@ import type { MetricSummary } from '@tokenomix/shared';
 import { ArrowRight, RefreshCw } from 'lucide-react';
 import { useState } from 'react';
 import { fetchMetrics } from '../lib/api.js';
+import type { DateRange, HeroPeriod } from '../lib/period-rollup.js';
 import { queryKeys } from '../lib/query-keys.js';
 import { AreaChartPanel } from '../panels/AreaChartPanel.js';
 import { CostDriversPanel } from '../panels/CostDriversPanel.js';
 import { HeatmapPanel } from '../panels/HeatmapPanel.js';
+import { HeroPeriodSwitcher } from '../panels/HeroPeriodSwitcher.js';
 import { HeroSpend } from '../panels/HeroSpend.js';
 import { KpiRow } from '../panels/KpiRow.js';
 import { KpiRow2 } from '../panels/KpiRow2.js';
@@ -49,13 +51,37 @@ interface OverviewTabProps {
   data: MetricSummary;
   period: DashboardPeriod;
   onPeriodChange: (next: DashboardPeriod) => void;
+  heroPeriod: HeroPeriod;
+  heroCustomRange: DateRange | null;
+  onHeroPeriodChange: (next: HeroPeriod) => void;
+  onHeroCustomRangeChange: (next: DateRange) => void;
 }
 
-function OverviewTabContent({ data, period, onPeriodChange }: OverviewTabProps) {
+function OverviewTabContent({
+  data,
+  period,
+  onPeriodChange,
+  heroPeriod,
+  heroCustomRange,
+  onHeroPeriodChange,
+  onHeroCustomRangeChange,
+}: OverviewTabProps) {
   return (
     <div className="space-y-6 pt-6">
-      {/* 1. Hero — Current Spend (MTD) */}
-      <HeroSpend data={data} />
+      {/* 1. Hero — Current Spend with period switcher */}
+      <HeroSpend
+        data={data}
+        period={heroPeriod}
+        customRange={heroCustomRange}
+        switcher={
+          <HeroPeriodSwitcher
+            period={heroPeriod}
+            customRange={heroCustomRange}
+            onPeriodChange={onHeroPeriodChange}
+            onCustomRangeChange={onHeroCustomRangeChange}
+          />
+        }
+      />
 
       {/* 2. Cost drivers — explains what is driving spend */}
       <CostDriversPanel data={data} />
@@ -118,6 +144,10 @@ export default function OverviewPage() {
   // session (but is not hashed — only the tab key is hashed).
   const [period, setPeriod] = useState<DashboardPeriod>('30d');
 
+  // Hero period state — persists across tab switches, default to MTD.
+  const [heroPeriod, setHeroPeriod] = useState<HeroPeriod>('mtd');
+  const [heroCustomRange, setHeroCustomRange] = useState<DateRange | null>(null);
+
   const queryClient = useQueryClient();
 
   // Single source of truth for MetricSummary — prop-driven panels share this.
@@ -173,7 +203,17 @@ export default function OverviewPage() {
     {
       key: 'overview',
       label: 'Overview',
-      content: <OverviewTabContent data={data} period={period} onPeriodChange={setPeriod} />,
+      content: (
+        <OverviewTabContent
+          data={data}
+          period={period}
+          onPeriodChange={setPeriod}
+          heroPeriod={heroPeriod}
+          heroCustomRange={heroCustomRange}
+          onHeroPeriodChange={setHeroPeriod}
+          onHeroCustomRangeChange={setHeroCustomRange}
+        />
+      ),
     },
     {
       key: 'recommendations',

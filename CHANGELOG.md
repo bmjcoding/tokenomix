@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Hero period switcher with MTD / Prev Month / YTD segments and a calendar-based custom date range picker. Cost, delta, and token totals all reflect the selected period.
+- New dependency: `react-day-picker@9.14.0` (apps/web), pinned exact.
+
 ### Removed
 
 - Removed misleading "Opus to Sonnet Delta" metric card from the Cost Drivers section. The card implied a model-downgrade recommendation without accounting for output-quality differences; `opusToSonnetSavings30d` is retained in the data layer. Section grid changed from 4-column to 3-column.

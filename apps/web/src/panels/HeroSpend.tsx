@@ -1,20 +1,20 @@
 /**
- * HeroSpend — hero card displaying Current Spend (MTD).
+ * HeroSpend — hero card displaying Current Spend with a period switcher.
  *
  * Design decisions:
- * - Pure prop-driven component: receives MetricSummary, no internal useQuery.
- * - Headline: monthlyRollup.current.costUsd formatted as $X,XXX.XX with tabular-nums.
- * - Delta pill: percentage change vs previous month with ArrowUpRight / ArrowDownRight
- *   icons from lucide-react. Shows em-dash when previous.costUsd === 0.
+ * - Pure prop-driven component: receives MetricSummary + period/customRange props.
+ * - Period totals are derived client-side from data.dailySeries — no extra fetches.
+ * - Headline: current period's costUsd formatted as $X,XXX.XX with tabular-nums.
+ * - Delta pill: percentage change vs prior period (period-aware) with
+ *   ArrowUpRight / ArrowDownRight icons from lucide-react.
+ *   Shows em-dash when priorTotals.costUsd === 0.
  * - Card surface matches existing conventions: rounded-2xl, border, card surface tokens, p-6.
  * - No shadows per design-authority anti-convergence rule.
- * - DataQualityTooltip: inline next to headline (h-6 w-6 button, AlertTriangle size=13)
- *   rather than absolute-positioned corner so it never overlaps right-column content.
- * - Layout: 2-column grid (lg+). Left: primary $ metric + 30D cost driver satellite below
- *   hairline. Right: TOKENS · MTD full digit count, filling the entire right half.
- * - MTD token count uses full locale-grouped digits (no abbreviation) in the right column.
- * - 30D COST DRIVER in left column as a satellite metric (text-4xl, below hairline).
- * - TOKENS · 30D removed from hero — it remains visible in KpiRow on the Overview tab.
+ * - DataQualityTooltip: inline next to headline (h-6 w-6 button, AlertTriangle size=13).
+ * - Layout: top bar (switcher right-aligned) + 2-column grid (lg+). Left: primary $ metric
+ *   + 30D cost driver satellite below hairline. Right: TOKENS period count filling the right half.
+ * - 30D COST DRIVER is an ABSOLUTE 30-day window, intentionally NOT period-bound.
+ *   It reflects the last 30 calendar days regardless of which hero period is selected.
  */
 
 import type {
@@ -31,6 +31,15 @@ import {
   Database,
   FileSearch,
 } from 'lucide-react';
+import type { ReactNode } from 'react';
+import {
+  aggregateDailyBuckets,
+  type DateRange,
+  getDateRangeForPeriod,
+  getPriorRangeForPeriod,
+  type HeroPeriod,
+  periodDisplayLabel,
+} from '../lib/period-rollup.js';
 import { Card } from '../ui/Card.js';
 import { FlipNumber } from '../ui/FlipNumber.js';
 
@@ -73,18 +82,19 @@ function costBasisText(audit: PricingAuditSummary): string {
 interface DeltaPillProps {
   currentCost: number;
   previousCost: number;
+  priorRange: DateRange;
 }
 
-function DeltaPill({ currentCost, previousCost }: DeltaPillProps) {
+function DeltaPill({ currentCost, previousCost, priorRange }: DeltaPillProps) {
   // Show em-dash when there is no previous period to compare against.
   if (previousCost === 0) {
     return (
       <span
         className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-gray-100 dark:bg-gray-800 text-xs font-medium text-gray-500 dark:text-gray-400"
-        title="No prior month to compare"
+        title="No prior period to compare"
       >
         <span aria-hidden="true">&mdash;</span>
-        <span className="sr-only">No prior month to compare</span>
+        <span className="sr-only">No prior period to compare</span>
       </span>
     );
   }
@@ -93,15 +103,18 @@ function DeltaPill({ currentCost, previousCost }: DeltaPillProps) {
   const isPositive = pct >= 0;
   const absPct = Math.abs(pct).toFixed(1);
 
+  // Format the prior range for the tooltip (e.g. "Mar 1 – Mar 31").
+  const priorLabel = periodDisplayLabel('custom', priorRange);
+
   // Neutral/informational blue — both directions use the same tone so heavy usage
   // does not visually read as a penalty (red) or a saving (green).
   return (
     <span
       className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950"
-      title={`${absPct}% vs prior month`}
+      title={`${absPct}% vs ${priorLabel}`}
     >
       <span className="sr-only">
-        {isPositive ? 'Up' : 'Down'} {absPct}% vs prior month
+        {isPositive ? 'Up' : 'Down'} {absPct}% vs prior period
       </span>
       {isPositive ? (
         <ArrowUpRight size={12} aria-hidden="true" className="shrink-0" />
@@ -217,30 +230,45 @@ function DataQualityTooltip({ pricingAudit, ingestionAudit }: DataQualityTooltip
 
 interface HeroSpendProps {
   data: MetricSummary;
+  period: HeroPeriod;
+  customRange: DateRange | null;
+  /** Optional: switcher node rendered in the hero header top-right area. */
+  switcher?: ReactNode;
 }
 
-export function HeroSpend({ data }: HeroSpendProps) {
-  const current = data.monthlyRollup.current;
-  const previous = data.monthlyRollup.previous;
+export function HeroSpend({ data, period, customRange, switcher }: HeroSpendProps) {
+  // Derive totals from dailySeries for the selected period.
+  const currentRange = getDateRangeForPeriod(period, customRange);
+  const priorRange = getPriorRangeForPeriod(period, currentRange);
+  const currentTotals = aggregateDailyBuckets(data.dailySeries, currentRange);
+  const priorTotals = aggregateDailyBuckets(data.dailySeries, priorRange);
 
+  // 30D Cost Driver — intentional absolute 30-day window, NOT period-bound.
+  // This satellite always shows the last calendar month's cache share regardless
+  // of which hero period is selected. See design comment in file header.
   const cacheCost30d =
     data.costComponents30d.cacheCreationCostUsd + data.costComponents30d.cacheReadCostUsd;
   const cacheShare30d = data.costUsd30d > 0 ? (cacheCost30d / data.costUsd30d) * 100 : 0;
 
+  const periodLabel = periodDisplayLabel(period, currentRange);
+
   return (
-    <Card as="section" aria-label="Current spend month to date" className="p-6">
+    <Card as="section" aria-label={`Current spend — ${periodLabel}`} className="p-6">
+      {/* ── Top bar: period switcher (right-aligned) ── */}
+      {switcher && <div className="flex justify-end mb-4">{switcher}</div>}
+
       <div className="grid grid-cols-1 lg:grid-cols-[2fr_3fr] gap-8">
         {/* ── Left column: primary $ metric + satellite cost driver ── */}
         <div className="min-w-0">
           {/* Label */}
           <p className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-4">
-            Current Spend · MTD
+            Current Spend · {periodLabel}
           </p>
 
           {/* Hero number + inline warning icon */}
           <div className="flex items-start gap-0 mb-3">
             <FlipNumber
-              value={current.costUsd}
+              value={currentTotals.costUsd}
               format={{
                 style: 'currency',
                 currency: 'USD',
@@ -257,13 +285,20 @@ export function HeroSpend({ data }: HeroSpendProps) {
 
           {/* Delta pill + subtitle row */}
           <div className="flex items-center gap-3 flex-wrap">
-            <DeltaPill currentCost={current.costUsd} previousCost={previous.costUsd} />
-            <p className="text-sm text-gray-600 dark:text-gray-400">vs prior month</p>
+            <DeltaPill
+              currentCost={currentTotals.costUsd}
+              previousCost={priorTotals.costUsd}
+              priorRange={priorRange}
+            />
+            <p className="text-sm text-gray-600 dark:text-gray-400">vs prior period</p>
           </div>
 
           {/* Hairline separator — primary metric above, satellite metric below */}
           <div className="mt-6 pt-6 border-t border-gray-200 dark:border-gray-800">
-            {/* 30D Cost Driver — satellite treatment (text-4xl, not dominant) */}
+            {/* 30D Cost Driver — satellite treatment (text-4xl, not dominant).
+                NOTE: This metric uses an absolute 30-day window and is intentionally
+                NOT bound to the selected hero period. It always reflects the last
+                30 calendar days of cache creation/read share. */}
             <dl>
               <dt className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
                 30D Cost Driver
@@ -283,11 +318,11 @@ export function HeroSpend({ data }: HeroSpendProps) {
           </div>
         </div>
 
-        {/* ── Right column: TOKENS · MTD, full digit count, fills entire right half ── */}
+        {/* ── Right column: TOKENS · period, full digit count, fills entire right half ── */}
         <div className="pointer-events-none flex flex-col items-center justify-center h-full min-h-[200px]">
           <div className="text-center">
             <p className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
-              Tokens · MTD
+              Tokens · {periodLabel}
             </p>
             <div className="mt-4 flex items-baseline justify-center gap-2">
               <Cpu
@@ -300,7 +335,7 @@ export function HeroSpend({ data }: HeroSpendProps) {
                   so the watermark remains decorative-but-readable. aria-hidden
                   because the screen-reader label on the parent <div> carries the value. */}
               <FlipNumber
-                value={current.totalTokens}
+                value={currentTotals.totalTokens}
                 aria-hidden="true"
                 className="text-6xl sm:text-7xl lg:text-8xl font-bold leading-none tracking-tight tabular-nums text-gray-300 dark:text-gray-700"
               />
