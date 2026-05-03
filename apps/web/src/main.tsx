@@ -8,7 +8,6 @@ import { RefreshModeProvider } from './providers/RefreshModeProvider.js';
 import { ThemeProvider } from './providers/ThemeProvider.js';
 import { router } from './router.js';
 import './index.css';
-import 'react-day-picker/style.css';
 
 // ---------------------------------------------------------------------------
 // SSE-degraded banner

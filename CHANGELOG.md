@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Hero period switcher with MTD / Prev Month / YTD segments and a calendar-based custom date range picker. Cost, delta, and token totals all reflect the selected period.
-- New dependency: `react-day-picker@9.14.0` (apps/web), pinned exact.
+- Hero date range selector: single calendar pill trigger with active-range label, opening a single-month popover with `PREV MO. | MTD | YTD` quick presets and a custom range picker. Future dates disabled. Popover stays open during range selection; dismisses via outside-click, Escape, or trigger toggle.
+- New dependency: `react-day-picker@9.14.0` (apps/web), pinned exact. Theming is via the `classNames` prop with project Tailwind tokens; no external stylesheet imported.
 
 ### Removed
 
