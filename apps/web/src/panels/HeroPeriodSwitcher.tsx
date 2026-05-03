@@ -339,7 +339,7 @@ export function HeroPeriodSwitcher({
           aria-label="Pick a date range"
           aria-modal="true"
           tabIndex={-1}
-          className="absolute top-full right-0 z-50 mt-2 w-[320px] rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-gray-950 shadow-sm backdrop-blur-md p-3 focus:outline-none"
+          className="absolute top-full right-0 z-50 mt-2 w-[320px] rounded-2xl border border-gray-200 dark:border-white/15 bg-white/75 dark:bg-gray-950/70 shadow-2xl backdrop-blur-xl backdrop-saturate-150 ring-1 ring-black/5 dark:ring-white/5 p-3 focus:outline-none"
         >
           {/* Header row — custom month nav */}
           <div className="flex items-center justify-between mb-2">
