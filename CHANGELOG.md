@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- Removed misleading "Opus to Sonnet Delta" metric card from the Cost Drivers section. The card implied a model-downgrade recommendation without accounting for output-quality differences; `opusToSonnetSavings30d` is retained in the data layer. Section grid changed from 4-column to 3-column.
+
+### Changed
+
+- Ask AI chat panel now minimizes when clicking outside or pressing Escape (suppressed while a response is streaming, so in-flight Claude Code responses are never orphaned from view).
+
 ### Fixed
 
 - `ActiveSessionsRail` duration field always showed "0s" because it measured time

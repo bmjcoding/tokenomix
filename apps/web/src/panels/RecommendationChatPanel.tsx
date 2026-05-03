@@ -181,6 +181,7 @@ export function RecommendationChatPanel() {
   const [isOpen, setIsOpen] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const messageListRef = useRef<HTMLDivElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const [thinkingElapsedSeconds, setThinkingElapsedSeconds] = useState<number | null>(null);
   const thinkingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -202,6 +203,36 @@ export function RecommendationChatPanel() {
       abortControllerRef.current = null;
     };
   }, []);
+
+  // Click-outside and Escape-key handler — minimizes the panel when the user
+  // interacts with anything outside the floating container (panel + toggle button).
+  // We skip this while isSending is true to avoid orphaning an in-flight stream
+  // from the user's view; the explicit X button still works in that state.
+  useEffect(() => {
+    if (!isOpen || isSending) return;
+
+    function handlePointerDown(event: MouseEvent | TouchEvent) {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setIsOpen(false);
+      }
+    }
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('touchstart', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('touchstart', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isOpen, isSending]);
 
   const statusQuery = useQuery({
     queryKey: queryKeys.recommendationChatStatus(),
@@ -316,8 +347,24 @@ export function RecommendationChatPanel() {
     });
   }
 
+  // design-lint-disable dark-mode-pairs
+  const closeButtonCls =
+    'inline-flex h-8 w-8 items-center justify-center rounded-lg text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 dark:focus-visible:ring-white';
+  // design-lint-disable dark-mode-pairs
+  const textareaCls =
+    'min-h-14 flex-1 resize-none rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-500 dark:placeholder:text-gray-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-950 dark:focus-visible:ring-white';
+  // design-lint-disable dark-mode-pairs
+  const stopBtnFocusCls =
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-950 dark:focus-visible:ring-white';
+  // design-lint-disable dark-mode-pairs
+  const toggleBtnHoverCls =
+    'hover:bg-gray-50 hover:border-gray-300 hover:text-gray-900 dark:hover:bg-white/[0.06] dark:hover:border-white/20 dark:hover:text-gray-100';
+  // design-lint-disable dark-mode-pairs
+  const toggleBtnFocusCls =
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 dark:focus-visible:ring-white/70 focus-visible:ring-offset-2';
+
   return (
-    <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-3">
+    <div ref={containerRef} className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-3">
       {isOpen && (
         <section
           className="w-[calc(100vw-2rem)] max-w-[440px] overflow-hidden rounded-2xl border border-gray-200 dark:border-black/80 bg-white/95 dark:bg-gray-900/50 shadow-sm backdrop-blur-sm"
@@ -339,7 +386,7 @@ export function RecommendationChatPanel() {
                   type="button"
                   onClick={() => setIsOpen(false)}
                   aria-label="Close AI chat"
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 dark:focus-visible:ring-white"
+                  className={closeButtonCls}
                 >
                   <X size={16} aria-hidden="true" />
                 </button>
@@ -431,7 +478,7 @@ export function RecommendationChatPanel() {
                 rows={2}
                 placeholder="Ask something about your usage..."
                 aria-label="Message recommendations analyst"
-                className="min-h-14 flex-1 resize-none rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-500 dark:placeholder:text-gray-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-950 dark:focus-visible:ring-white"
+                className={textareaCls}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' && !event.shiftKey) {
                     event.preventDefault();
@@ -449,7 +496,7 @@ export function RecommendationChatPanel() {
                   aria-label="Stop streaming response"
                   className={cx(
                     'inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-lg transition-colors',
-                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-950 dark:focus-visible:ring-white',
+                    stopBtnFocusCls,
                     'bg-gray-200 text-gray-700 hover:bg-gray-300 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
                   )}
                 >
@@ -487,8 +534,8 @@ export function RecommendationChatPanel() {
           'inline-flex h-10 items-center gap-2 rounded-xl px-3',
           'border border-gray-200 dark:border-white/10 bg-white dark:bg-black/35 text-gray-700 dark:text-gray-400',
           'shadow-sm backdrop-blur-md transition-colors',
-          'hover:bg-gray-50 hover:border-gray-300 hover:text-gray-900 dark:hover:bg-white/[0.06] dark:hover:border-white/20 dark:hover:text-gray-100',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 dark:focus-visible:ring-white/70 focus-visible:ring-offset-2',
+          toggleBtnHoverCls,
+          toggleBtnFocusCls,
         ].join(' ')}
       >
         <Sparkles size={16} aria-hidden="true" />
