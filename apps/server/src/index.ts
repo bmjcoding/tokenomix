@@ -2,7 +2,7 @@
  * Hono API server entry point.
  *
  * Binds to 127.0.0.1 only (local-only tool — no network exposure).
- * PORT = Number(process.env.PORT_BASE ?? 3000) + 1  (default 3001)
+ * PORT = PORT_BASE + 1  (default 3001; validated via env.ts at startup)
  *
  * Startup sequence:
  *   1. Create IndexStore and run full JSONL scan.
@@ -15,7 +15,9 @@ import * as fs from 'node:fs';
 import { serve } from '@hono/node-server';
 import type { MiddlewareHandler } from 'hono';
 import { Hono } from 'hono';
-import { IndexStore, PROJECTS_DIR } from './index-store.js';
+import { initServerEnv, validateEnv } from './env.js';
+import { IndexStore, WATCHED_SOURCE_DIRS } from './index-store.js';
+import { logEvent } from './logger.js';
 import { RescanScheduler } from './rescan-scheduler.js';
 import { adminRoute } from './routes/admin.js';
 import { eventsRoute } from './routes/events.js';
@@ -24,36 +26,27 @@ import { metricsRoute } from './routes/metrics.js';
 import { recommendationsChatRoute } from './routes/recommendations-chat.js';
 import { sessionsRoute } from './routes/sessions.js';
 import { turnsRoute } from './routes/turns.js';
-import { formatLocalIso } from './time.js';
 import { startWatcher } from './watcher.js';
 
-const PORT = Number(process.env.PORT_BASE ?? 3000) + 1;
-
-/** Service name tag applied to all structured log entries. */
-const SERVICE = 'tokenomix-server';
-
 // ---------------------------------------------------------------------------
-// Structured logger — emits NDJSON with required observability fields.
-// Fields: level, service, timestamp, event, ...extra
+// Env validation — must run before any module that reads process.env.
 // ---------------------------------------------------------------------------
-function logEvent(
-  level: 'info' | 'warn' | 'error',
-  event: string,
-  fields: Record<string, unknown> = {}
-): void {
-  const entry = JSON.stringify({
-    level,
-    service: SERVICE,
-    timestamp: formatLocalIso(),
-    event,
-    ...fields,
+const envResult = validateEnv();
+if (!envResult.success) {
+  // Format Zod field errors into a readable message before any logger is used.
+  const issues = envResult.error.issues
+    .map((issue) => `  ${issue.path.join('.')}: ${issue.message}`)
+    .join('\n');
+  logEvent('error', 'env-validation-failed', {
+    message: `Server startup aborted: invalid environment configuration.\n${issues}`,
+    issues: envResult.error.issues,
   });
-  if (level === 'error' || level === 'warn') {
-    process.stderr.write(`${entry}\n`);
-  } else {
-    process.stdout.write(`${entry}\n`);
-  }
+  process.stderr.write(`\nEnv validation errors:\n${issues}\n\n`);
+  process.exit(1);
 }
+initServerEnv(envResult.env);
+
+const PORT = envResult.env.PORT_BASE + 1;
 
 // ---------------------------------------------------------------------------
 // Custom HTTP logger middleware — strips query-string values to avoid logging
@@ -85,7 +78,7 @@ async function main(): Promise<void> {
   // Collect file count for the startup log.
   let fileCount = 0;
   try {
-    fileCount = await countJsonlFiles(PROJECTS_DIR);
+    fileCount = await countJsonlFilesFromDirs(WATCHED_SOURCE_DIRS);
   } catch {
     fileCount = 0;
   }
@@ -150,7 +143,7 @@ async function main(): Promise<void> {
   serve({ fetch: app.fetch, port: PORT, hostname: '127.0.0.1' }, (info) => {
     // Structured startup log with all relevant context.
     logEvent('info', 'startup', {
-      projectsDir: PROJECTS_DIR,
+      sourceDirs: WATCHED_SOURCE_DIRS,
       fileCount,
       port: info.port,
       indexedRows: store.indexedRows,
@@ -182,6 +175,11 @@ async function countJsonlFiles(dir: string): Promise<number> {
   }
   await walk(dir);
   return count;
+}
+
+async function countJsonlFilesFromDirs(dirs: readonly string[]): Promise<number> {
+  const counts = await Promise.all(dirs.map((dir) => countJsonlFiles(dir)));
+  return counts.reduce((sum, count) => sum + count, 0);
 }
 
 main().catch((err: unknown) => {

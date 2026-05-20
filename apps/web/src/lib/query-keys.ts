@@ -9,7 +9,7 @@
  * inline — keeping cache semantics consistent across the whole app.
  */
 
-import type { MetricsQuery } from '@tokenomix/shared';
+import type { MetricsQuery, UsageSourceProviderFilter } from '@tokenomix/shared';
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -33,24 +33,17 @@ export const queryKeys = {
     return ['sessions', query] as const;
   },
 
-  /**
-   * Cache key for fetchHealth().
-   * Health has no query parameters, so the key is always the same tuple.
-   */
-  health(): readonly unknown[] {
-    return ['health'] as const;
-  },
-
-  recommendationChatStatus(): readonly unknown[] {
-    return ['recommendationChatStatus'] as const;
+  recommendationChatStatus(provider?: UsageSourceProviderFilter): readonly unknown[] {
+    return ['recommendationChatStatus', provider ?? 'all'] as const;
   },
 
   /**
-   * Cache key for fetchTurns(params).
-   * Tuple format: ['turns', params] — T-006 invalidates by prefix ['turns'].
+   * Cache key for fetchActiveSessions(params).
+   * First element is 'sessions' so the existing useServerEvents invalidation
+   * (queryKey: ['sessions']) catches this key by prefix.
    */
-  turns(params: { since?: string; project?: string; limit?: number }): readonly unknown[] {
-    return ['turns', params] as const;
+  activeSessions(params: { windowMs?: number; limit?: number }): readonly unknown[] {
+    return ['sessions', 'active', params] as const;
   },
 
   /**

@@ -58,6 +58,39 @@ export const AWS_BEDROCK_PRICING_CATALOG_METADATA: PricingCatalogMetadata = {
   costBasis: 'estimated_from_jsonl_usage_static_bedrock_catalog',
 };
 
+export const OPENAI_API_PRICING_CATALOG_METADATA: PricingCatalogMetadata = {
+  catalogVersion: 'openai-api-codex-pricing-2026-05-03',
+  billingCurrency: 'USD',
+  sourceUrl:
+    'https://developers.openai.com/api/docs/pricing; https://developers.openai.com/api/docs/models/gpt-5.5; https://developers.openai.com/api/docs/models/gpt-5.4; https://help.openai.com/en/articles/20001106-codex-rate-card; https://developers.openai.com/codex/speed',
+  sourceLastChecked: '2026-05-03',
+  precision: 'micro-usd',
+  pricingProvider: 'openai_api',
+  costBasis: 'estimated_from_jsonl_usage_static_openai_catalog',
+};
+
+export const MIXED_STATIC_PRICING_CATALOG_METADATA: PricingCatalogMetadata = {
+  catalogVersion: 'mixed-static-public-pricing-2026-05-03',
+  billingCurrency: 'USD',
+  sourceUrl:
+    'https://platform.claude.com/docs/en/about-claude/pricing; https://aws.amazon.com/bedrock/pricing/; https://developers.openai.com/api/docs/pricing; https://developers.openai.com/api/docs/models/gpt-5.5; https://developers.openai.com/api/docs/models/gpt-5.4; https://help.openai.com/en/articles/20001106-codex-rate-card; https://developers.openai.com/codex/speed',
+  sourceLastChecked: '2026-05-03',
+  precision: 'micro-usd',
+  pricingProvider: 'mixed_static_catalogs',
+  costBasis: 'mixed_static_public_catalogs',
+};
+
+export const LOCAL_MODEL_EQUIVALENT_PRICING_CATALOG_METADATA: PricingCatalogMetadata = {
+  catalogVersion: 'local-model-equivalent-pricing-2026-05-03',
+  billingCurrency: 'USD',
+  sourceUrl:
+    'https://platform.claude.com/docs/en/about-claude/pricing; https://developers.openai.com/api/docs/pricing; https://developers.openai.com/api/docs/models/gpt-5.5; https://developers.openai.com/api/docs/models/gpt-5.4; https://help.openai.com/en/articles/20001106-codex-rate-card',
+  sourceLastChecked: '2026-05-03',
+  precision: 'micro-usd',
+  pricingProvider: 'local_equivalent',
+  costBasis: 'counterfactual_local_model_usage_static_public_catalogs',
+};
+
 export const PRICING_CATALOG_METADATA = ANTHROPIC_1P_PRICING_CATALOG_METADATA;
 
 // ---------------------------------------------------------------------------
@@ -86,6 +119,79 @@ export interface PriceTable {
   /** USD per 1M cache read tokens. */
   cache_read: number;
 }
+
+/** USD price per 1M tokens for OpenAI text usage dimensions exposed by Codex. */
+export interface OpenAiCodexPriceTable {
+  input: number;
+  cachedInput: number;
+  output: number;
+  source: 'openai_api_pricing' | 'codex_rate_card';
+  fastModeMultiplier?: number;
+  longContext?: {
+    thresholdInputTokens: number;
+    input: number;
+    cachedInput: number;
+    output: number;
+  };
+}
+
+export const OPENAI_CODEX_LONG_CONTEXT_THRESHOLD_INPUT_TOKENS = 272_000;
+
+/**
+ * OpenAI/Codex prices in USD per 1M tokens.
+ *
+ * GPT-5.5, GPT-5.4, and GPT-5.4 mini come from OpenAI API pricing.
+ * GPT-5.3-Codex and GPT-5.2 come from the Codex rate card credit table and are
+ * represented as USD-equivalent estimates converted at 25 credits per USD. That
+ * conversion is implied by the GPT-5.5 and GPT-5.4 rows that appear in both the
+ * API pricing page and the Codex credit table; it is not an invoice amount.
+ */
+export const OPENAI_CODEX_MODEL_PRICES: Record<string, OpenAiCodexPriceTable> = {
+  'gpt-5.5': {
+    input: 5.0,
+    cachedInput: 0.5,
+    output: 30.0,
+    source: 'openai_api_pricing',
+    fastModeMultiplier: 2.5,
+    longContext: {
+      thresholdInputTokens: OPENAI_CODEX_LONG_CONTEXT_THRESHOLD_INPUT_TOKENS,
+      input: 10.0,
+      cachedInput: 1.0,
+      output: 45.0,
+    },
+  },
+  'gpt-5.4': {
+    input: 2.5,
+    cachedInput: 0.25,
+    output: 15.0,
+    source: 'openai_api_pricing',
+    fastModeMultiplier: 2.0,
+    longContext: {
+      thresholdInputTokens: OPENAI_CODEX_LONG_CONTEXT_THRESHOLD_INPUT_TOKENS,
+      input: 5.0,
+      cachedInput: 0.5,
+      output: 22.5,
+    },
+  },
+  'gpt-5.4-mini': {
+    input: 0.75,
+    cachedInput: 0.075,
+    output: 4.5,
+    source: 'openai_api_pricing',
+  },
+  'gpt-5.3-codex': {
+    input: 1.75,
+    cachedInput: 0.175,
+    output: 14.0,
+    source: 'codex_rate_card',
+  },
+  'gpt-5.2': {
+    input: 1.75,
+    cachedInput: 0.175,
+    output: 14.0,
+    source: 'codex_rate_card',
+  },
+};
 
 // ---------------------------------------------------------------------------
 // MODEL_PRICES
@@ -275,10 +381,13 @@ export function model_family(modelId: string | null | undefined): string {
 
   if (parsed.kind === 'haiku') {
     const { major, minor } = parsed;
-    if (major > 4 || major === 4) {
+    if (major >= 4) {
       return 'haiku';
     }
-    if (major > 3 || (major === 3 && minor >= 5)) {
+    // M5: Removed unreachable `major > 3` sub-expression — all major >= 4 are
+    // already caught above. The relevant boundary for haiku_3_5 is major === 3
+    // with minor >= 5.
+    if (major === 3 && minor >= 5) {
       return 'haiku_3_5';
     }
     return 'haiku_3';
@@ -523,6 +632,118 @@ function priceUsdPerMTokToMicros(priceUsdPerMTok: number): number {
 function tokenCostMicros(tokens: number, priceUsdPerMTok: number): number {
   const priceMicrosPerMTok = priceUsdPerMTokToMicros(priceUsdPerMTok);
   return Math.round((tokens * priceMicrosPerMTok) / TOKENS_PER_MTOK);
+}
+
+export function openAiCodexPriceForModel(
+  modelId: string | null | undefined
+): OpenAiCodexPriceTable | null {
+  if (!modelId) return null;
+  const normalized = modelId.toLowerCase();
+
+  // The Codex rate card marks Spark as a research preview with non-final rates.
+  if (normalized.includes('gpt-5.3-codex-spark')) return null;
+  if (normalized.includes('gpt-5.4-mini')) {
+    return OPENAI_CODEX_MODEL_PRICES['gpt-5.4-mini'] ?? null;
+  }
+  if (normalized.includes('gpt-5.3-codex')) {
+    return OPENAI_CODEX_MODEL_PRICES['gpt-5.3-codex'] ?? null;
+  }
+  if (normalized.includes('gpt-5.5')) return OPENAI_CODEX_MODEL_PRICES['gpt-5.5'] ?? null;
+  if (normalized.includes('gpt-5.4')) return OPENAI_CODEX_MODEL_PRICES['gpt-5.4'] ?? null;
+  if (normalized.includes('gpt-5.2')) return OPENAI_CODEX_MODEL_PRICES['gpt-5.2'] ?? null;
+
+  return null;
+}
+
+export function openAiCodexFastModeMultiplierForModel(
+  modelId: string | null | undefined
+): number | null {
+  return openAiCodexPriceForModel(modelId)?.fastModeMultiplier ?? null;
+}
+
+export function openAiCodexLongContextApplies(
+  usage: { uncachedInputTokens: number; cachedInputTokens: number },
+  modelId: string | null | undefined
+): boolean {
+  const prices = openAiCodexPriceForModel(modelId);
+  const longContext = prices?.longContext;
+  if (!longContext) return false;
+  return usage.uncachedInputTokens + usage.cachedInputTokens > longContext.thresholdInputTokens;
+}
+
+export function computeOpenAiCodexCost(
+  usage: { uncachedInputTokens: number; cachedInputTokens: number; outputTokens: number },
+  modelId: string | null | undefined
+): {
+  inputCostUsd: number;
+  outputCostUsd: number;
+  cacheCreationCostUsd: number;
+  cacheReadCostUsd: number;
+  webSearchCostUsd: number;
+  totalCostUsd: number;
+  inputCostUsdMicros: number;
+  outputCostUsdMicros: number;
+  cacheCreationCostUsdMicros: number;
+  cacheReadCostUsdMicros: number;
+  webSearchCostUsdMicros: number;
+  totalCostUsdMicros: number;
+  pricingMultiplier: number;
+  pricingStatus: PricingStatus;
+} | null {
+  const prices = openAiCodexPriceForModel(modelId);
+  if (!prices) return null;
+  const longContext =
+    openAiCodexLongContextApplies(
+      {
+        uncachedInputTokens: usage.uncachedInputTokens,
+        cachedInputTokens: usage.cachedInputTokens,
+      },
+      modelId
+    ) && prices.longContext
+      ? prices.longContext
+      : null;
+  const appliedPrices = longContext ?? prices;
+
+  const inputCostUsdMicros = tokenCostMicros(
+    Math.max(0, usage.uncachedInputTokens),
+    appliedPrices.input
+  );
+  const outputCostUsdMicros = tokenCostMicros(
+    Math.max(0, usage.outputTokens),
+    appliedPrices.output
+  );
+  const cacheReadCostUsdMicros = tokenCostMicros(
+    Math.max(0, usage.cachedInputTokens),
+    appliedPrices.cachedInput
+  );
+  const totalCostUsdMicros = inputCostUsdMicros + outputCostUsdMicros + cacheReadCostUsdMicros;
+  const standardTotalCostUsdMicros =
+    tokenCostMicros(Math.max(0, usage.uncachedInputTokens), prices.input) +
+    tokenCostMicros(Math.max(0, usage.outputTokens), prices.output) +
+    tokenCostMicros(Math.max(0, usage.cachedInputTokens), prices.cachedInput);
+
+  return {
+    inputCostUsd: microsToUsd(inputCostUsdMicros),
+    outputCostUsd: microsToUsd(outputCostUsdMicros),
+    cacheCreationCostUsd: 0,
+    cacheReadCostUsd: microsToUsd(cacheReadCostUsdMicros),
+    webSearchCostUsd: 0,
+    totalCostUsd: microsToUsd(totalCostUsdMicros),
+    inputCostUsdMicros,
+    outputCostUsdMicros,
+    cacheCreationCostUsdMicros: 0,
+    cacheReadCostUsdMicros,
+    webSearchCostUsdMicros: 0,
+    totalCostUsdMicros,
+    pricingMultiplier:
+      longContext && standardTotalCostUsdMicros > 0
+        ? totalCostUsdMicros / standardTotalCostUsdMicros
+        : 1,
+    pricingStatus:
+      prices.source === 'codex_rate_card'
+        ? 'openai_codex_rate_card_equivalent'
+        : 'openai_api_catalog',
+  };
 }
 
 function applyMultiplierMicros(

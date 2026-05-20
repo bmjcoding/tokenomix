@@ -26,7 +26,7 @@ function cx(...classes: (string | undefined | false | null)[]): string {
 // Props
 // ---------------------------------------------------------------------------
 
-export interface CardProps extends HTMLAttributes<HTMLDivElement> {
+interface CardProps extends HTMLAttributes<HTMLDivElement> {
   /**
    * The HTML element to render as.
    * Use 'section' or 'article' when the card represents a document landmark.

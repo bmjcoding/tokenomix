@@ -5,10 +5,9 @@
  * - Owns the single useQuery call for MetricSummary (since='all').
  * - Passes MetricSummary down as props to all prop-driven panels:
  *   HeroSpend, CostDriversPanel, KpiRow, KpiRow2, OptimizationOpportunitiesPanel,
- *   OptimizationSignalsPanel, AreaChartPanel.
- * - Self-fetching panels (HeatmapPanel, ModelMixPanel, ToolsBreakdownPanel) mount
- *   only when their tab is active — their useQuery hooks do not fire on inactive tabs.
- * - useServerEvents() SSE hook is mounted here for live cache invalidation.
+ *   OptimizationSignalsPanel, AreaChartPanel, ToolsBreakdownPanel.
+ * - Self-fetching panels (HeatmapPanel, ModelMixPanel) mount only when their tab
+ *   is active — their useQuery hooks do not fire on inactive tabs.
  * - Period state is lifted to this page and passed to AreaChartPanel.
  * - Hash sync via Tabs: reloading with #recommendations lands on that tab.
  *
@@ -18,17 +17,20 @@
  *   activity        — HeatmapPanel (full-width) → 2-col grid: ModelMixPanel + ToolsBreakdownPanel
  */
 
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
 import type { MetricSummary } from '@tokenomix/shared';
-import { ArrowRight } from 'lucide-react';
+import { ArrowRight, RefreshCw } from 'lucide-react';
 import { useState } from 'react';
 import { fetchMetrics } from '../lib/api.js';
+import type { DateRange, HeroPeriod } from '../lib/period-rollup.js';
+import { type ProviderMode, withProviderMode } from '../lib/provider-modes.js';
 import { queryKeys } from '../lib/query-keys.js';
-import { useServerEvents } from '../lib/useServerEvents.js';
+import { useProviderMode } from '../lib/useProviderMode.js';
 import { AreaChartPanel } from '../panels/AreaChartPanel.js';
 import { CostDriversPanel } from '../panels/CostDriversPanel.js';
 import { HeatmapPanel } from '../panels/HeatmapPanel.js';
+import { HeroPeriodSwitcher } from '../panels/HeroPeriodSwitcher.js';
 import { HeroSpend } from '../panels/HeroSpend.js';
 import { KpiRow } from '../panels/KpiRow.js';
 import { KpiRow2 } from '../panels/KpiRow2.js';
@@ -37,6 +39,7 @@ import { OptimizationOpportunitiesPanel } from '../panels/OptimizationOpportunit
 import { OptimizationSignalsPanel } from '../panels/OptimizationSignalsPanel.js';
 import type { DashboardPeriod } from '../panels/PeriodSwitcher.js';
 import { ToolsBreakdownPanel } from '../panels/ToolsBreakdownPanel.js';
+import { ProviderModeToggle } from '../ui/ProviderModeToggle.js';
 import type { TabItem } from '../ui/Tabs.js';
 import { Tabs } from '../ui/Tabs.js';
 
@@ -51,13 +54,37 @@ interface OverviewTabProps {
   data: MetricSummary;
   period: DashboardPeriod;
   onPeriodChange: (next: DashboardPeriod) => void;
+  heroPeriod: HeroPeriod;
+  heroCustomRange: DateRange | null;
+  onHeroPeriodChange: (next: HeroPeriod) => void;
+  onHeroCustomRangeChange: (next: DateRange) => void;
 }
 
-function OverviewTabContent({ data, period, onPeriodChange }: OverviewTabProps) {
+function OverviewTabContent({
+  data,
+  period,
+  onPeriodChange,
+  heroPeriod,
+  heroCustomRange,
+  onHeroPeriodChange,
+  onHeroCustomRangeChange,
+}: OverviewTabProps) {
   return (
     <div className="space-y-6 pt-6">
-      {/* 1. Hero — Current Spend (MTD) */}
-      <HeroSpend data={data} />
+      {/* 1. Hero — Current Spend with period switcher */}
+      <HeroSpend
+        data={data}
+        period={heroPeriod}
+        customRange={heroCustomRange}
+        switcher={
+          <HeroPeriodSwitcher
+            period={heroPeriod}
+            customRange={heroCustomRange}
+            onPeriodChange={onHeroPeriodChange}
+            onCustomRangeChange={onHeroCustomRangeChange}
+          />
+        }
+      />
 
       {/* 2. Cost drivers — explains what is driving spend */}
       <CostDriversPanel data={data} />
@@ -90,16 +117,23 @@ function RecommendationsTabContent({ data }: RecommendationsTabProps) {
   );
 }
 
-function ActivityTabContent() {
+interface ActivityTabProps {
+  data: MetricSummary;
+  isLoading: boolean;
+  isError: boolean;
+  providerMode: ProviderMode;
+}
+
+function ActivityTabContent({ data, isLoading, isError, providerMode }: ActivityTabProps) {
   return (
     <div className="space-y-6 pt-6">
       {/* Heatmap — full-width row */}
-      <HeatmapPanel />
+      <HeatmapPanel providerMode={providerMode} />
 
       {/* Model mix and tools breakdown — 2-column grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <ModelMixPanel />
-        <ToolsBreakdownPanel since="30d" />
+        <ModelMixPanel providerMode={providerMode} />
+        <ToolsBreakdownPanel byTool={data.byTool} isLoading={isLoading} isError={isError} />
       </div>
     </div>
   );
@@ -110,17 +144,22 @@ function ActivityTabContent() {
 // ---------------------------------------------------------------------------
 
 export default function OverviewPage() {
-  // SSE live refresh — invalidates TanStack Query cache on 'updated' events.
-  useServerEvents();
-
   // Period state lifted here so it persists across tab switches within the
   // session (but is not hashed — only the tab key is hashed).
   const [period, setPeriod] = useState<DashboardPeriod>('30d');
 
+  // Hero period state — persists across tab switches, default to MTD.
+  const [heroPeriod, setHeroPeriod] = useState<HeroPeriod>('mtd');
+  const [heroCustomRange, setHeroCustomRange] = useState<DateRange | null>(null);
+  const { providerMode, setProviderMode } = useProviderMode();
+  const metricsQuery = withProviderMode({ since: 'all' }, providerMode);
+
+  const queryClient = useQueryClient();
+
   // Single source of truth for MetricSummary — prop-driven panels share this.
   const { data, isLoading, isError } = useQuery<MetricSummary>({
-    queryKey: queryKeys.metrics({ since: 'all' }),
-    queryFn: () => fetchMetrics({ since: 'all' }),
+    queryKey: queryKeys.metrics(metricsQuery),
+    queryFn: () => fetchMetrics(metricsQuery),
   });
 
   const containerCls = 'py-6 px-4 sm:px-6 lg:px-8 max-w-screen-xl mx-auto';
@@ -137,14 +176,27 @@ export default function OverviewPage() {
     );
   }
 
-  // Error state.
+  // Error state — show message and a Retry button that invalidates the metrics
+  // cache so TanStack Query triggers a fresh fetch immediately.
   if (isError) {
     return (
       <div className={containerCls}>
-        <div className="flex items-center justify-center py-24">
+        <div className="flex flex-col items-center justify-center gap-4 py-24">
           <span className="text-sm text-red-500 dark:text-red-400">
             Failed to load dashboard data.
           </span>
+          <button
+            type="button"
+            onClick={() =>
+              queryClient.invalidateQueries({
+                queryKey: queryKeys.metrics(metricsQuery),
+              })
+            }
+            className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg transition-colors bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-900 dark:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-950 dark:focus-visible:ring-white focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-950"
+          >
+            <RefreshCw size={14} aria-hidden="true" />
+            Retry
+          </button>
         </div>
       </div>
     );
@@ -157,7 +209,17 @@ export default function OverviewPage() {
     {
       key: 'overview',
       label: 'Overview',
-      content: <OverviewTabContent data={data} period={period} onPeriodChange={setPeriod} />,
+      content: (
+        <OverviewTabContent
+          data={data}
+          period={period}
+          onPeriodChange={setPeriod}
+          heroPeriod={heroPeriod}
+          heroCustomRange={heroCustomRange}
+          onHeroPeriodChange={setHeroPeriod}
+          onHeroCustomRangeChange={setHeroCustomRange}
+        />
+      ),
     },
     {
       key: 'recommendations',
@@ -167,25 +229,35 @@ export default function OverviewPage() {
     {
       key: 'activity',
       label: 'Activity',
-      content: <ActivityTabContent />,
+      content: (
+        <ActivityTabContent
+          data={data}
+          isLoading={isLoading}
+          isError={isError}
+          providerMode={providerMode}
+        />
+      ),
     },
   ];
 
   return (
     <div className={containerCls}>
       {/* Page header — wordmark left, Full Report CTA right */}
-      <div className="flex justify-between items-center mb-6">
+      <div className="flex flex-wrap justify-between items-center gap-3 mb-6">
         <span className="text-3xl font-bold font-mono tracking-tight text-gray-950 dark:text-white">
           tokenomix
         </span>
-        <Link
-          to="/report"
-          // design-lint-disable dark-mode-pairs
-          className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-900 dark:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-950 dark:focus-visible:ring-white focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-950"
-        >
-          Full Report
-          <ArrowRight size={16} aria-hidden="true" />
-        </Link>
+        <div className="flex flex-wrap items-center gap-2">
+          <ProviderModeToggle value={providerMode} onChange={setProviderMode} />
+          <Link
+            to="/report"
+            // design-lint-disable dark-mode-pairs
+            className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-900 dark:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-950 dark:focus-visible:ring-white focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-950"
+          >
+            Full Report
+            <ArrowRight size={16} aria-hidden="true" />
+          </Link>
+        </div>
       </div>
 
       <Tabs items={tabItems} defaultKey="overview" syncWithHash />

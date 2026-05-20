@@ -1,27 +1,47 @@
 /**
- * RecommendationChatPanel — local Claude Code analyst widget.
+ * RecommendationChatPanel — local provider-backed analyst widget.
  *
- * The browser talks only to the local tokenomix server. Claude Code provider
- * settings stay behind the backend route.
+ * The browser talks only to the local tokenomix server. Provider settings stay
+ * behind the backend route.
  */
 
 import { useQuery } from '@tanstack/react-query';
 import type { RecommendationChatMessage } from '@tokenomix/shared';
-import { AlertCircle, Bot, Loader2, Send, Sparkles, X } from 'lucide-react';
-import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import ReactMarkdown, { type Components } from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { AlertCircle, Bot, Loader2, Send, Sparkles, Square, X } from 'lucide-react';
+import {
+  type FormEvent,
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { fetchRecommendationChatStatus, streamRecommendationChat } from '../lib/api.js';
+import type { ProviderMode } from '../lib/provider-modes.js';
 import { queryKeys } from '../lib/query-keys.js';
+import { useProviderMode } from '../lib/useProviderMode.js';
 
 function cx(...classes: (string | false | null | undefined)[]): string {
   return classes.filter(Boolean).join(' ');
 }
 
-function statusLabel(available: boolean | undefined): string {
-  if (available === true) return 'Claude Code ready';
-  if (available === false) return 'Claude Code unavailable';
-  return 'Checking Claude Code';
+function chatRuntimeLabel(providerMode: ProviderMode): string {
+  return providerMode === 'codex' ? 'OpenAI Codex' : 'Claude Code';
+}
+
+function usageScopeLabel(providerMode: ProviderMode): string {
+  if (providerMode === 'codex') return 'OpenAI Codex usage';
+  if (providerMode === 'claude-code') return 'Claude Code usage';
+  return 'usage';
+}
+
+function statusLabel(available: boolean | undefined, providerMode: ProviderMode): string {
+  const runtime = chatRuntimeLabel(providerMode);
+  if (available === true) return `${runtime} ready`;
+  if (available === false) return `${runtime} unavailable`;
+  return `Checking ${runtime}`;
 }
 
 type LocalChatMessage = RecommendationChatMessage & {
@@ -44,115 +64,144 @@ function makeMessage(
   };
 }
 
-const markdownPlugins = [remarkGfm];
+/**
+ * LazyAssistantMarkdown — loads react-markdown and remark-gfm only when
+ * assistant content is first rendered. Because RecommendationChatPanel is
+ * mounted unconditionally in RootLayout, eager imports would put these
+ * relatively heavy packages in the initial JS bundle even for users who never
+ * open the chat.
+ *
+ * React.lazy resolves a default export from the dynamic import. We wrap the
+ * inline component definition and pass it as the default export shape expected
+ * by lazy().
+ */
+const AssistantMarkdown = lazy(async () => {
+  const [{ default: ReactMarkdown }, { default: remarkGfm }] = await Promise.all([
+    import('react-markdown'),
+    import('remark-gfm'),
+  ]);
 
-const markdownComponents: Components = {
-  h1({ node: _node, ...props }) {
-    return (
-      <h3
-        className="mb-2 text-base font-semibold leading-6 text-gray-900 dark:text-gray-100"
-        {...props}
-      />
-    );
-  },
-  h2({ node: _node, ...props }) {
-    return (
-      <h3
-        className="mb-2 text-base font-semibold leading-6 text-gray-900 dark:text-gray-100"
-        {...props}
-      />
-    );
-  },
-  h3({ node: _node, ...props }) {
-    return (
-      <h3
-        className="mb-2 text-sm font-semibold leading-6 text-gray-900 dark:text-gray-100"
-        {...props}
-      />
-    );
-  },
-  p({ node: _node, ...props }) {
-    return <p className="mb-3 last:mb-0" {...props} />;
-  },
-  strong({ node: _node, ...props }) {
-    return <strong className="font-semibold text-gray-900 dark:text-gray-100" {...props} />;
-  },
-  code({ node: _node, className, ...props }) {
-    return (
-      <code
-        className={cx(
-          'rounded bg-gray-100 dark:bg-black/40 px-1 py-0.5 font-mono text-[0.85em] text-gray-900 dark:text-gray-100',
-          className
-        )}
-        {...props}
-      />
-    );
-  },
-  pre({ node: _node, ...props }) {
-    return (
-      <pre
-        className="mb-3 overflow-x-auto rounded-lg border border-gray-300 dark:border-black/60 bg-gray-100 dark:bg-black/40 p-3 text-xs leading-5"
-        {...props}
-      />
-    );
-  },
-  ul({ node: _node, ...props }) {
-    return <ul className="mb-3 list-disc space-y-1 pl-5 last:mb-0" {...props} />;
-  },
-  ol({ node: _node, ...props }) {
-    return <ol className="mb-3 list-decimal space-y-1 pl-5 last:mb-0" {...props} />;
-  },
-  table({ node: _node, ...props }) {
-    return (
-      <div className="mb-3 overflow-x-auto rounded-lg border border-gray-300 dark:border-black/60 last:mb-0">
-        <table className="min-w-full border-collapse text-left text-xs" {...props} />
-      </div>
-    );
-  },
-  th({ node: _node, ...props }) {
-    return (
-      <th
-        className="border-b border-gray-300 dark:border-black/60 bg-gray-200 dark:bg-black/30 px-2 py-1.5 font-semibold text-gray-900 dark:text-gray-100"
-        {...props}
-      />
-    );
-  },
-  td({ node: _node, ...props }) {
-    return (
-      <td
-        className="border-b border-gray-200 dark:border-black/40 px-2 py-1.5 last:border-b-0"
-        {...props}
-      />
-    );
-  },
-  a({ node: _node, ...props }) {
-    return (
-      <a
-        className="text-primary-light underline decoration-primary-light/40 underline-offset-2 hover:decoration-primary-light"
-        target="_blank"
-        rel="noreferrer"
-        {...props}
-      />
-    );
-  },
-};
+  // Import the Components type for the component map.
+  type Components = Parameters<typeof ReactMarkdown>[0]['components'];
 
-function AssistantMarkdown({ content }: { content: string }) {
-  return (
-    <ReactMarkdown remarkPlugins={markdownPlugins} components={markdownComponents}>
-      {content}
-    </ReactMarkdown>
-  );
-}
+  const markdownPlugins = [remarkGfm];
+
+  const markdownComponents: Components = {
+    h1({ node: _node, ...props }) {
+      return (
+        <h3
+          className="mb-2 text-base font-semibold leading-6 text-gray-900 dark:text-gray-100"
+          {...props}
+        />
+      );
+    },
+    h2({ node: _node, ...props }) {
+      return (
+        <h3
+          className="mb-2 text-base font-semibold leading-6 text-gray-900 dark:text-gray-100"
+          {...props}
+        />
+      );
+    },
+    h3({ node: _node, ...props }) {
+      return (
+        <h3
+          className="mb-2 text-sm font-semibold leading-6 text-gray-900 dark:text-gray-100"
+          {...props}
+        />
+      );
+    },
+    p({ node: _node, ...props }) {
+      return <p className="mb-3 last:mb-0" {...props} />;
+    },
+    strong({ node: _node, ...props }) {
+      return <strong className="font-semibold text-gray-900 dark:text-gray-100" {...props} />;
+    },
+    code({ node: _node, className, ...props }) {
+      return (
+        <code
+          className={cx(
+            'rounded bg-gray-100 dark:bg-black/40 px-1 py-0.5 font-mono text-[0.85em] text-gray-900 dark:text-gray-100',
+            className
+          )}
+          {...props}
+        />
+      );
+    },
+    pre({ node: _node, ...props }) {
+      return (
+        <pre
+          className="mb-3 overflow-x-auto rounded-lg border border-gray-300 dark:border-black/60 bg-gray-100 dark:bg-black/40 p-3 text-xs leading-5"
+          {...props}
+        />
+      );
+    },
+    ul({ node: _node, ...props }) {
+      return <ul className="mb-3 list-disc space-y-1 pl-5 last:mb-0" {...props} />;
+    },
+    ol({ node: _node, ...props }) {
+      return <ol className="mb-3 list-decimal space-y-1 pl-5 last:mb-0" {...props} />;
+    },
+    table({ node: _node, ...props }) {
+      return (
+        <div className="mb-3 overflow-x-auto rounded-lg border border-gray-300 dark:border-black/60 last:mb-0">
+          <table className="min-w-full border-collapse text-left text-xs" {...props} />
+        </div>
+      );
+    },
+    th({ node: _node, ...props }) {
+      return (
+        <th
+          className="border-b border-gray-300 dark:border-black/60 bg-gray-200 dark:bg-black/30 px-2 py-1.5 font-semibold text-gray-900 dark:text-gray-100"
+          {...props}
+        />
+      );
+    },
+    td({ node: _node, ...props }) {
+      return (
+        <td
+          className="border-b border-gray-200 dark:border-black/40 px-2 py-1.5 last:border-b-0"
+          {...props}
+        />
+      );
+    },
+    a({ node: _node, ...props }) {
+      return (
+        <a
+          className="text-primary-light underline decoration-primary-light/40 underline-offset-2 hover:decoration-primary-light"
+          target="_blank"
+          rel="noreferrer"
+          {...props}
+        />
+      );
+    },
+  };
+
+  function MarkdownContent({ content }: { content: string }) {
+    return (
+      <ReactMarkdown remarkPlugins={markdownPlugins} components={markdownComponents}>
+        {content}
+      </ReactMarkdown>
+    );
+  }
+
+  return { default: MarkdownContent };
+});
 
 export function RecommendationChatPanel() {
+  const { providerMode } = useProviderMode();
   const [draft, setDraft] = useState('');
   const [messages, setMessages] = useState<LocalChatMessage[]>([]);
   const [isOpen, setIsOpen] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const messageListRef = useRef<HTMLDivElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const providerModeRef = useRef(providerMode);
   const [thinkingElapsedSeconds, setThinkingElapsedSeconds] = useState<number | null>(null);
   const thinkingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const isLocalModelMode = providerMode === 'local-models';
+  const runtimeLabel = chatRuntimeLabel(providerMode);
 
   const clearThinkingTimer = useCallback(() => {
     if (thinkingIntervalRef.current) {
@@ -164,16 +213,72 @@ export function RecommendationChatPanel() {
 
   useEffect(() => () => clearThinkingTimer(), [clearThinkingTimer]);
 
+  useEffect(() => {
+    if (providerModeRef.current === providerMode) return;
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    clearThinkingTimer();
+    setDraft('');
+    setMessages([]);
+    setIsSending(false);
+    setIsOpen(false);
+    providerModeRef.current = providerMode;
+  }, [providerMode, clearThinkingTimer]);
+
+  // Abort any in-flight stream request on unmount to prevent fetch leaks.
+  useEffect(() => {
+    return () => {
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
+    };
+  }, []);
+
+  // Click-outside and Escape-key handler — minimizes the panel when the user
+  // interacts with anything outside the floating container (panel + toggle button).
+  // We skip this while isSending is true to avoid orphaning an in-flight stream
+  // from the user's view; the explicit X button still works in that state.
+  useEffect(() => {
+    if (!isOpen || isSending) return;
+
+    function handlePointerDown(event: MouseEvent | TouchEvent) {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setIsOpen(false);
+      }
+    }
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('touchstart', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('touchstart', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isOpen, isSending]);
+
   const statusQuery = useQuery({
-    queryKey: queryKeys.recommendationChatStatus(),
-    queryFn: fetchRecommendationChatStatus,
+    queryKey: queryKeys.recommendationChatStatus(providerMode),
+    queryFn: () => fetchRecommendationChatStatus(providerMode),
+    enabled: !isLocalModelMode,
     staleTime: 60_000,
     retry: 1,
   });
 
   const canSubmit = useMemo(() => {
-    return draft.trim().length > 0 && statusQuery.data?.available === true && !isSending;
-  }, [draft, statusQuery.data?.available, isSending]);
+    return (
+      !isLocalModelMode &&
+      draft.trim().length > 0 &&
+      statusQuery.data?.available === true &&
+      !isSending
+    );
+  }, [draft, statusQuery.data?.available, isSending, isLocalModelMode]);
   const scrollSignal = messages.map((message) => message.content.length).join(':');
 
   useEffect(() => {
@@ -188,6 +293,17 @@ export function RecommendationChatPanel() {
     const message = draft.trim();
     if (!message || !canSubmit) return;
 
+    // Abort any currently in-flight request before starting a new one.
+    abortControllerRef.current?.abort();
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    // Capture the current message history before appending the new turn.
+    const history: RecommendationChatMessage[] = messages.map(({ role, content }) => ({
+      role,
+      content,
+    }));
+
     const assistantId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
     setMessages((current) => [
       ...current,
@@ -198,7 +314,7 @@ export function RecommendationChatPanel() {
     setIsSending(true);
 
     void streamRecommendationChat(
-      { message },
+      { message, history, provider: providerMode },
       {
         onStart: () => {
           clearThinkingTimer();
@@ -237,21 +353,27 @@ export function RecommendationChatPanel() {
           setMessages((current) =>
             current.map((entry) =>
               entry.id === assistantId
-                ? { ...entry, content: error || 'Claude Code request failed.' }
+                ? { ...entry, content: error || `${runtimeLabel} request failed.` }
                 : entry
             )
           );
           setIsSending(false);
         },
-      }
+      },
+      controller.signal
     ).catch((error) => {
+      // AbortError is expected when the user navigates away or sends a new
+      // message before the previous response completes — suppress it silently.
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        return;
+      }
       clearThinkingTimer();
       setMessages((current) =>
         current.map((entry) =>
           entry.id === assistantId
             ? {
                 ...entry,
-                content: error instanceof Error ? error.message : 'Claude Code request failed.',
+                content: error instanceof Error ? error.message : `${runtimeLabel} request failed.`,
               }
             : entry
         )
@@ -260,8 +382,26 @@ export function RecommendationChatPanel() {
     });
   }
 
+  // design-lint-disable dark-mode-pairs
+  const closeButtonCls =
+    'inline-flex h-8 w-8 items-center justify-center rounded-lg text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 dark:focus-visible:ring-white';
+  // design-lint-disable dark-mode-pairs
+  const textareaCls =
+    'min-h-14 flex-1 resize-none rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-500 dark:placeholder:text-gray-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-950 dark:focus-visible:ring-white';
+  // design-lint-disable dark-mode-pairs
+  const stopBtnFocusCls =
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-950 dark:focus-visible:ring-white';
+  // design-lint-disable dark-mode-pairs
+  const toggleBtnHoverCls =
+    'hover:bg-gray-50 hover:border-gray-300 hover:text-gray-900 dark:hover:bg-white/[0.06] dark:hover:border-white/20 dark:hover:text-gray-100';
+  // design-lint-disable dark-mode-pairs
+  const toggleBtnFocusCls =
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 dark:focus-visible:ring-white/70 focus-visible:ring-offset-2';
+
+  if (isLocalModelMode) return null;
+
   return (
-    <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-3">
+    <div ref={containerRef} className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-3">
       {isOpen && (
         <section
           className="w-[calc(100vw-2rem)] max-w-[440px] overflow-hidden rounded-2xl border border-gray-200 dark:border-black/80 bg-white/95 dark:bg-gray-900/50 shadow-sm backdrop-blur-sm"
@@ -277,13 +417,15 @@ export function RecommendationChatPanel() {
               </div>
               <div className="flex items-center gap-2">
                 <span className="inline-flex items-center rounded-full border border-gray-200 dark:border-black/80 bg-gray-100 dark:bg-black/30 px-2 py-0.5 text-xs font-medium text-primary dark:text-primary-light">
-                  {statusQuery.isLoading ? 'Checking' : statusLabel(statusQuery.data?.available)}
+                  {statusQuery.isLoading
+                    ? 'Checking'
+                    : statusLabel(statusQuery.data?.available, providerMode)}
                 </span>
                 <button
                   type="button"
                   onClick={() => setIsOpen(false)}
                   aria-label="Close AI chat"
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 dark:focus-visible:ring-white"
+                  className={closeButtonCls}
                 >
                   <X size={16} aria-hidden="true" />
                 </button>
@@ -296,7 +438,7 @@ export function RecommendationChatPanel() {
               <div className="flex items-start gap-2 rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-100 dark:bg-gray-950 px-3 py-2 text-sm text-gray-600 dark:text-gray-400">
                 <AlertCircle size={16} aria-hidden="true" className="mt-0.5 shrink-0" />
                 <span>
-                  {statusQuery.data.message ?? 'Claude Code is not available in this process.'}
+                  {statusQuery.data.message ?? `${runtimeLabel} is not available in this process.`}
                 </span>
               </div>
             )}
@@ -307,7 +449,8 @@ export function RecommendationChatPanel() {
             >
               {messages.length === 0 ? (
                 <div className="flex h-full items-center justify-center px-4 text-center text-sm text-gray-500 dark:text-gray-500">
-                  Ask about your Claude Code usage, cost drivers, or optimization opportunities.
+                  Ask about your {usageScopeLabel(providerMode)}, cost drivers, or optimization
+                  opportunities.
                 </div>
               ) : (
                 <div className="space-y-3 p-3">
@@ -328,7 +471,9 @@ export function RecommendationChatPanel() {
                         )}
                       >
                         {message.role === 'assistant' && message.content ? (
-                          <AssistantMarkdown content={message.content} />
+                          <Suspense fallback={<span>{message.content}</span>}>
+                            <AssistantMarkdown content={message.content} />
+                          </Suspense>
                         ) : message.role === 'assistant' ? (
                           <span className="inline-flex items-center gap-2 text-gray-500 dark:text-gray-400">
                             <Loader2 size={14} aria-hidden="true" className="animate-spin" />
@@ -373,7 +518,7 @@ export function RecommendationChatPanel() {
                 rows={2}
                 placeholder="Ask something about your usage..."
                 aria-label="Message recommendations analyst"
-                className="min-h-14 flex-1 resize-none rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-500 dark:placeholder:text-gray-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-950 dark:focus-visible:ring-white"
+                className={textareaCls}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' && !event.shiftKey) {
                     event.preventDefault();
@@ -381,6 +526,23 @@ export function RecommendationChatPanel() {
                   }
                 }}
               />
+              {/* Cancel/Stop button — visible only while a stream is in flight */}
+              {isSending && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    abortControllerRef.current?.abort();
+                  }}
+                  aria-label="Stop streaming response"
+                  className={cx(
+                    'inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-lg transition-colors',
+                    stopBtnFocusCls,
+                    'bg-gray-200 text-gray-700 hover:bg-gray-300 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
+                  )}
+                >
+                  <Square size={20} aria-hidden="true" />
+                </button>
+              )}
               <button
                 type="submit"
                 disabled={!canSubmit}
@@ -412,8 +574,8 @@ export function RecommendationChatPanel() {
           'inline-flex h-10 items-center gap-2 rounded-xl px-3',
           'border border-gray-200 dark:border-white/10 bg-white dark:bg-black/35 text-gray-700 dark:text-gray-400',
           'shadow-sm backdrop-blur-md transition-colors',
-          'hover:bg-gray-50 hover:border-gray-300 hover:text-gray-900 dark:hover:bg-white/[0.06] dark:hover:border-white/20 dark:hover:text-gray-100',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 dark:focus-visible:ring-white/70 focus-visible:ring-offset-2',
+          toggleBtnHoverCls,
+          toggleBtnFocusCls,
         ].join(' ')}
       >
         <Sparkles size={16} aria-hidden="true" />

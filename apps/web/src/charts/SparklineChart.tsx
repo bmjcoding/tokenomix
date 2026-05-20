@@ -5,9 +5,9 @@
  * Height is small (default 48px) so it fits inside a MetricCard.
  */
 
-import ReactECharts from 'echarts-for-react';
+import EChartsReactCore from 'echarts-for-react/esm/core';
 import { useMemo } from 'react';
-import { primaryColor } from '../lib/echarts.js';
+import { echarts, primaryColor } from '../lib/echarts.js';
 import { useTheme } from '../providers/ThemeProvider.js';
 
 interface SparklineChartProps {
@@ -65,7 +65,12 @@ export function SparklineChart({ data, height = 48 }: SparklineChartProps) {
   // div is the correct attachment point.
   return (
     <div aria-hidden="true">
-      <ReactECharts option={option} style={{ height: `${height}px`, width: '100%' }} notMerge />
+      <EChartsReactCore
+        echarts={echarts}
+        option={option}
+        style={{ height: `${height}px`, width: '100%' }}
+        notMerge
+      />
     </div>
   );
 }

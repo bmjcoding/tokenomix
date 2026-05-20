@@ -47,20 +47,20 @@ const sizeClasses = {
   md: 'px-3 py-2 text-sm gap-2',
 } as const;
 
-export type ButtonVariant = keyof typeof variantClasses;
-export type ButtonSize = keyof typeof sizeClasses;
+type ButtonVariant = keyof typeof variantClasses;
+type ButtonSize = keyof typeof sizeClasses;
 
 // ---------------------------------------------------------------------------
 // Icon type — matches lucide-react's component signature
 // ---------------------------------------------------------------------------
 
-export type LucideIcon = ComponentType<SVGProps<SVGSVGElement> & { size?: number | string }>;
+type LucideIcon = ComponentType<SVGProps<SVGSVGElement> & { size?: number | string }>;
 
 // ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
 
-export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   /**
    * Visual variant.
    * - `primary` — primary-blue fill (calls to action)

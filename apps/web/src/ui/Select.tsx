@@ -16,7 +16,7 @@
  */
 
 import { ChevronDown } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -27,7 +27,7 @@ export interface SelectOption<T extends string> {
   label: string;
 }
 
-export interface SelectProps<T extends string> {
+interface SelectProps<T extends string> {
   value: T;
   options: ReadonlyArray<SelectOption<T>>;
   onChange: (value: T) => void;
@@ -49,6 +49,9 @@ export function Select<T extends string>({
   className,
   widthClass = 'w-40',
 }: SelectProps<T>) {
+  const instanceId = useId();
+  const panelId = `select-panel-${instanceId}`;
+
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState<number>(() =>
     options.findIndex((o) => o.value === value)
@@ -94,7 +97,7 @@ export function Select<T extends string>({
         optionRefs.current[clampedIdx]?.focus();
       });
     }
-  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open, value, options.findIndex]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleTriggerClick() {
     setOpen((prev) => !prev);
@@ -162,7 +165,7 @@ export function Select<T extends string>({
         aria-expanded={open}
         aria-haspopup="listbox"
         aria-label={ariaLabel}
-        aria-controls="select-panel"
+        aria-controls={panelId}
         onClick={handleTriggerClick}
         onKeyDown={handleKeyDown}
         className={[
@@ -193,7 +196,7 @@ export function Select<T extends string>({
       {open && (
         <div
           ref={panelRef}
-          id="select-panel"
+          id={panelId}
           role="listbox"
           aria-label={ariaLabel}
           className={[
@@ -210,7 +213,9 @@ export function Select<T extends string>({
             return (
               <button
                 key={option.value}
-                ref={(el) => { optionRefs.current[idx] = el; }}
+                ref={(el) => {
+                  optionRefs.current[idx] = el;
+                }}
                 type="button"
                 role="option"
                 aria-selected={isSelected}

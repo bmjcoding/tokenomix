@@ -1,36 +1,34 @@
 /**
  * ToolsBreakdownPanel — "Tool Use Breakdown" section with donut chart and legend badges.
  *
- * Self-fetches MetricSummary via queryKeys.metrics({since}).
+ * Prop-driven: receives byTool data from OverviewPage (no self-fetch).
  * Renders a ToolMixBar donut chart with a badge legend for the top 6 tools by count.
  */
 
-import { useQuery } from '@tanstack/react-query';
-import type { MetricSummary } from '@tokenomix/shared';
+import type { ToolBucket } from '@tokenomix/shared';
 import { ToolMixBar } from '../charts/ToolMixBar.js';
-import { fetchMetrics } from '../lib/api.js';
-import { queryKeys } from '../lib/query-keys.js';
 import { Badge } from '../ui/Badge.js';
 import { Card } from '../ui/Card.js';
 
 interface ToolsBreakdownPanelProps {
-  since?: string;
+  byTool: ToolBucket[];
+  isLoading?: boolean;
+  isError?: boolean;
 }
 
 /** Mirror the donut chart's top-N cap so badge legend stays in sync. */
 const MAX_TOOLS = 6;
 
-export function ToolsBreakdownPanel({ since = '30d' }: ToolsBreakdownPanelProps) {
-  const { data, isLoading, isError } = useQuery<MetricSummary>({
-    queryKey: queryKeys.metrics({ since }),
-    queryFn: () => fetchMetrics({ since }),
-  });
-
+export function ToolsBreakdownPanel({
+  byTool,
+  isLoading = false,
+  isError = false,
+}: ToolsBreakdownPanelProps) {
   // Build the same top-N + "other" rollup used by the donut chart so badge
   // legend slices match chart slices 1-to-1.
   const badgeItems: Array<{ toolName: string; count: number }> = (() => {
-    if (!data?.byTool.length) return [];
-    const sorted = [...data.byTool].sort((a, b) => b.count - a.count);
+    if (!byTool.length) return [];
+    const sorted = [...byTool].sort((a, b) => b.count - a.count);
     if (sorted.length <= MAX_TOOLS) return sorted;
     const top = sorted.slice(0, MAX_TOOLS);
     const rest = sorted.slice(MAX_TOOLS);
@@ -41,7 +39,7 @@ export function ToolsBreakdownPanel({ since = '30d' }: ToolsBreakdownPanelProps)
   const totalCount = badgeItems.reduce((s, t) => s + t.count, 0);
 
   // Post-fetch empty state: render nothing so the OverviewPage grid reflows.
-  if (data && data.byTool.length === 0) return null;
+  if (!isLoading && !isError && byTool.length === 0) return null;
 
   return (
     <Card as="section" aria-label="Tool use breakdown">
@@ -60,9 +58,9 @@ export function ToolsBreakdownPanel({ since = '30d' }: ToolsBreakdownPanelProps)
         </div>
       )}
 
-      {data && (
+      {!isLoading && !isError && byTool.length > 0 && (
         <>
-          <ToolMixBar data={data.byTool} height={240} />
+          <ToolMixBar data={byTool} height={240} />
           <ul className="mt-4 flex flex-wrap justify-center gap-2" aria-label="Tool legend">
             {badgeItems.map((t) => {
               const pct = totalCount > 0 ? ((t.count / totalCount) * 100).toFixed(0) : '0';

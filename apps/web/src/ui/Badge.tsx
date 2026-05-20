@@ -36,13 +36,13 @@ const variantClasses = {
   muted: 'text-gray-500 dark:text-gray-500',
 } as const;
 
-export type BadgeVariant = keyof typeof variantClasses;
+type BadgeVariant = keyof typeof variantClasses;
 
 // ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
 
-export interface BadgeProps extends HTMLAttributes<HTMLSpanElement> {
+interface BadgeProps extends HTMLAttributes<HTMLSpanElement> {
   /**
    * Visual variant.
    * - `default` (neutral gray) — period labels, model family tags

@@ -4,7 +4,7 @@
  * Extracted from index-store.ts to keep that module focused on the aggregation engine.
  *
  * Every `intervalMs` milliseconds (default 5 000) it:
- *   1. Collects all *.jsonl paths under PROJECTS_DIR.
+ *   1. Collects all *.jsonl paths under watched source directories.
  *   2. Stats each path for its mtime.
  *   3. On the very first observation of a path, records the mtime without
  *      re-ingesting — chokidar and IndexStore.initialize() handled initial
@@ -23,32 +23,21 @@
  * default ensures the user never waits more than ~5 seconds for a missed
  * update even under the worst conditions (polling missed a write AND chokidar
  * was somehow busy). The mtime-based scan is cheap (O(n) stat calls on the
- * small ~/.claude/projects tree).
+ * small local source trees).
  *
  * The interval timer is unref()'d so a quiet scheduler does not prevent a
  * clean process exit if the application shuts down normally.
  */
 
 import { stat as statFn } from 'node:fs/promises';
-import { collectJsonlFiles, type IndexStore, PROJECTS_DIR } from './index-store.js';
+import { collectJsonlFilesFromDirs, type IndexStore, WATCHED_SOURCE_DIRS } from './index-store.js';
 import { logEvent } from './logger.js';
-
-/**
- * Options accepted by RescanScheduler constructor (exported for index.ts
- * and test consumers that need a named type).
- */
-export type RescanSchedulerOptions = {
-  store: IndexStore;
-  intervalMs?: number;
-  /** Override the directory scanned by tick(). Defaults to PROJECTS_DIR. Primarily useful for tests. */
-  dir?: string;
-};
 
 /**
  * Periodic safety-net that complements the chokidar file watcher.
  *
  * Every `intervalMs` milliseconds (default 5 000) it:
- *   1. Collects all *.jsonl paths under PROJECTS_DIR.
+ *   1. Collects all *.jsonl paths under watched source directories.
  *   2. Stats each path for its mtime.
  *   3. On the very first observation of a path, records the mtime without
  *      re-ingesting — chokidar and IndexStore.initialize() handled initial
@@ -64,7 +53,7 @@ export type RescanSchedulerOptions = {
 export class RescanScheduler {
   private readonly store: IndexStore;
   private readonly intervalMs: number;
-  private readonly dir: string;
+  private readonly dirs: readonly string[];
   private timer: ReturnType<typeof setInterval> | null = null;
   /** Per-file last-seen mtime in epoch ms. Populated lazily on first tick. */
   private readonly fileMtimes = new Map<string, number>();
@@ -73,10 +62,14 @@ export class RescanScheduler {
   /** Epoch ms of the last fully-completed successful tick. 0 before the first successful tick. */
   private _lastRescanTs: number = 0;
 
-  constructor(store: IndexStore, intervalMs: number = 5_000, dir: string = PROJECTS_DIR) {
+  constructor(
+    store: IndexStore,
+    intervalMs: number = 5_000,
+    dirs: string | readonly string[] = WATCHED_SOURCE_DIRS
+  ) {
     this.store = store;
     this.intervalMs = intervalMs;
-    this.dir = dir;
+    this.dirs = typeof dirs === 'string' ? [dirs] : dirs;
   }
 
   start(): void {
@@ -114,9 +107,9 @@ export class RescanScheduler {
     try {
       let files: string[];
       try {
-        files = await collectJsonlFiles(this.dir);
+        files = await collectJsonlFilesFromDirs(this.dirs);
       } catch (err) {
-        // PROJECTS_DIR removed or permission denied — log and return cleanly.
+        // Source directory removed or permission denied — log and return cleanly.
         // The next scheduled tick will retry.
         logEvent('warn', 'rescan-tick-error', {
           phase: 'collect',

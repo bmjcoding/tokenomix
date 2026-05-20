@@ -2,8 +2,8 @@
  * @tokenomix/shared — public API barrel.
  *
  * Re-exports all public symbols from types, schemas, and pricing modules.
- * Consumers import from "@tokenomix/shared" and receive TS source directly
- * (no build step required for internal workspace use).
+ * Consumers import from "@tokenomix/shared". Development/test resolvers use TS
+ * source; production runtime uses the built dist export.
  */
 
 export type { PriceTable } from './pricing.js';
@@ -14,12 +14,21 @@ export {
   computeCost,
   computeCostMicros,
   computeCostWithFamily,
+  computeOpenAiCodexCost,
   inferBedrockEndpointScope,
   isKnownPricingModelId,
+  LOCAL_MODEL_EQUIVALENT_PRICING_CATALOG_METADATA,
   MICRO_USD_PER_USD,
+  MIXED_STATIC_PRICING_CATALOG_METADATA,
   MODEL_PRICES,
   microsToUsd,
   model_family,
+  OPENAI_API_PRICING_CATALOG_METADATA,
+  OPENAI_CODEX_LONG_CONTEXT_THRESHOLD_INPUT_TOKENS,
+  OPENAI_CODEX_MODEL_PRICES,
+  openAiCodexFastModeMultiplierForModel,
+  openAiCodexLongContextApplies,
+  openAiCodexPriceForModel,
   PRICING_CATALOG_METADATA,
   pricing_multiplier_for_usage,
   pricing_status_for_usage,
@@ -67,7 +76,6 @@ export type {
   CacheCreation,
   CostComponentSummary,
   DailyBucket,
-  FileTouchBucket,
   HeatmapPoint,
   IngestionAuditSummary,
   // Metrics response
@@ -89,10 +97,6 @@ export type {
   RecommendationChatRequest,
   RecommendationChatResponse,
   RecommendationChatStatus,
-  RetroForecastPoint,
-  // Retro stubs
-  RetroRollup,
-  RetroTimelinePoint,
   ServerToolUse,
   SessionBucket,
   // Session detail
@@ -110,5 +114,7 @@ export type {
   // New analytics bucket types
   ToolBucket,
   TurnBucket,
+  UsageSourceProvider,
+  UsageSourceProviderFilter,
   WeeklyBucket,
 } from './types.js';

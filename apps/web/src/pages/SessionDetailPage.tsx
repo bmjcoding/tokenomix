@@ -51,6 +51,11 @@ function totalToolUses(toolUses: Record<string, number>): number {
   return Object.values(toolUses).reduce((sum, n) => sum + n, 0);
 }
 
+function formatTokensPerSecond(value: number | undefined): string {
+  if (value === undefined) return '—';
+  return `${value.toFixed(value >= 10 ? 1 : 2)}/s`;
+}
+
 /** Format ISO timestamp as compact local date+time. */
 function fmtTs(ts: string): string {
   try {
@@ -75,7 +80,7 @@ function fmtTs(ts: string): string {
 /**
  * Returns { activated, onClick } for a button that shows a transient success state.
  * `activated` is true for 1.5 s after the async action resolves, then resets to false.
- * Errors from the action are caught and logged — the success animation is skipped on error.
+ * Errors from the action are caught silently — the success animation is skipped on error.
  */
 function useTransientButtonState(action: () => Promise<void>): {
   activated: boolean;
@@ -98,10 +103,8 @@ function useTransientButtonState(action: () => Promise<void>): {
         if (timerRef.current !== null) clearTimeout(timerRef.current);
         timerRef.current = setTimeout(() => setActivated(false), 1500);
       },
-      (err: unknown) => {
-        // Log error but skip success animation
-        // eslint-disable-next-line no-console
-        console.error('[SessionDetailPage] reveal failed', err);
+      (_err: unknown) => {
+        // Skip success animation on error; the button stays in its default state.
       }
     );
   }, [action]);
@@ -114,10 +117,7 @@ function useTransientButtonState(action: () => Promise<void>): {
 // ---------------------------------------------------------------------------
 
 function InitialPromptSection({ detail }: { detail: SessionDetail }) {
-  const revealAction = useCallback(
-    () => revealSessionJsonl(detail.sessionId),
-    [detail.sessionId]
-  );
+  const revealAction = useCallback(() => revealSessionJsonl(detail.sessionId), [detail.sessionId]);
   const reveal = useTransientButtonState(revealAction);
 
   // If both fields are null, render nothing.
@@ -140,9 +140,7 @@ function InitialPromptSection({ detail }: { detail: SessionDetail }) {
               <p className="whitespace-pre-wrap text-sm text-gray-800 dark:text-gray-200">
                 {detail.initialPrompt}
                 {detail.initialPromptTruncated && (
-                  <span className="text-xs text-gray-500 dark:text-gray-400 ml-2">
-                    (truncated)
-                  </span>
+                  <span className="text-xs text-gray-500 dark:text-gray-400 ml-2">(truncated)</span>
                 )}
               </p>
             </div>
@@ -216,8 +214,8 @@ function LoadingSkeleton() {
 
       {/* KPI row skeleton */}
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-6">
-        {SKELETON_WIDTHS.map((w, i) => (
-          <Card key={i} as="article" aria-label="Loading metric" className="flex flex-col gap-2">
+        {SKELETON_WIDTHS.map((w) => (
+          <Card key={w} as="article" aria-label="Loading metric" className="flex flex-col gap-2">
             <div className={`h-3 ${w} animate-pulse rounded bg-gray-200 dark:bg-gray-800`} />
             <div className="h-7 w-16 animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
           </Card>
@@ -448,8 +446,8 @@ function ToolsTab({ detail }: { detail: SessionDetail }) {
 // Turns tab content
 // ---------------------------------------------------------------------------
 
-const TURN_SKELETON_KEYS = ['t0', 't1', 't2', 't3', 't4', 't5'] as const;
-const TURN_CELL_KEYS = ['c0', 'c1', 'c2', 'c3', 'c4', 'c5', 'c6'] as const;
+const _TURN_SKELETON_KEYS = ['t0', 't1', 't2', 't3', 't4', 't5'] as const;
+const _TURN_CELL_KEYS = ['c0', 'c1', 'c2', 'c3', 'c4', 'c5', 'c6'] as const;
 
 function TurnsTab({ turns }: { turns: SessionTurnRow[] }) {
   if (turns.length === 0) {
@@ -463,6 +461,10 @@ function TurnsTab({ turns }: { turns: SessionTurnRow[] }) {
       </div>
     );
   }
+
+  const showLocalPerformance = turns.some(
+    (turn) => turn.tokensPerSecond !== undefined || turn.timeToFirstTokenMs !== undefined
+  );
 
   return (
     <div className="pt-6">
@@ -513,6 +515,22 @@ function TurnsTab({ turns }: { turns: SessionTurnRow[] }) {
                 >
                   Duration
                 </th>
+                {showLocalPerformance && (
+                  <>
+                    <th
+                      scope="col"
+                      className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400"
+                    >
+                      Tok/s
+                    </th>
+                    <th
+                      scope="col"
+                      className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400"
+                    >
+                      TTFT
+                    </th>
+                  </>
+                )}
               </tr>
             </thead>
             <tbody>
@@ -545,6 +563,18 @@ function TurnsTab({ turns }: { turns: SessionTurnRow[] }) {
                     <td className="px-4 py-3 text-right text-sm tabular-nums text-gray-600 dark:text-gray-400">
                       {turn.durationMs !== null ? formatDuration(turn.durationMs) : '—'}
                     </td>
+                    {showLocalPerformance && (
+                      <>
+                        <td className="px-4 py-3 text-right text-sm tabular-nums text-gray-600 dark:text-gray-400">
+                          {formatTokensPerSecond(turn.tokensPerSecond)}
+                        </td>
+                        <td className="px-4 py-3 text-right text-sm tabular-nums text-gray-600 dark:text-gray-400">
+                          {turn.timeToFirstTokenMs !== undefined
+                            ? formatDuration(turn.timeToFirstTokenMs)
+                            : '—'}
+                        </td>
+                      </>
+                    )}
                   </tr>
                 );
               })}
@@ -686,9 +716,8 @@ export default function SessionDetailPage() {
       <InitialPromptSection detail={detail} />
 
       {/* ── KPI MetricCard row ── */}
-      <div
+      <section
         className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-6"
-        role="region"
         aria-label="Session key metrics"
       >
         <MetricCard label="Total Cost" value={formatCurrency(detail.costUsd)} deltaPercent={null} />
@@ -717,7 +746,7 @@ export default function SessionDetailPage() {
           deltaPercent={null}
         />
         <MetricCard label="Events" value={formatTokens(detail.events)} deltaPercent={null} />
-      </div>
+      </section>
 
       {/* ── Tabbed panels ── */}
       <Tabs items={tabItems} ariaLabel="Session detail sections" />

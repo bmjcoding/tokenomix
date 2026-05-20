@@ -9,7 +9,7 @@
  * hardcoding any color value.
  */
 
-import { LineChart, PieChart } from 'echarts/charts';
+import { BarChart, LineChart, PieChart } from 'echarts/charts';
 import {
   GridComponent,
   LegendComponent,
@@ -21,6 +21,7 @@ import { CanvasRenderer } from 'echarts/renderers';
 
 // Register once at module evaluation time (safe to call multiple times — ECharts deduplicates)
 echarts.use([
+  BarChart,
   LineChart,
   PieChart,
   GridComponent,
@@ -66,9 +67,8 @@ export function gridColor(): string {
  * Use this when building a chart background intended for a dark theme.
  * For light-mode surfaces use surfaceColorLight().
  *
- * Note: the original `surfaceColor()` export was renamed to make its
- * dark-mode bias explicit. No chart currently calls this helper — charts
- * use backgroundColor:'transparent' instead.
+ * Note: charts currently use backgroundColor:'transparent'; this helper is
+ * available for chart options that need an explicit dark-mode surface value.
  */
 export function surfaceColorDark(): string {
   return getCSSToken('--color-gray-900', 'oklch(0.16 0 0)');
@@ -81,20 +81,11 @@ export function surfaceColorLight(): string {
   return getCSSToken('--color-gray-50', 'oklch(0.97 0 0)');
 }
 
-/**
- * @deprecated Use surfaceColorDark() or surfaceColorLight() explicitly.
- * This alias is kept for backwards compatibility but always returns the
- * dark-mode surface color regardless of the active theme.
- */
-export function surfaceColor(): string {
-  return surfaceColorDark();
-}
-
 // ---------------------------------------------------------------------------
 // Shared ECharts base option — used as the starting point for all charts
 // ---------------------------------------------------------------------------
 
-export interface EchartsBaseOption {
+interface EchartsBaseOption {
   backgroundColor: string;
   textStyle: { color: string; fontFamily: string };
   grid: { borderColor: string };

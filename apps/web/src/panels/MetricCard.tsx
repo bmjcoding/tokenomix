@@ -44,10 +44,13 @@
  * (primary blue, as configured in SparklineChart via primaryColor()).
  */
 
-import type { ReactNode } from 'react';
-import { SparklineChart } from '../charts/SparklineChart.js';
+import { lazy, type ReactNode, Suspense } from 'react';
 import { Card } from '../ui/Card.js';
 import { HelpTooltip } from '../ui/HelpTooltip.js';
+
+const SparklineChart = lazy(() =>
+  import('../charts/SparklineChart.js').then((module) => ({ default: module.SparklineChart }))
+);
 
 interface MetricCardProps {
   label: string;
@@ -182,7 +185,9 @@ export function MetricCard({
               on very wide cards. Rendered only when sparklineData has >1 points. */}
           {hasSpark && (
             <div className="flex-[0_0_45%] max-w-[180px]">
-              <SparklineChart data={sparklineData} height={48} />
+              <Suspense fallback={<div className="h-12" aria-hidden="true" />}>
+                <SparklineChart data={sparklineData} height={48} />
+              </Suspense>
             </div>
           )}
         </div>

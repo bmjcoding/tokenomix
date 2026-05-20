@@ -53,18 +53,28 @@ import type {
   ToolUseContentParsed,
   ToolUseEventParsed,
   TurnBucket,
+  UsageSourceProvider,
   WeeklyBucket,
 } from '@tokenomix/shared';
+import { type CodexUsageRowEvent, parseCodexUsageRows } from './codex-parser.js';
+import { serverEnv } from './env.js';
+import { type LocalModelUsageRowEvent, parseLocalModelUsageRows } from './local-model-parser.js';
 import { logEvent } from './logger.js';
 import { parseJSONLFile } from './parser.js';
 import {
   ANTHROPIC_1P_PRICING_CATALOG_METADATA,
   AWS_BEDROCK_PRICING_CATALOG_METADATA,
   computeCostWithFamily,
+  computeOpenAiCodexCost,
   inferBedrockEndpointScope,
+  LOCAL_MODEL_EQUIVALENT_PRICING_CATALOG_METADATA,
+  MIXED_STATIC_PRICING_CATALOG_METADATA,
   MODEL_PRICES,
   microsToUsd,
   model_family,
+  OPENAI_API_PRICING_CATALOG_METADATA,
+  openAiCodexFastModeMultiplierForModel,
+  openAiCodexLongContextApplies,
   resolveCacheTokens,
   WEB_SEARCH_USD_PER_REQUEST,
 } from './pricing.js';
@@ -75,6 +85,20 @@ import { formatLocalHourIso, formatLocalIso } from './time.js';
 // ---------------------------------------------------------------------------
 
 export const PROJECTS_DIR = nodePath.resolve(os.homedir(), '.claude', 'projects');
+export const CODEX_SESSIONS_DIR = nodePath.resolve(os.homedir(), '.codex', 'sessions');
+export const CODEX_ARCHIVED_SESSIONS_DIR = nodePath.resolve(
+  os.homedir(),
+  '.codex',
+  'archived_sessions'
+);
+export const LOCAL_MODELS_DIR = nodePath.resolve(os.homedir(), '.tokenomix', 'local-models');
+
+export const WATCHED_SOURCE_DIRS = [
+  PROJECTS_DIR,
+  CODEX_SESSIONS_DIR,
+  CODEX_ARCHIVED_SESSIONS_DIR,
+  LOCAL_MODELS_DIR,
+] as const;
 
 const BATCH_SIZE = 50;
 
@@ -83,8 +107,36 @@ const BATCH_SIZE = 50;
  * When the Map exceeds this size, the oldest 10% of entries (by firstTs)
  * are evicted in a batch to amortize sort cost. This bounds memory usage
  * even under continuous high-volume ingest.
+ *
+ * M1: Raised from 50 000 to 200 000 so a single-user accumulation of sessions
+ * over months does not evict recently-active sessions from getActiveSessions().
+ * The active-session guard in recordSessionTimestamp() additionally skips
+ * eviction for sessions within the active-session window.
  */
-const MAX_SESSION_TIMES = 50_000;
+const MAX_SESSION_TIMES = 200_000;
+
+/**
+ * Maximum number of JSONL file paths retained in fileIngestionAudits.
+ * Resolved once at IndexStore construction time from TOKENOMIX_MAX_FILE_AUDITS
+ * (default 10 000). Insertion-order eviction (oldest 10%) is used because
+ * stale audit entries for old files are re-created on next observation.
+ *
+ * NOTE: this is a module-level fallback used before IndexStore is constructed
+ * (e.g. in unit tests that construct IndexStore without calling initServerEnv).
+ * The live value is stored as a private instance field resolved in the
+ * constructor so it reflects the validated env object for the process lifetime.
+ */
+const MAX_FILE_INGESTION_AUDITS_DEFAULT = 10_000;
+
+/**
+ * Maximum number of agent-ID entries retained in requestedModelByAgentId
+ * and subagentFilePathsByAgentId. Resolved once at IndexStore construction time
+ * from TOKENOMIX_MAX_AGENT_ENTRIES (default 20 000). Both maps are keyed by
+ * agentId which is stable per subagent session; insertion-order eviction of
+ * the oldest 10% is safe because evicted entries are re-populated if that
+ * agent is seen again.
+ */
+const MAX_AGENT_ID_MAP_SIZE_DEFAULT = 20_000;
 
 /**
  * Server-side hard cap on the initial-prompt text stored in sessionInitialPrompts.
@@ -162,47 +214,85 @@ function emptyFileIngestionAudit(): FileIngestionAudit {
   };
 }
 
-function normalizePricingProvider(value: string | undefined): PricingProvider {
-  if (value === 'aws_bedrock' || value === 'internal_gateway' || value === 'anthropic_1p') {
-    return value;
-  }
-  return 'anthropic_1p';
-}
-
-function normalizeBedrockEndpointScope(value: string | undefined): BedrockEndpointScope {
-  if (
-    value === 'in_region' ||
-    value === 'global_cross_region' ||
-    value === 'geographic_cross_region' ||
-    value === 'unknown'
-  ) {
-    return value;
-  }
-  return 'unknown';
-}
-
-function normalizeBedrockServiceTier(value: string | undefined): BedrockServiceTier {
-  if (
-    value === 'standard' ||
-    value === 'batch' ||
-    value === 'provisioned' ||
-    value === 'reserved' ||
-    value === 'unknown'
-  ) {
-    return value;
-  }
-  return 'standard';
-}
+/**
+ * Module-level cache for pricingRuntimeConfig.
+ * The cache is invalidated whenever any of the four relevant env vars changes
+ * (checked by comparing the concatenated string signatures on each call).
+ * This avoids repeated process.env reads on every aggregate() invocation.
+ *
+ * L4: The cache is never reset on SIGHUP or any runtime invalidation call.
+ * To change TOKENOMIX_PRICING_PROVIDER, TOKENOMIX_BEDROCK_REGION,
+ * TOKENOMIX_BEDROCK_ENDPOINT_SCOPE, or TOKENOMIX_BEDROCK_SERVICE_TIER, the
+ * server process must be restarted — hot-reload of pricing env vars is not
+ * supported and is not expected in the single-user deployment model.
+ */
+let _pricingConfigCache: PricingRuntimeConfig | null = null;
+let _pricingConfigSig = '';
 
 function pricingRuntimeConfig(): PricingRuntimeConfig {
-  return {
-    provider: normalizePricingProvider(process.env.TOKENOMIX_PRICING_PROVIDER),
-    bedrockRegion: process.env.TOKENOMIX_BEDROCK_REGION ?? null,
-    bedrockEndpointScope: normalizeBedrockEndpointScope(
-      process.env.TOKENOMIX_BEDROCK_ENDPOINT_SCOPE
-    ),
-    bedrockServiceTier: normalizeBedrockServiceTier(process.env.TOKENOMIX_BEDROCK_SERVICE_TIER),
+  // ARCH-002: read validated env values via serverEnv() when available.
+  // Fall back to direct process.env reads (with inline normalization) when
+  // serverEnv() is not yet initialized — this occurs only in tests that
+  // construct IndexStore without calling validateEnv() / initServerEnv().
+  let provider: PricingProvider = 'anthropic_1p';
+  let bedrockRegion: string | null = null;
+  let bedrockEndpointScope: BedrockEndpointScope = 'unknown';
+  let bedrockServiceTier: BedrockServiceTier = 'standard';
+
+  try {
+    const env = serverEnv();
+    provider = env.TOKENOMIX_PRICING_PROVIDER;
+    bedrockRegion = env.TOKENOMIX_BEDROCK_REGION ?? null;
+    bedrockEndpointScope = env.TOKENOMIX_BEDROCK_ENDPOINT_SCOPE;
+    bedrockServiceTier = env.TOKENOMIX_BEDROCK_SERVICE_TIER;
+  } catch {
+    // serverEnv() not yet initialised (e.g. unit tests). Fall back to direct
+    // process.env reads with inline normalization so tests continue to work.
+    const rawProvider = process.env.TOKENOMIX_PRICING_PROVIDER;
+    if (
+      rawProvider === 'aws_bedrock' ||
+      rawProvider === 'internal_gateway' ||
+      rawProvider === 'anthropic_1p'
+    ) {
+      provider = rawProvider;
+    }
+    bedrockRegion = process.env.TOKENOMIX_BEDROCK_REGION ?? null;
+    const rawScope = process.env.TOKENOMIX_BEDROCK_ENDPOINT_SCOPE;
+    if (
+      rawScope === 'in_region' ||
+      rawScope === 'global_cross_region' ||
+      rawScope === 'geographic_cross_region' ||
+      rawScope === 'unknown'
+    ) {
+      bedrockEndpointScope = rawScope;
+    }
+    const rawTier = process.env.TOKENOMIX_BEDROCK_SERVICE_TIER;
+    if (
+      rawTier === 'standard' ||
+      rawTier === 'batch' ||
+      rawTier === 'provisioned' ||
+      rawTier === 'reserved' ||
+      rawTier === 'unknown'
+    ) {
+      bedrockServiceTier = rawTier;
+    }
+  }
+
+  const sig = [provider, bedrockRegion ?? '', bedrockEndpointScope, bedrockServiceTier].join('\0');
+
+  if (_pricingConfigCache !== null && sig === _pricingConfigSig) {
+    return _pricingConfigCache;
+  }
+
+  const config: PricingRuntimeConfig = {
+    provider,
+    bedrockRegion,
+    bedrockEndpointScope,
+    bedrockServiceTier,
   };
+  _pricingConfigCache = config;
+  _pricingConfigSig = sig;
+  return config;
 }
 
 function pricingCatalogForConfig(
@@ -220,6 +310,64 @@ function pricingCatalogForConfig(
     };
   }
   return ANTHROPIC_1P_PRICING_CATALOG_METADATA;
+}
+
+function sourceProviderForPath(filePath: string): UsageSourceProvider {
+  if (
+    filePath.startsWith(CODEX_SESSIONS_DIR + nodePath.sep) ||
+    filePath.startsWith(CODEX_ARCHIVED_SESSIONS_DIR + nodePath.sep)
+  ) {
+    return 'codex';
+  }
+  if (filePath.startsWith(LOCAL_MODELS_DIR + nodePath.sep)) {
+    return 'local-models';
+  }
+  return 'claude-code';
+}
+
+function sourceProviderForRow(row: TokenRow): UsageSourceProvider {
+  return row.sourceProvider ?? 'claude-code';
+}
+
+function matchesProviderFilter(row: TokenRow, provider: MetricsQuery['provider']): boolean {
+  if (!provider || provider === 'all') return true;
+  return sourceProviderForRow(row) === provider;
+}
+
+function localEquivalentClaudeCostForRow(row: TokenRow): number {
+  return sourceProviderForRow(row) === 'local-models'
+    ? (row.equivalentClaudeCostUsd ?? row.costUsd)
+    : 0;
+}
+
+function localEquivalentCodexCostForRow(row: TokenRow): number {
+  return sourceProviderForRow(row) === 'local-models' ? (row.equivalentCodexCostUsd ?? 0) : 0;
+}
+
+function codexSessionId(rawSessionId: string): string {
+  return rawSessionId.startsWith('codex:') ? rawSessionId : `codex:${rawSessionId}`;
+}
+
+function localModelSessionId(rawSessionId: string): string {
+  return rawSessionId.startsWith('local:') ? rawSessionId : `local:${rawSessionId}`;
+}
+
+function modelFamilyForSource(modelId: string, sourceProvider: UsageSourceProvider): string {
+  if (sourceProvider === 'codex') {
+    const id = modelId.toLowerCase();
+    if (id.includes('codex')) return 'codex';
+    if (id.includes('gpt')) return 'gpt';
+    return 'openai';
+  }
+  if (sourceProvider === 'local-models') {
+    const id = modelId.toLowerCase();
+    if (id.includes('qwen')) return 'qwen';
+    if (id.includes('gemma')) return 'gemma';
+    if (id.includes('llama')) return 'llama';
+    if (id.includes('mistral')) return 'mistral';
+    return 'local';
+  }
+  return model_family(modelId);
 }
 
 // ---------------------------------------------------------------------------
@@ -687,6 +835,8 @@ function buildOptimizationOpportunities(args: {
   subagentRows30d: number;
   agentToolCalls30d: number;
   opusToSonnetSavings30d: number;
+  cacheCreation5mTokens30d: number;
+  cacheCreation1hTokens30d: number;
 }): OptimizationOpportunity[] {
   // Rule scores are deterministic analyst heuristics, not LLM inference and
   // not probabilities. They express how directly the observed metric supports
@@ -704,11 +854,34 @@ function buildOptimizationOpportunities(args: {
     subagentRows30d,
     agentToolCalls30d,
     opusToSonnetSavings30d,
+    cacheCreation5mTokens30d,
+    cacheCreation1hTokens30d,
   } = args;
 
   const cacheUsd = components.cacheCreationCostUsd + components.cacheReadCostUsd;
   const cacheShare = shareOfTotal(cacheUsd, costUsd30d);
-  const cacheImpact = cacheUsd * 0.12;
+  // M4: Tier-aware cache savings factor.
+  //
+  // A flat 0.12 factor misrepresents the savings opportunity:
+  //   - 5-minute ephemeral cache creation costs ~25% more than a plain input
+  //     token (e.g. $6.25 vs $5/Mtok for Opus). Savings from avoiding 5m
+  //     creation are modest (~20% of creation cost).
+  //   - 1-hour cache creation costs ~100% more than input ($10 vs $5/Mtok for
+  //     Opus). Savings from avoiding 1h creation are substantial (~50% of
+  //     creation cost).
+  //
+  // Formula: weighted factor = (5m_tokens × 0.20 + 1h_tokens × 0.50) / total_tokens
+  //   Applied as: cacheImpact = cacheCreationCostUsd × weightedFactor
+  //                            + cacheReadCostUsd × 0.05  (read savings are small)
+  const totalCacheCreationTokens30d = cacheCreation5mTokens30d + cacheCreation1hTokens30d;
+  const cacheCreationSavingsFactor =
+    totalCacheCreationTokens30d > 0
+      ? (cacheCreation5mTokens30d * 0.2 + cacheCreation1hTokens30d * 0.5) /
+        totalCacheCreationTokens30d
+      : 0.2; // fallback to conservative estimate when no token detail is available
+  const cacheImpact =
+    components.cacheCreationCostUsd * cacheCreationSavingsFactor +
+    components.cacheReadCostUsd * 0.05;
   if (cacheShare >= 0.45 && hasMaterialOpportunityImpact(cacheImpact)) {
     const cacheReadShare = shareOfTotal(components.cacheReadCostUsd, cacheUsd);
     opportunities.push({
@@ -821,7 +994,17 @@ function buildPricingAudit(rows: TokenRow[], config: PricingRuntimeConfig): Pric
   let zeroUsageUnknownModelRows = 0;
   let internalGatewayRatedRows = 0;
   let internalGatewayUnratedRows = 0;
+  let staticCatalogRows = 0;
+  let openAiCatalogRows = 0;
+  let openAiRateCardEquivalentRows = 0;
+  let openAiFastCapableRows = 0;
+  let openAiLongContextRows = 0;
+  let codexRows = 0;
+  let codexWebSearchRequests = 0;
+  let localCounterfactualRows = 0;
+  let unpricedProviderRows = 0;
   const fallbackModelIds = new Set<string>();
+  const unpricedModelIds = new Set<string>();
   const inferredBedrockScopes = new Set<BedrockEndpointScope>();
 
   for (const row of rows) {
@@ -836,10 +1019,44 @@ function buildPricingAudit(rows: TokenRow[], config: PricingRuntimeConfig): Pric
       fallbackModelIds.add(row.modelId || '<missing>');
     } else if (row.pricingStatus === 'zero_usage_unknown_model') {
       zeroUsageUnknownModelRows += 1;
+    } else if (row.pricingStatus === 'catalog' || row.pricingStatus === 'bedrock_catalog') {
+      staticCatalogRows += 1;
+    } else if (
+      row.pricingStatus === 'openai_api_catalog' ||
+      row.pricingStatus === 'openai_codex_rate_card_equivalent'
+    ) {
+      openAiCatalogRows += 1;
+      if (row.pricingStatus === 'openai_codex_rate_card_equivalent') {
+        openAiRateCardEquivalentRows += 1;
+      }
+      if (openAiCodexFastModeMultiplierForModel(row.modelId) !== null) {
+        openAiFastCapableRows += 1;
+      }
+      if (
+        openAiCodexLongContextApplies(
+          {
+            uncachedInputTokens: row.inputTokens,
+            cachedInputTokens: row.cacheReadTokens,
+          },
+          row.modelId
+        )
+      ) {
+        openAiLongContextRows += 1;
+      }
     } else if (row.pricingStatus === 'internal_gateway_rated') {
       internalGatewayRatedRows += 1;
     } else if (row.pricingStatus === 'internal_gateway_unrated_estimate') {
       internalGatewayUnratedRows += 1;
+    } else if (row.pricingStatus === 'local_counterfactual') {
+      localCounterfactualRows += 1;
+    } else if (row.pricingStatus === 'unpriced_provider') {
+      unpricedProviderRows += 1;
+      unpricedModelIds.add(row.modelId || '<missing>');
+    }
+
+    if (sourceProviderForRow(row) === 'codex') {
+      codexRows += 1;
+      codexWebSearchRequests += row.webSearchRequests;
     }
   }
 
@@ -856,10 +1073,71 @@ function buildPricingAudit(rows: TokenRow[], config: PricingRuntimeConfig): Pric
         ? 'model_id'
         : 'unknown';
 
+  const hasOpenAiPricing = openAiCatalogRows > 0;
+  const hasLocalCounterfactualPricing = localCounterfactualRows > 0;
+  const hasNonOpenAiPricing =
+    staticCatalogRows > 0 ||
+    fallbackPricedRows > 0 ||
+    internalGatewayRatedRows > 0 ||
+    internalGatewayUnratedRows > 0;
+  const auditProvider: PricingProvider = hasOpenAiPricing
+    ? hasNonOpenAiPricing || hasLocalCounterfactualPricing
+      ? 'mixed_static_catalogs'
+      : 'openai_api'
+    : hasLocalCounterfactualPricing
+      ? hasNonOpenAiPricing
+        ? 'mixed_static_catalogs'
+        : 'local_equivalent'
+      : codexRows > 0 && !hasNonOpenAiPricing
+        ? 'openai_api'
+        : config.provider;
+
   const warnings: string[] = [];
-  if (config.provider !== 'internal_gateway') {
+  if (auditProvider === 'openai_api' && openAiCatalogRows > 0) {
+    warnings.push(
+      'OpenAI Codex costs are standard-speed token estimates from the static OpenAI API pricing and Codex rate card catalogs.'
+    );
+  } else if (auditProvider === 'mixed_static_catalogs') {
+    warnings.push(
+      'Cost totals mix static public catalogs across providers; treat combined provider totals as estimates.'
+    );
+  } else if (auditProvider === 'local_equivalent') {
+    warnings.push(
+      'Local model costs are counterfactual Claude Sonnet-equivalent estimates. Actual local model API spend is $0 before hardware, power, and operator time.'
+    );
+  } else if (config.provider !== 'internal_gateway') {
     warnings.push(
       `Pricing provider is ${config.provider}; values are estimates from static public pricing, not internal LLM Gateway rated cost.`
+    );
+  }
+  if (openAiFastCapableRows > 0) {
+    warnings.push(
+      `${openAiFastCapableRows.toLocaleString('en-US')} OpenAI Codex row(s) use GPT-5.5/GPT-5.4 standard-speed rates. Local Codex JSONL does not include per-turn service tier, so Fast mode multipliers (GPT-5.5 2.5x, GPT-5.4 2x) cannot be applied or ruled out from logs alone.`
+    );
+  }
+  if (openAiCatalogRows > 0) {
+    warnings.push(
+      'OpenAI API regional-processing uplifts are not applied to Codex rows because local Codex JSONL does not expose a per-turn processing region.'
+    );
+  }
+  if (openAiLongContextRows > 0) {
+    warnings.push(
+      `${openAiLongContextRows.toLocaleString('en-US')} OpenAI Codex row(s) exceeded 272K captured input tokens and used OpenAI long-context pricing for GPT-5.5/GPT-5.4.`
+    );
+  }
+  if (openAiRateCardEquivalentRows > 0) {
+    warnings.push(
+      `${openAiRateCardEquivalentRows.toLocaleString('en-US')} OpenAI Codex row(s) use Codex rate-card credits converted to USD-equivalent estimates at 25 credits per USD, inferred from the GPT-5.5 and GPT-5.4 rows shared by OpenAI API pricing and the Codex rate card.`
+    );
+  }
+  if (codexWebSearchRequests > 0) {
+    warnings.push(
+      `${codexWebSearchRequests.toLocaleString('en-US')} OpenAI Codex web search call(s) are counted as tool usage but not separately priced; the Codex rate card is token-based and local JSONL does not identify API-key vs ChatGPT billing mode for tool-call fees.`
+    );
+  }
+  if (localCounterfactualRows > 0 && auditProvider !== 'local_equivalent') {
+    warnings.push(
+      `${localCounterfactualRows.toLocaleString('en-US')} local-model row(s) are priced as Claude Sonnet-equivalent counterfactual cost, not actual local runtime spend.`
     );
   }
   if (config.provider === 'internal_gateway' && internalGatewayUnratedRows > 0) {
@@ -911,6 +1189,11 @@ function buildPricingAudit(rows: TokenRow[], config: PricingRuntimeConfig): Pric
       `${zeroUsageUnknownModelRows.toLocaleString('en-US')} zero-usage row(s) had unrecognized model IDs and did not affect cost.`
     );
   }
+  if (unpricedProviderRows > 0) {
+    warnings.push(
+      `${unpricedProviderRows.toLocaleString('en-US')} provider row(s) had no supported static price and were not priced (${[...unpricedModelIds].sort().join(', ')}).`
+    );
+  }
 
   const internalGatewayCostBasis =
     config.provider === 'internal_gateway' &&
@@ -918,10 +1201,18 @@ function buildPricingAudit(rows: TokenRow[], config: PricingRuntimeConfig): Pric
     internalGatewayUnratedRows === 0
       ? 'rated_internal_gateway_cost'
       : 'estimated_from_jsonl_usage_without_gateway_rated_cost';
+  const auditCatalog =
+    auditProvider === 'openai_api'
+      ? OPENAI_API_PRICING_CATALOG_METADATA
+      : auditProvider === 'local_equivalent'
+        ? LOCAL_MODEL_EQUIVALENT_PRICING_CATALOG_METADATA
+        : auditProvider === 'mixed_static_catalogs'
+          ? MIXED_STATIC_PRICING_CATALOG_METADATA
+          : pricingCatalogForConfig(config, internalGatewayCostBasis);
 
   return {
-    catalog: pricingCatalogForConfig(config, internalGatewayCostBasis),
-    provider: config.provider,
+    catalog: auditCatalog,
+    provider: auditProvider,
     bedrockRegion: config.bedrockRegion,
     bedrockEndpointScope,
     bedrockServiceTier: config.bedrockServiceTier,
@@ -1076,6 +1367,11 @@ export async function collectJsonlFiles(dir: string): Promise<string[]> {
   return results;
 }
 
+export async function collectJsonlFilesFromDirs(dirs: readonly string[]): Promise<string[]> {
+  const batches = await Promise.all(dirs.map((dir) => collectJsonlFiles(dir).catch(() => [])));
+  return batches.flat();
+}
+
 // ---------------------------------------------------------------------------
 // Row construction
 // ---------------------------------------------------------------------------
@@ -1144,6 +1440,7 @@ export function buildTokenRow(
     hour: toLocalHour(ts),
     minute: ts.getMinutes(),
     sessionId: event.sessionId ?? '',
+    sourceProvider: 'claude-code',
     project: rawCwd,
     projectName,
     modelId,
@@ -1169,6 +1466,152 @@ export function buildTokenRow(
     webSearchCostUsd: costComponents.webSearchCostUsd,
     webSearchCostUsdMicros: costComponents.webSearchCostUsdMicros,
     isSubagent,
+  };
+
+  return row;
+}
+
+export function buildCodexTokenRow(event: CodexUsageRowEvent, filePath: string): TokenRow | null {
+  const ts = parseIso(event.timestamp);
+  if (!ts) return null;
+
+  // Codex/OpenAI token_count records expose cached input as a subset of input.
+  // Tokenomix's row model stores cache reads separately, matching Claude's
+  // shape, so the visible input bucket excludes the cached subset.
+  const billableInputTokens = Math.max(0, event.usage.inputTokens - event.usage.cachedInputTokens);
+  const rawCwd = event.cwd || nodePath.dirname(filePath);
+  const modelId = event.modelId;
+  const sourceProvider: UsageSourceProvider = 'codex';
+  const costComponents = computeOpenAiCodexCost(
+    {
+      uncachedInputTokens: billableInputTokens,
+      cachedInputTokens: event.usage.cachedInputTokens,
+      outputTokens: event.usage.outputTokens,
+    },
+    modelId
+  );
+
+  const row: TokenRow = {
+    date: toLocalDateStr(ts),
+    hour: toLocalHour(ts),
+    minute: ts.getMinutes(),
+    sessionId: codexSessionId(event.sessionId),
+    sourceProvider,
+    project: rawCwd,
+    projectName: displayPathSegment(rawCwd),
+    modelId,
+    modelFamily: modelFamilyForSource(modelId, sourceProvider),
+    inputTokens: billableInputTokens,
+    outputTokens: event.usage.outputTokens,
+    cacheCreation5m: 0,
+    cacheCreation1h: 0,
+    cacheReadTokens: event.usage.cachedInputTokens,
+    webSearchRequests: event.webSearchRequests ?? 0,
+    costUsd: costComponents?.totalCostUsd ?? 0,
+    costUsdMicros: costComponents?.totalCostUsdMicros ?? 0,
+    pricingMultiplier: costComponents?.pricingMultiplier ?? 1,
+    pricingStatus: costComponents?.pricingStatus ?? 'unpriced_provider',
+    inputCostUsd: costComponents?.inputCostUsd ?? 0,
+    inputCostUsdMicros: costComponents?.inputCostUsdMicros ?? 0,
+    outputCostUsd: costComponents?.outputCostUsd ?? 0,
+    outputCostUsdMicros: costComponents?.outputCostUsdMicros ?? 0,
+    cacheCreationCostUsd: 0,
+    cacheCreationCostUsdMicros: 0,
+    cacheReadCostUsd: costComponents?.cacheReadCostUsd ?? 0,
+    cacheReadCostUsdMicros: costComponents?.cacheReadCostUsdMicros ?? 0,
+    webSearchCostUsd: 0,
+    webSearchCostUsdMicros: 0,
+    isSubagent: false,
+    ...(event.toolUses ? { toolUses: event.toolUses } : {}),
+    ...(event.toolErrors ? { toolErrors: event.toolErrors } : {}),
+  };
+
+  return row;
+}
+
+export function buildLocalModelTokenRow(
+  event: LocalModelUsageRowEvent,
+  filePath: string
+): TokenRow | null {
+  const ts = parseIso(event.timestamp);
+  if (!ts) return null;
+
+  const billableInputTokens = Math.max(0, event.usage.inputTokens - event.usage.cachedInputTokens);
+  const rawCwd = event.cwd || nodePath.dirname(filePath);
+  const modelId = event.modelId;
+  const sourceProvider: UsageSourceProvider = 'local-models';
+  const equivalentClaude = computeCostWithFamily(
+    {
+      input_tokens: billableInputTokens,
+      output_tokens: event.usage.outputTokens,
+      cache_read_input_tokens: event.usage.cachedInputTokens,
+    },
+    'claude-sonnet-4-6',
+    'sonnet'
+  );
+  const equivalentCodex = computeOpenAiCodexCost(
+    {
+      uncachedInputTokens: billableInputTokens,
+      cachedInputTokens: event.usage.cachedInputTokens,
+      outputTokens: event.usage.outputTokens,
+    },
+    'gpt-5.5'
+  );
+
+  const row: TokenRow = {
+    date: toLocalDateStr(ts),
+    hour: toLocalHour(ts),
+    minute: ts.getMinutes(),
+    sessionId: localModelSessionId(event.sessionId),
+    sourceProvider,
+    project: rawCwd,
+    projectName: displayPathSegment(rawCwd),
+    modelId,
+    modelFamily: modelFamilyForSource(modelId, sourceProvider),
+    inputTokens: billableInputTokens,
+    outputTokens: event.usage.outputTokens,
+    cacheCreation5m: 0,
+    cacheCreation1h: 0,
+    cacheReadTokens: event.usage.cachedInputTokens,
+    webSearchRequests: 0,
+    costUsd: equivalentClaude.totalCostUsd,
+    costUsdMicros: equivalentClaude.totalCostUsdMicros,
+    pricingMultiplier: 1,
+    pricingStatus: 'local_counterfactual',
+    localRuntime: event.runtime,
+    equivalentClaudeCostUsd: equivalentClaude.totalCostUsd,
+    equivalentClaudeCostUsdMicros: equivalentClaude.totalCostUsdMicros,
+    equivalentCodexCostUsd: equivalentCodex?.totalCostUsd ?? 0,
+    equivalentCodexCostUsdMicros: equivalentCodex?.totalCostUsdMicros ?? 0,
+    inputCostUsd: equivalentClaude.inputCostUsd,
+    inputCostUsdMicros: equivalentClaude.inputCostUsdMicros,
+    outputCostUsd: equivalentClaude.outputCostUsd,
+    outputCostUsdMicros: equivalentClaude.outputCostUsdMicros,
+    cacheCreationCostUsd: 0,
+    cacheCreationCostUsdMicros: 0,
+    cacheReadCostUsd: equivalentClaude.cacheReadCostUsd,
+    cacheReadCostUsdMicros: equivalentClaude.cacheReadCostUsdMicros,
+    webSearchCostUsd: 0,
+    webSearchCostUsdMicros: 0,
+    isSubagent: false,
+    ...(event.metrics.tokensPerSecond !== undefined
+      ? { tokensPerSecond: event.metrics.tokensPerSecond }
+      : {}),
+    ...(event.metrics.timeToFirstTokenMs !== undefined
+      ? { timeToFirstTokenMs: event.metrics.timeToFirstTokenMs }
+      : {}),
+    ...(event.metrics.promptEvalDurationMs !== undefined
+      ? { promptEvalDurationMs: event.metrics.promptEvalDurationMs }
+      : {}),
+    ...(event.metrics.evalDurationMs !== undefined
+      ? { evalDurationMs: event.metrics.evalDurationMs }
+      : {}),
+    ...(event.metrics.loadDurationMs !== undefined
+      ? { loadDurationMs: event.metrics.loadDurationMs }
+      : {}),
+    ...(event.metrics.durationMs !== undefined ? { turnDurationMs: event.metrics.durationMs } : {}),
+    ...(event.toolUses ? { toolUses: event.toolUses } : {}),
+    ...(event.toolErrors ? { toolErrors: event.toolErrors } : {}),
   };
 
   return row;
@@ -1241,6 +1684,7 @@ function aggregate(
 
   // Filter rows for time-series and totals (project + since).
   const filtered = rows.filter((r) => {
+    if (!matchesProviderFilter(r, query.provider)) return false;
     if (query.project && !r.project.includes(query.project)) return false;
     if (sinceCutoff) {
       const rowDate = new Date(`${r.date}T00:00:00`);
@@ -1253,15 +1697,23 @@ function aggregate(
   // project-filtered, but NOT since-filtered). They are absolute 30d/5d
   // windows from today, independent of any since filter the caller passes.
   const projectFilter = query.project;
-  const projectFiltered = projectFilter
-    ? rows.filter((r) => r.project.includes(projectFilter))
-    : rows;
+  const projectFiltered = rows.filter((r) => {
+    if (!matchesProviderFilter(r, query.provider)) return false;
+    if (projectFilter && !r.project.includes(projectFilter)) return false;
+    return true;
+  });
 
   let costUsd30d = 0;
   let costUsd5d = 0;
+  let localEquivalentClaudeCostUsd30d = 0;
+  let localEquivalentCodexCostUsd30d = 0;
+  let localEquivalentClaudeCostUsd5d = 0;
+  let localEquivalentCodexCostUsd5d = 0;
   let inputTokens30d = 0;
   let outputTokens30d = 0;
   let cacheCreationTokens30d = 0;
+  let cacheCreation5mTokens30d = 0;
+  let cacheCreation1hTokens30d = 0;
   let cacheReadTokens30d = 0;
   const costComponents30d = emptyCostComponents();
   let mainSessionCostUsd30d = 0;
@@ -1276,9 +1728,13 @@ function aggregate(
     const rowDate = new Date(`${row.date}T00:00:00`);
     if (rowDate >= cutoff30d) {
       costUsd30d += row.costUsd;
+      localEquivalentClaudeCostUsd30d += localEquivalentClaudeCostForRow(row);
+      localEquivalentCodexCostUsd30d += localEquivalentCodexCostForRow(row);
       inputTokens30d += row.inputTokens;
       outputTokens30d += row.outputTokens;
       cacheCreationTokens30d += row.cacheCreation5m + row.cacheCreation1h;
+      cacheCreation5mTokens30d += row.cacheCreation5m;
+      cacheCreation1hTokens30d += row.cacheCreation1h;
       cacheReadTokens30d += row.cacheReadTokens;
       addCostComponents(costComponents30d, row);
       if (row.isSubagent) {
@@ -1309,11 +1765,31 @@ function aggregate(
     }
     if (rowDate >= cutoff5d) {
       costUsd5d += row.costUsd;
+      localEquivalentClaudeCostUsd5d += localEquivalentClaudeCostForRow(row);
+      localEquivalentCodexCostUsd5d += localEquivalentCodexCostForRow(row);
     }
   }
 
+  // L5: Unify costUsd30d with costComponents30d via a single rounding pass.
+  // costUsd30d was accumulated via row.costUsd (which is microsToUsd applied to
+  // the pre-stored micros value), while costComponents30d uses costComponentsForRow()
+  // which sums individual component micros. Because integer division in microsToUsd
+  // introduces per-component rounding, Σ microsToUsd(c_i) can differ from
+  // microsToUsd(Σ c_i) by up to n_components / 1_000_000 per row. Re-deriving
+  // costUsd30d as the sum of all component costs ensures both values share the
+  // same rounding origin and the UI's "components don't add up to total" artifact
+  // is eliminated.
+  costUsd30d =
+    costComponents30d.inputCostUsd +
+    costComponents30d.outputCostUsd +
+    costComponents30d.cacheCreationCostUsd +
+    costComponents30d.cacheReadCostUsd +
+    costComponents30d.webSearchCostUsd;
+
   // All-time totals (over the since+project filtered set).
   let totalCostUsd = 0;
+  let localEquivalentClaudeCostUsd = 0;
+  let localEquivalentCodexCostUsd = 0;
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let totalCacheCreationTokens = 0;
@@ -1336,13 +1812,23 @@ function aggregate(
   // the hot-path per-row check never allocates a Date object.  Only rows whose
   // local date+hour+minute fall exactly on the cutoff boundary need the integer
   // arithmetic; rows on other dates short-circuit via string comparison.
+  //
+  // L1: DST spring-forward edge — subtracting 86 400 000 ms from now during a
+  // DST spring-forward night lands 23 calendar hours ago in local time, so up to
+  // one hour of 30-minute buckets may appear missing in the 24HR chart on that
+  // specific night. This is an accepted 1-hour/year edge case; cost totals and
+  // 30d aggregates are unaffected. Fixing it would require a calendar-aware
+  // "subtract one calendar day" operation which adds complexity for negligible
+  // benefit in a single-user local-only dashboard.
   const cutoff24h = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-  const cutoffDateStr = toLocalDateStr(cutoff24h);  // "YYYY-MM-DD" in local TZ
-  const cutoffHour = cutoff24h.getHours();           // local hour integer
-  const cutoffMinute = cutoff24h.getMinutes();       // local minute integer
+  const cutoffDateStr = toLocalDateStr(cutoff24h); // "YYYY-MM-DD" in local TZ
+  const cutoffHour = cutoff24h.getHours(); // local hour integer
+  const cutoffMinute = cutoff24h.getMinutes(); // local minute integer
 
   for (const row of filtered) {
     totalCostUsd += row.costUsd;
+    localEquivalentClaudeCostUsd += localEquivalentClaudeCostForRow(row);
+    localEquivalentCodexCostUsd += localEquivalentCodexCostForRow(row);
     totalInputTokens += row.inputTokens;
     totalOutputTokens += row.outputTokens;
     totalCacheCreationTokens += row.cacheCreation5m + row.cacheCreation1h;
@@ -1459,6 +1945,7 @@ function aggregate(
     } else {
       sessionMap.set(row.sessionId, {
         sessionId: row.sessionId,
+        sourceProvider: sourceProviderForRow(row),
         project: row.project,
         costUsd: row.costUsd,
         inputTokens: row.inputTokens,
@@ -1494,8 +1981,7 @@ function aggregate(
         ? true
         : row.date < cutoffDateStr
           ? false
-          : row.hour > cutoffHour ||
-            (row.hour === cutoffHour && row.minute >= cutoffMinute);
+          : row.hour > cutoffHour || (row.hour === cutoffHour && row.minute >= cutoffMinute);
 
     if (rowInWindow) {
       const rowHH = String(row.hour).padStart(2, '0');
@@ -1702,13 +2188,18 @@ function aggregate(
   const turnCostP99_30d = percentileFloor(turnCosts30d, 99);
 
   function topCostShare(sortedAsc: number[], fraction: number): number {
-    if (sortedAsc.length === 0 || costUsd30d === 0) return 0;
+    // M3: Use the locally-scoped costSum30d (the per-turn sum for the same
+    // projectFiltered rows) rather than the outer costUsd30d, so the denominator
+    // is always the sum of the values being divided. Both iterate the same rows,
+    // so numerically they are equal, but using costSum30d makes the relationship
+    // explicit and avoids closure fragility if the two accumulators diverge.
+    if (sortedAsc.length === 0 || costSum30d === 0) return 0;
     const count = Math.max(1, Math.ceil(sortedAsc.length * fraction));
     let sum = 0;
     for (let i = sortedAsc.length - count; i < sortedAsc.length; i++) {
       sum += sortedAsc[i] ?? 0;
     }
-    return sum / costUsd30d;
+    return sum / costSum30d;
   }
   const turnCostTop1PctShare30d = topCostShare(turnCosts30d, 0.01);
   const turnCostTop5PctShare30d = topCostShare(turnCosts30d, 0.05);
@@ -1741,7 +2232,7 @@ function aggregate(
   // other projects. Without this, sessions from unrelated projects pollute the
   // duration distribution.
   let effectiveSessionTimes = sessionTimes;
-  if (query.project) {
+  if (query.project || (query.provider && query.provider !== 'all')) {
     // Collect all sessionIds that appear in the project-filtered rows.
     const projectSessionIds = new Set<string>();
     for (const row of projectFiltered) {
@@ -1864,11 +2355,24 @@ function aggregate(
     subagentRows30d,
     agentToolCalls30d,
     opusToSonnetSavings30d,
+    cacheCreation5mTokens30d,
+    cacheCreation1hTokens30d,
   });
-  const pricingAudit = buildPricingAudit(filtered, pricingRuntimeConfig());
+  // H2: Use projectFiltered (absolute 30d window, project-scoped but NOT
+  // since-filtered) so pricingAudit.totalCostUsdMicros aligns with the 30d KPIs
+  // displayed on the dashboard. Using `filtered` (the since-filtered set) caused
+  // the audit to cover only the user's selected time window (e.g. 7d) while
+  // costUsd30d and other KPIs always covered the absolute 30d window, making the
+  // two numbers incomparable.
+  const pricingAudit = buildPricingAudit(
+    projectFiltered.filter((r) => new Date(`${r.date}T00:00:00`) >= cutoff30d),
+    pricingRuntimeConfig()
+  );
 
   return {
     totalCostUsd,
+    localEquivalentClaudeCostUsd,
+    localEquivalentCodexCostUsd,
     totalInputTokens,
     totalOutputTokens,
     totalCacheCreationTokens,
@@ -1878,6 +2382,10 @@ function aggregate(
     totalProjectsTouched: projectsNameSet.size,
     costUsd30d,
     costUsd5d,
+    localEquivalentClaudeCostUsd30d,
+    localEquivalentCodexCostUsd30d,
+    localEquivalentClaudeCostUsd5d,
+    localEquivalentCodexCostUsd5d,
     inputTokens30d,
     outputTokens30d,
     cacheCreationTokens30d,
@@ -1912,9 +2420,6 @@ function aggregate(
     inputTokensPrev30d,
     outputTokensPrev30d,
     costUsd30dPrev,
-    retroRollup: null,
-    retroTimeline: [],
-    retroForecast: [],
     monthlyRollup,
     quarterlyRollup,
     yearlyRollup,
@@ -1937,6 +2442,7 @@ function computeSessionSummaries(
     string,
     {
       sessionId: string;
+      sourceProvider: UsageSourceProvider;
       project: string;
       projectName: string;
       costUsd: number;
@@ -1953,6 +2459,7 @@ function computeSessionSummaries(
   const toolAccumulator = new Map<string, Map<string, { count: number; errorCount: number }>>();
 
   for (const row of rows) {
+    if (!matchesProviderFilter(row, query.provider)) continue;
     if (query.project && !row.project.includes(query.project)) continue;
     if (sinceCutoff) {
       const rowDate = new Date(`${row.date}T00:00:00`);
@@ -1971,6 +2478,7 @@ function computeSessionSummaries(
     } else {
       sessionMap.set(row.sessionId, {
         sessionId: row.sessionId,
+        sourceProvider: sourceProviderForRow(row),
         project: row.project,
         projectName: row.projectName,
         costUsd: row.costUsd,
@@ -2037,6 +2545,25 @@ function computeSessionSummaries(
 }
 
 // ---------------------------------------------------------------------------
+// Eviction helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Evict the `count` oldest entries from a Map using insertion order.
+ * Insertion-order iteration is guaranteed by the ES2015 Map specification.
+ * This is O(count) and appropriate for maps that have no per-entry timestamp
+ * — evicting the first-inserted entries is the best available proxy for "oldest".
+ */
+function evictOldestInsertionOrder<K, V>(map: Map<K, V>, count: number): void {
+  let removed = 0;
+  for (const key of map.keys()) {
+    if (removed >= count) break;
+    map.delete(key);
+    removed++;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // IndexStore
 // ---------------------------------------------------------------------------
 
@@ -2046,6 +2573,14 @@ export class IndexStore extends EventEmitter {
   private readonly rowTimestampMs = new Map<string, number>();
   private readonly requestedModelByAgentId = new Map<string, string>();
   private readonly subagentFilePathsByAgentId = new Map<string, Set<string>>();
+  /**
+   * Session-keyed row index: Map<sessionId, Set<dedupKey>>.
+   * Maintained in sync with `rows` inside ingestFileInternal's row-insert path.
+   * Enables O(rows-for-session) lookups in getSessionDetail() and
+   * getActiveSessions() instead of O(all-rows) full scans.
+   * Eviction is cascaded from sessionTimes eviction (ARCH-001).
+   */
+  private readonly sessionIndex = new Map<string, Set<string>>();
   /** Per-session first/last event timestamps (epoch ms). Used for duration stats. */
   private readonly sessionTimes = new Map<string, { firstTs: number; lastTs: number }>();
   /**
@@ -2064,12 +2599,42 @@ export class IndexStore extends EventEmitter {
   private lastUpdated: Date = new Date();
   private _initialized = false;
 
+  /**
+   * Maximum file-ingestion audit entries retained. Resolved once at construction
+   * time from serverEnv().TOKENOMIX_MAX_FILE_AUDITS so the value is fixed for
+   * the process lifetime. Falls back to the module-level default when serverEnv()
+   * is not yet initialised (e.g. in unit tests that bypass env validation).
+   */
+  private readonly maxFileIngestionAudits: number;
+
+  /**
+   * Maximum agent-ID map entries retained. Resolved once at construction time
+   * from serverEnv().TOKENOMIX_MAX_AGENT_ENTRIES.
+   */
+  private readonly maxAgentIdMapSize: number;
+
   constructor() {
     super();
     // Suppress MaxListenersExceededWarning when many SSE clients connect.
     // Each /api/events connection registers one 'change' listener; the listener
     // is removed on stream abort so there is no permanent leak.
+    //
+    // L2: 50 is an explicit single-user assumption (a person rarely has more than
+    // a handful of browser tabs open simultaneously). Under multi-user or mass
+    // rollout this cap should be raised (or removed with setMaxListeners(0)) to
+    // match the expected concurrent SSE connection count.
     this.setMaxListeners(50);
+
+    // Resolve size limits from validated env, falling back to module defaults
+    // when serverEnv() is not yet initialised (e.g. in tests).
+    try {
+      const env = serverEnv();
+      this.maxFileIngestionAudits = env.TOKENOMIX_MAX_FILE_AUDITS;
+      this.maxAgentIdMapSize = env.TOKENOMIX_MAX_AGENT_ENTRIES;
+    } catch {
+      this.maxFileIngestionAudits = MAX_FILE_INGESTION_AUDITS_DEFAULT;
+      this.maxAgentIdMapSize = MAX_AGENT_ID_MAP_SIZE_DEFAULT;
+    }
   }
 
   /** Millisecond timestamp of the last file-change event. */
@@ -2097,12 +2662,24 @@ export class IndexStore extends EventEmitter {
     this.sessionTimes.set(row.sessionId, { firstTs: tsMs, lastTs: tsMs });
     // Evict oldest 10% when the Map grows beyond MAX_SESSION_TIMES.
     // Batching avoids re-sorting on every individual insert.
+    // ARCH-001: cascade eviction into sessionIndex so the two maps stay in sync.
     if (this.sessionTimes.size > MAX_SESSION_TIMES) {
       const evictCount = Math.ceil(MAX_SESSION_TIMES * 0.1);
       const sorted = [...this.sessionTimes.entries()].sort((a, b) => a[1].firstTs - b[1].firstTs);
-      for (let ei = 0; ei < evictCount; ei++) {
-        const entry = sorted[ei];
-        if (entry) this.sessionTimes.delete(entry[0]);
+      // M1: Skip eviction for sessions that are still within the active-session
+      // window (5 minutes by default). Without this guard, a flush of old
+      // sessions at the cap boundary could evict sessions that are currently
+      // active and therefore visible in the active-sessions rail.
+      const activeWindowCutoff = Date.now() - 5 * 60 * 1_000;
+      let evicted = 0;
+      for (const entry of sorted) {
+        if (evicted >= evictCount) break;
+        if (entry[1].lastTs >= activeWindowCutoff) continue; // skip active sessions
+        this.sessionTimes.delete(entry[0]);
+        // Cascade: remove the same sessionId from sessionIndex so it cannot
+        // grow unboundedly while sessionTimes is capped at MAX_SESSION_TIMES.
+        this.sessionIndex.delete(entry[0]);
+        evicted++;
       }
     }
   }
@@ -2192,12 +2769,21 @@ export class IndexStore extends EventEmitter {
 
         this.sessionInitialPrompts.set(sessionId, { prompt, truncated, jsonlPath: filePath });
 
-        // Evict oldest 10% when size exceeds the cap (mirrors recordSessionTimestamp).
+        // Evict oldest 10% (by firstTs) when size exceeds the cap.
+        // Sort against sessionTimes so that sessions with the earliest first event
+        // are evicted first — this retains recently-active sessions under memory
+        // pressure. Insertion order is NOT a reliable proxy here because
+        // captureInitialPrompt is called concurrently for many files; a session
+        // inserted first in the Map may have a later firstTs than one inserted later.
         if (this.sessionInitialPrompts.size > MAX_SESSION_TIMES) {
           const evictCount = Math.ceil(MAX_SESSION_TIMES * 0.1);
-          const keys = [...this.sessionInitialPrompts.keys()];
-          for (let ei = 0; ei < evictCount && ei < keys.length; ei++) {
-            const key = keys[ei];
+          const sorted = [...this.sessionInitialPrompts.keys()].sort((a, b) => {
+            const aTs = this.sessionTimes.get(a)?.firstTs ?? 0;
+            const bTs = this.sessionTimes.get(b)?.firstTs ?? 0;
+            return aTs - bTs;
+          });
+          for (let ei = 0; ei < evictCount && ei < sorted.length; ei++) {
+            const key = sorted[ei];
             if (key) this.sessionInitialPrompts.delete(key);
           }
         }
@@ -2212,6 +2798,197 @@ export class IndexStore extends EventEmitter {
     } finally {
       await fh?.close().catch(() => undefined);
     }
+  }
+
+  private async captureCodexInitialPrompt(filePath: string): Promise<void> {
+    let fh: Awaited<ReturnType<typeof fsOpen>> | undefined;
+    try {
+      fh = await fsOpen(filePath, 'r');
+      const buf = Buffer.allocUnsafe(PROMPT_SCAN_MAX_BYTES);
+      const { bytesRead } = await fh.read(buf, 0, PROMPT_SCAN_MAX_BYTES, 0);
+      const chunk = buf.subarray(0, bytesRead).toString('utf-8');
+      const rawLines = chunk.split('\n');
+      const lines = bytesRead < PROMPT_SCAN_MAX_BYTES ? rawLines : rawLines.slice(0, -1);
+
+      let sessionId = '';
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(trimmed);
+        } catch {
+          continue;
+        }
+        if (typeof parsed !== 'object' || parsed === null) continue;
+        const rec = parsed as Record<string, unknown>;
+        const payload =
+          typeof rec.payload === 'object' && rec.payload !== null
+            ? (rec.payload as Record<string, unknown>)
+            : null;
+        if (!payload) continue;
+
+        if (rec.type === 'session_meta' && typeof payload.id === 'string') {
+          sessionId = codexSessionId(payload.id);
+          if (this.sessionInitialPrompts.has(sessionId)) return;
+          continue;
+        }
+
+        if (rec.type !== 'event_msg' || payload.type !== 'user_message' || !sessionId) continue;
+        if (this.sessionInitialPrompts.has(sessionId)) return;
+
+        const message = typeof payload.message === 'string' ? payload.message : '';
+        const trimmedText = message.trim();
+        if (!trimmedText) continue;
+
+        const truncated = trimmedText.length > PROMPT_MAX_CHARS;
+        const prompt = truncated ? trimmedText.slice(0, PROMPT_MAX_CHARS) : trimmedText;
+        this.sessionInitialPrompts.set(sessionId, { prompt, truncated, jsonlPath: filePath });
+        return;
+      }
+    } catch {
+      // Prompt capture is best-effort only.
+    } finally {
+      await fh?.close().catch(() => undefined);
+    }
+  }
+
+  private async ingestCodexFileInternal(filePath: string): Promise<boolean> {
+    const fileAudit = emptyFileIngestionAudit();
+    let rowsChanged = false;
+
+    await this.captureCodexInitialPrompt(filePath);
+
+    try {
+      for await (const event of parseCodexUsageRows(filePath, {
+        onSkip: (reason) => {
+          if (reason === 'invalid-json') fileAudit.invalidJsonLines += 1;
+          if (reason === 'file-open-error') fileAudit.fileOpenErrors += 1;
+        },
+      })) {
+        fileAudit.assistantUsageEvents += 1;
+        const row = buildCodexTokenRow(event, filePath);
+        if (!row) {
+          fileAudit.tokenRowsRejected += 1;
+          continue;
+        }
+
+        const tsMs = parseIso(event.timestamp)?.getTime();
+        const dedupKey = ['codex', row.sessionId, event.timestamp, event.usage.totalTokens].join(
+          ':'
+        );
+
+        if (this.rows.has(dedupKey)) {
+          fileAudit.duplicateRowsSkipped += 1;
+          continue;
+        }
+
+        this.rows.set(dedupKey, row);
+        if (tsMs !== undefined) this.rowTimestampMs.set(dedupKey, tsMs);
+
+        if (row.sessionId) {
+          let sessionKeys = this.sessionIndex.get(row.sessionId);
+          if (!sessionKeys) {
+            sessionKeys = new Set<string>();
+            this.sessionIndex.set(row.sessionId, sessionKeys);
+          }
+          sessionKeys.add(dedupKey);
+        }
+
+        fileAudit.rowsIndexed += 1;
+        rowsChanged = true;
+        this.recordSessionTimestamp(row, tsMs);
+      }
+    } catch (err: unknown) {
+      fileAudit.ingestErrors += 1;
+      logEvent('error', 'codex-ingest-error', {
+        path: filePath,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    fileAudit.lastIndexedAt = formatLocalIso();
+    this.fileIngestionAudits.set(filePath, fileAudit);
+    if (this.fileIngestionAudits.size > this.maxFileIngestionAudits) {
+      evictOldestInsertionOrder(
+        this.fileIngestionAudits,
+        Math.ceil(this.maxFileIngestionAudits * 0.1)
+      );
+    }
+
+    return rowsChanged;
+  }
+
+  private async ingestLocalModelFileInternal(filePath: string): Promise<boolean> {
+    const fileAudit = emptyFileIngestionAudit();
+    let rowsChanged = false;
+
+    try {
+      for await (const event of parseLocalModelUsageRows(filePath, {
+        onSkip: (reason) => {
+          if (reason === 'invalid-json') fileAudit.invalidJsonLines += 1;
+          if (reason === 'schema-mismatch') fileAudit.schemaMismatchLines += 1;
+          if (reason === 'file-open-error') fileAudit.fileOpenErrors += 1;
+        },
+      })) {
+        fileAudit.assistantUsageEvents += 1;
+        const row = buildLocalModelTokenRow(event, filePath);
+        if (!row) {
+          fileAudit.tokenRowsRejected += 1;
+          continue;
+        }
+
+        const tsMs = parseIso(event.timestamp)?.getTime();
+        const dedupKey = [
+          'local',
+          filePath,
+          event.sourceLine,
+          row.sessionId,
+          event.timestamp,
+          row.modelId,
+          event.usage.inputTokens + event.usage.outputTokens + event.usage.cachedInputTokens,
+        ].join('\0');
+
+        if (this.rows.has(dedupKey)) {
+          fileAudit.duplicateRowsSkipped += 1;
+          continue;
+        }
+
+        this.rows.set(dedupKey, row);
+        if (tsMs !== undefined) this.rowTimestampMs.set(dedupKey, tsMs);
+
+        if (row.sessionId) {
+          let sessionKeys = this.sessionIndex.get(row.sessionId);
+          if (!sessionKeys) {
+            sessionKeys = new Set<string>();
+            this.sessionIndex.set(row.sessionId, sessionKeys);
+          }
+          sessionKeys.add(dedupKey);
+        }
+
+        fileAudit.rowsIndexed += 1;
+        rowsChanged = true;
+        this.recordSessionTimestamp(row, tsMs);
+      }
+    } catch (err: unknown) {
+      fileAudit.ingestErrors += 1;
+      logEvent('error', 'local-model-ingest-error', {
+        path: filePath,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    fileAudit.lastIndexedAt = formatLocalIso();
+    this.fileIngestionAudits.set(filePath, fileAudit);
+    if (this.fileIngestionAudits.size > this.maxFileIngestionAudits) {
+      evictOldestInsertionOrder(
+        this.fileIngestionAudits,
+        Math.ceil(this.maxFileIngestionAudits * 0.1)
+      );
+    }
+
+    return rowsChanged;
   }
 
   private async indexRequestedSubagentModels(filePath: string): Promise<Set<string>> {
@@ -2273,6 +3050,13 @@ export class IndexStore extends EventEmitter {
           if (previous !== requestedModel) {
             this.requestedModelByAgentId.set(agentId, requestedModel);
             changedAgentIds.add(agentId);
+            // Evict oldest 10% by insertion order when the cap is reached.
+            if (this.requestedModelByAgentId.size > this.maxAgentIdMapSize) {
+              evictOldestInsertionOrder(
+                this.requestedModelByAgentId,
+                Math.ceil(this.maxAgentIdMapSize * 0.1)
+              );
+            }
           }
         }
       }
@@ -2291,6 +3075,15 @@ export class IndexStore extends EventEmitter {
     if (!paths) {
       paths = new Set();
       this.subagentFilePathsByAgentId.set(agentId, paths);
+      // Evict oldest 10% by insertion order when the cap is reached.
+      // Note: eviction removes the agentId key from the map, not the filePath
+      // within a Set. Evicted agents are re-populated if seen again.
+      if (this.subagentFilePathsByAgentId.size > this.maxAgentIdMapSize) {
+        evictOldestInsertionOrder(
+          this.subagentFilePathsByAgentId,
+          Math.ceil(this.maxAgentIdMapSize * 0.1)
+        );
+      }
     }
     paths.add(filePath);
   }
@@ -2317,11 +3110,14 @@ export class IndexStore extends EventEmitter {
    * of BATCH_SIZE to avoid fd-limit exhaustion with 2,500+ files.
    */
   async initialize(): Promise<void> {
-    const files = await collectJsonlFiles(PROJECTS_DIR).catch(() => [] as string[]);
+    const files = await collectJsonlFilesFromDirs(WATCHED_SOURCE_DIRS).catch(() => [] as string[]);
     this.filesDiscovered = files.length;
+    const claudeFiles = files.filter(
+      (filePath) => sourceProviderForPath(filePath) === 'claude-code'
+    );
 
-    for (let i = 0; i < files.length; i += BATCH_SIZE) {
-      const batch = files.slice(i, i + BATCH_SIZE);
+    for (let i = 0; i < claudeFiles.length; i += BATCH_SIZE) {
+      const batch = claudeFiles.slice(i, i + BATCH_SIZE);
       await Promise.all(batch.map((f) => this.indexRequestedSubagentModels(f)));
     }
 
@@ -2340,10 +3136,16 @@ export class IndexStore extends EventEmitter {
    */
   async ingestFile(filePath: string): Promise<void> {
     logEvent('info', 'change', { path: filePath, action: 'rebuild', ts: Date.now() });
-    await this.ingestFileInternal(filePath);
-    this.snapshot = null;
-    this.lastUpdated = new Date();
-    this.emit('change');
+    const changed = await this.ingestFileInternal(filePath);
+    // Only invalidate the aggregate snapshot and notify SSE clients when at
+    // least one row was actually inserted or replaced. Unchanged-file re-
+    // observations (e.g. watcher spurious events) are no-ops and do not cause
+    // a full aggregate() rebuild on the next getMetrics() call.
+    if (changed) {
+      this.snapshot = null;
+      this.lastUpdated = new Date();
+      this.emit('change');
+    }
   }
 
   /**
@@ -2358,11 +3160,25 @@ export class IndexStore extends EventEmitter {
    * O(distinct requestIds with tool events), not O(all lines in the file).
    * See ADR 0003 for the full rationale and alternatives considered.
    */
+  /**
+   * Returns true if at least one row was inserted or replaced during this
+   * ingest call. Used by ingestFile() to decide whether to invalidate the
+   * snapshot and emit 'change'. Callers that don't need the return value
+   * (initialize, reingestSubagentFilesForAgentIds) may safely ignore it.
+   */
   private async ingestFileInternal(
     filePath: string,
     options: { skipRequestedSubagentModelScan?: boolean } = {}
-  ): Promise<void> {
+  ): Promise<boolean> {
+    if (sourceProviderForPath(filePath) === 'codex') {
+      return this.ingestCodexFileInternal(filePath);
+    }
+    if (sourceProviderForPath(filePath) === 'local-models') {
+      return this.ingestLocalModelFileInternal(filePath);
+    }
+
     const fileAudit = emptyFileIngestionAudit();
+    let rowsChanged = false;
 
     if (!options.skipRequestedSubagentModelScan) {
       const changedAgentIds = await this.indexRequestedSubagentModels(filePath);
@@ -2402,6 +3218,14 @@ export class IndexStore extends EventEmitter {
     // vice versa). The file-watcher calls ingestFile() again on any change, so
     // any mid-ingest append is self-healed on the next watcher event. The dedup
     // key (requestId:messageId) ensures re-ingested rows are not double-counted.
+    //
+    // M2: Two-pass ingest race is accepted (self-heals on next watcher event).
+    // In practice turn-level toolUses, toolErrors, and durationMs may display as
+    // zero/null for one refresh cycle during an active session. Cost figures are
+    // unaffected because they come from the assistant usage block in pass 2,
+    // which is always self-contained. Fixing the race would require file locking
+    // or a single-pass approach — deferred because the UI already refreshes in
+    // real-time and the stale window is sub-second.
     //
     // Duplicate-tool risk: if a JSONL file contains multiple assistant events
     // sharing the same requestId (non-standard but possible in edge cases), the
@@ -2740,6 +3564,21 @@ export class IndexStore extends EventEmitter {
 
           if (!existingRow) fileAudit.rowsIndexed += 1;
 
+          // Maintain session-keyed row index. A new entry in the index is only
+          // created on first insert; replacements do not need to update it
+          // because dedupKey → sessionId is stable (same row, same session).
+          if (row.sessionId) {
+            let sessionKeys = this.sessionIndex.get(row.sessionId);
+            if (!sessionKeys) {
+              sessionKeys = new Set<string>();
+              this.sessionIndex.set(row.sessionId, sessionKeys);
+            }
+            sessionKeys.add(dedupKey);
+          }
+
+          // Mark that the store changed so ingestFile() propagates the event.
+          rowsChanged = true;
+
           // Track per-session first/last timestamps for duration stats.
           // Parse the timestamp independently so we have epoch ms precision;
           // buildTokenRow only stores date+hour in the TokenRow.
@@ -2760,6 +3599,16 @@ export class IndexStore extends EventEmitter {
 
     fileAudit.lastIndexedAt = formatLocalIso();
     this.fileIngestionAudits.set(filePath, fileAudit);
+    // Evict oldest 10% by insertion order when the cap is reached.
+    // Stale audit entries for evicted files are re-created on next ingest.
+    if (this.fileIngestionAudits.size > this.maxFileIngestionAudits) {
+      evictOldestInsertionOrder(
+        this.fileIngestionAudits,
+        Math.ceil(this.maxFileIngestionAudits * 0.1)
+      );
+    }
+
+    return rowsChanged;
   }
 
   /** Invalidate the aggregate snapshot (triggers recompute on next getMetrics). */
@@ -2769,7 +3618,8 @@ export class IndexStore extends EventEmitter {
 
   /** Return MetricSummary, using cached snapshot when no filters applied. */
   getMetrics(query: MetricsQuery = {}): MetricSummary {
-    const isDefaultQuery = !query.since && !query.project;
+    const isDefaultQuery =
+      !query.since && !query.project && (!query.provider || query.provider === 'all');
     if (isDefaultQuery && this.snapshot) return this.snapshot;
 
     const allRows = [...this.rows.values()];
@@ -2798,6 +3648,65 @@ export class IndexStore extends EventEmitter {
   }
 
   /**
+   * Return SessionSummary objects for sessions whose last activity falls within
+   * the most recent `windowMs` milliseconds, sorted by lastTs descending
+   * (most-recently-active first), capped at `limit` entries.
+   *
+   * This is more useful than `getSessions()` when the caller wants to surface
+   * recently-active sessions: the parent method sorts by costUsd, so
+   * low-cost recent sessions are truncated when many expensive historical
+   * sessions exist.
+   *
+   * Implementation notes:
+   * - Iterates `sessionTimes` (O(N), N ≤ MAX_SESSION_TIMES = 50 000) to
+   *   identify active session IDs; then filters rows to only those sessions,
+   *   avoiding a full-row scan for inactive sessions.
+   * - Returns the same SessionSummary shape as `getSessions()` — no shape
+   *   divergence.
+   *
+   * @param windowMs - Activity window in milliseconds (e.g. 300_000 for 5 min).
+   * @param limit    - Maximum number of sessions to return (e.g. 10).
+   */
+  getActiveSessions(windowMs: number, limit: number): SessionSummary[] {
+    const cutoff = Date.now() - windowMs;
+
+    // Collect active session IDs and their lastTs values in one pass.
+    const activeIds = new Map<string, number>(); // sessionId → lastTs (epoch ms)
+    for (const [sid, times] of this.sessionTimes) {
+      if (times.lastTs >= cutoff) {
+        activeIds.set(sid, times.lastTs);
+      }
+    }
+
+    if (activeIds.size === 0) return [];
+
+    // Use the session-keyed index to fetch only rows for active sessions,
+    // avoiding a full O(all-rows) scan.
+    const filteredRows: TokenRow[] = [];
+    for (const sid of activeIds.keys()) {
+      const keys = this.sessionIndex.get(sid);
+      if (!keys) continue;
+      for (const key of keys) {
+        const row = this.rows.get(key);
+        if (row) filteredRows.push(row);
+      }
+    }
+
+    // Reuse the same computation path as getSessions() — passes an empty query
+    // (no since/project filtering) because recency is already handled above.
+    const summaries = computeSessionSummaries(filteredRows, {}, this.sessionTimes);
+
+    // Re-sort by lastTs descending (computeSessionSummaries sorts by costUsd).
+    summaries.sort((a, b) => {
+      const aLast = activeIds.get(a.sessionId) ?? 0;
+      const bLast = activeIds.get(b.sessionId) ?? 0;
+      return bLast - aLast;
+    });
+
+    return summaries.slice(0, limit);
+  }
+
+  /**
    * Return per-turn data (TurnBucket[]) filtered by since and project, sorted
    * by costUsd descending, sliced to limit (max 50).
    *
@@ -2813,6 +3722,7 @@ export class IndexStore extends EventEmitter {
 
     const result: TurnBucket[] = [];
     for (const row of this.rows.values()) {
+      if (!matchesProviderFilter(row, query.provider)) continue;
       if (query.project && !row.project.includes(query.project)) continue;
       if (sinceCutoff) {
         const rowDate = new Date(`${row.date}T00:00:00`);
@@ -2823,6 +3733,7 @@ export class IndexStore extends EventEmitter {
       result.push({
         timestamp,
         sessionId: row.sessionId,
+        sourceProvider: sourceProviderForRow(row),
         project: row.project,
         modelId: row.modelId,
         modelFamily: row.modelFamily,
@@ -2831,6 +3742,22 @@ export class IndexStore extends EventEmitter {
         cacheReadTokens: row.cacheReadTokens,
         costUsd: row.costUsd,
         durationMs: row.turnDurationMs ?? null,
+        ...(row.localRuntime ? { localRuntime: row.localRuntime } : {}),
+        ...(row.tokensPerSecond !== undefined ? { tokensPerSecond: row.tokensPerSecond } : {}),
+        ...(row.timeToFirstTokenMs !== undefined
+          ? { timeToFirstTokenMs: row.timeToFirstTokenMs }
+          : {}),
+        ...(row.promptEvalDurationMs !== undefined
+          ? { promptEvalDurationMs: row.promptEvalDurationMs }
+          : {}),
+        ...(row.evalDurationMs !== undefined ? { evalDurationMs: row.evalDurationMs } : {}),
+        ...(row.loadDurationMs !== undefined ? { loadDurationMs: row.loadDurationMs } : {}),
+        ...(row.equivalentClaudeCostUsd !== undefined
+          ? { equivalentClaudeCostUsd: row.equivalentClaudeCostUsd }
+          : {}),
+        ...(row.equivalentCodexCostUsd !== undefined
+          ? { equivalentCodexCostUsd: row.equivalentCodexCostUsd }
+          : {}),
       });
     }
 
@@ -2849,9 +3776,23 @@ export class IndexStore extends EventEmitter {
    * returned as null when the entry has been evicted (50K-entry LRU cap).
    */
   getSessionDetail(sessionId: string): SessionDetail | null {
+    // Use the session-keyed index when available (O(rows-for-session)) to
+    // avoid iterating all rows. Falls back to a full scan only when the index
+    // has no entry — which happens when rows were injected directly into
+    // store.rows (e.g. in tests) rather than via ingestFileInternal.
+    const dedupKeys = this.sessionIndex.get(sessionId);
     const sessionRows: TokenRow[] = [];
-    for (const row of this.rows.values()) {
-      if (row.sessionId === sessionId) sessionRows.push(row);
+    if (dedupKeys && dedupKeys.size > 0) {
+      for (const key of dedupKeys) {
+        const row = this.rows.get(key);
+        if (row) sessionRows.push(row);
+      }
+    } else {
+      // Fallback: full scan (used when rows were injected without going through
+      // ingestFileInternal, e.g. in unit tests).
+      for (const row of this.rows.values()) {
+        if (row.sessionId === sessionId) sessionRows.push(row);
+      }
     }
     if (sessionRows.length === 0) return null;
 
@@ -2865,6 +3806,7 @@ export class IndexStore extends EventEmitter {
     let isSubagent = false;
     let project = '';
     let projectName = '';
+    let sourceProvider: UsageSourceProvider = 'claude-code';
 
     // Per-component cost accumulators (USD).
     let sumInputCostUsd = 0;
@@ -2888,6 +3830,7 @@ export class IndexStore extends EventEmitter {
       if (!project) {
         project = row.project;
         projectName = row.projectName;
+        sourceProvider = sourceProviderForRow(row);
       }
 
       // Use the same micro-USD-aware component resolver used by metrics rollups.
@@ -2945,6 +3888,22 @@ export class IndexStore extends EventEmitter {
         cacheReadTokens: row.cacheReadTokens,
         costUsd: row.costUsd,
         durationMs: row.turnDurationMs ?? null,
+        ...(row.localRuntime ? { localRuntime: row.localRuntime } : {}),
+        ...(row.tokensPerSecond !== undefined ? { tokensPerSecond: row.tokensPerSecond } : {}),
+        ...(row.timeToFirstTokenMs !== undefined
+          ? { timeToFirstTokenMs: row.timeToFirstTokenMs }
+          : {}),
+        ...(row.promptEvalDurationMs !== undefined
+          ? { promptEvalDurationMs: row.promptEvalDurationMs }
+          : {}),
+        ...(row.evalDurationMs !== undefined ? { evalDurationMs: row.evalDurationMs } : {}),
+        ...(row.loadDurationMs !== undefined ? { loadDurationMs: row.loadDurationMs } : {}),
+        ...(row.equivalentClaudeCostUsd !== undefined
+          ? { equivalentClaudeCostUsd: row.equivalentClaudeCostUsd }
+          : {}),
+        ...(row.equivalentCodexCostUsd !== undefined
+          ? { equivalentCodexCostUsd: row.equivalentCodexCostUsd }
+          : {}),
         toolUses: row.toolUses ?? {},
         toolErrors: row.toolErrors ?? {},
       }));
@@ -2962,6 +3921,7 @@ export class IndexStore extends EventEmitter {
 
     return {
       sessionId,
+      sourceProvider,
       project,
       projectName,
       costUsd,

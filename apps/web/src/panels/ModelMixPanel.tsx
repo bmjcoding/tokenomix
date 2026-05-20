@@ -6,21 +6,25 @@ import { useQuery } from '@tanstack/react-query';
 import type { MetricSummary } from '@tokenomix/shared';
 import { ModelMixBar } from '../charts/ModelMixBar.js';
 import { fetchMetrics } from '../lib/api.js';
+import { type ProviderMode, withProviderMode } from '../lib/provider-modes.js';
 import { queryKeys } from '../lib/query-keys.js';
 import { Badge } from '../ui/Badge.js';
 import { Card } from '../ui/Card.js';
 
 interface ModelMixPanelProps {
   since?: string;
+  providerMode?: ProviderMode;
 }
 
 /** Mirror the donut chart's top-N cap so badge legend stays in sync. */
 const MAX_MODELS = 6;
 
-export function ModelMixPanel({ since = 'all' }: ModelMixPanelProps) {
+export function ModelMixPanel({ since = 'all', providerMode = 'all' }: ModelMixPanelProps) {
+  const query = withProviderMode({ since }, providerMode);
+
   const { data, isLoading, isError } = useQuery<MetricSummary>({
-    queryKey: queryKeys.metrics({ since }),
-    queryFn: () => fetchMetrics({ since }),
+    queryKey: queryKeys.metrics(query),
+    queryFn: () => fetchMetrics(query),
   });
 
   // Build the same top-N + "other" rollup used by the donut chart so badge

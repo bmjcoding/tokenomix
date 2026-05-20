@@ -1011,8 +1011,9 @@ describe('aggregate() — subhourlySeries', () => {
     // Both rows land in the same :30 slot → exactly one bucket.
     expect(series).toHaveLength(1);
 
-    // series[0] is guaranteed by the length check above; use non-null assertion to satisfy TS.
-    const bucket = series[0]!;
+    // series[0] is guaranteed by the length check above.
+    const bucket = series[0];
+    if (!bucket) throw new Error('expected series[0] to be defined');
     // costUsd accumulated.
     expect(bucket.costUsd).toBeCloseTo(0.03 + 0.07, 10);
     // inputTokens accumulated.
@@ -1050,8 +1051,10 @@ describe('aggregate() — subhourlySeries', () => {
 
     // Ascending check: each entry's timestamp must be <= the next.
     for (let i = 1; i < series.length; i++) {
-      const cur = series[i]!;
-      const prev = series[i - 1]!;
+      const cur = series[i];
+      if (!cur) throw new Error(`expected series[${i}] to be defined`);
+      const prev = series[i - 1];
+      if (!prev) throw new Error(`expected series[${i - 1}] to be defined`);
       expect(cur.timestamp >= prev.timestamp).toBe(true);
     }
   });

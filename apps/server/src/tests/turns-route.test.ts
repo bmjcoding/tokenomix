@@ -24,6 +24,7 @@
  *   7. Each TurnBucket has all required fields with correct types
  *   8. durationMs is a number when turnDurationMs is set, null when not set
  *   9. ?limit capped at 50 even when parameter exceeds 50
+ *   10. malformed ?limit returns 400 instead of partial numeric coercion
  */
 
 import type { TokenRow, TurnBucket } from '@tokenomix/shared';
@@ -158,6 +159,19 @@ describe('GET /api/turns', () => {
     // Should be the 3 most expensive.
     expect((turns[0] as TurnBucket).costUsd).toBe(0.01);
     expect((turns[2] as TurnBucket).costUsd).toBe(0.008);
+  });
+
+  it('malformed ?limit returns 400 instead of partial numeric coercion', async () => {
+    const store = new IndexStore();
+    const app = buildTurnsApp(store);
+
+    for (const limit of ['-5', '0', '10abc']) {
+      const res = await app.request(`/api/turns?limit=${encodeURIComponent(limit)}`);
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe('limit must be a positive integer');
+    }
   });
 
   it('?since=7d filters out rows older than 7 days', async () => {

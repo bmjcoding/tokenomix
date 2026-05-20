@@ -6,13 +6,20 @@ import { useQuery } from '@tanstack/react-query';
 import type { MetricSummary } from '@tokenomix/shared';
 import { HeatmapChart } from '../charts/HeatmapChart.js';
 import { fetchMetrics } from '../lib/api.js';
+import { type ProviderMode, withProviderMode } from '../lib/provider-modes.js';
 import { queryKeys } from '../lib/query-keys.js';
 import { Card } from '../ui/Card.js';
 
-export function HeatmapPanel() {
+interface HeatmapPanelProps {
+  providerMode?: ProviderMode;
+}
+
+export function HeatmapPanel({ providerMode = 'all' }: HeatmapPanelProps) {
+  const query = withProviderMode({ since: 'all' }, providerMode);
+
   const { data, isLoading, isError } = useQuery<MetricSummary>({
-    queryKey: queryKeys.metrics({ since: 'all' }),
-    queryFn: () => fetchMetrics({ since: 'all' }),
+    queryKey: queryKeys.metrics(query),
+    queryFn: () => fetchMetrics(query),
   });
 
   return (
@@ -32,7 +39,14 @@ export function HeatmapPanel() {
           <p className="text-sm text-red-500 dark:text-red-400">Failed to load heatmap data.</p>
         </div>
       )}
-      {data && <HeatmapChart data={data.heatmapData} height={200} />}
+      {data && data.heatmapData.length > 0 && <HeatmapChart data={data.heatmapData} height={200} />}
+      {data && data.heatmapData.length === 0 && !isError && (
+        <div className="flex items-center justify-center h-48">
+          <p className="text-sm text-gray-500 dark:text-gray-400">
+            No activity in the selected window.
+          </p>
+        </div>
+      )}
     </Card>
   );
 }

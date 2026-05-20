@@ -118,7 +118,7 @@ export function formatDurationMinutes(minutes: number): string {
 export function formatSessionDate(iso: string | null): string {
   if (!iso) return '—';
   const d = new Date(iso);
-  if (isNaN(d.getTime())) return '—';
+  if (Number.isNaN(d.getTime())) return '—';
   const month = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   const year = d.getFullYear();
@@ -127,8 +127,18 @@ export function formatSessionDate(iso: string | null): string {
 
 /** Month name abbreviations (same approach as formatSessionDate's comment notes). */
 const MONTH_ABBR = [
-  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
 ];
 
 /**
@@ -152,7 +162,7 @@ export function formatDateRange(startIso: string | null, endIso: string | null):
   function fmtDate(iso: string | null): string | null {
     if (!iso) return null;
     const d = new Date(iso);
-    if (isNaN(d.getTime())) return null;
+    if (Number.isNaN(d.getTime())) return null;
     const month = MONTH_ABBR[d.getMonth()];
     const day = d.getDate();
     const year = d.getFullYear();

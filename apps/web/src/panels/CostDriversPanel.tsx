@@ -6,7 +6,7 @@
  */
 
 import type { MetricSummary } from '@tokenomix/shared';
-import { Brain, Layers, Route, Target } from 'lucide-react';
+import { Layers, Route, Target } from 'lucide-react';
 import { formatCurrency } from '../lib/formatters.js';
 import { Section } from '../ui/Section.js';
 import { MetricCard } from './MetricCard.js';
@@ -41,7 +41,7 @@ export function CostDriversPanel({ data }: CostDriversPanelProps) {
   );
 
   return (
-    <Section title="Cost Drivers" cols={4} gap="md">
+    <Section title="Cost Drivers" cols={3} gap="md">
       <MetricCard
         label="CACHE COST (30D)"
         value={formatCurrency(cacheCost)}
@@ -58,15 +58,6 @@ export function CostDriversPanel({ data }: CostDriversPanelProps) {
         deltaPercent={null}
         icon={<Target size={14} aria-hidden="true" className="shrink-0" />}
         tooltip="This is the share of spend from assistant output tokens. A high value points to verbose code generation, large explanations, or repeated rewrites. A low value with high cache cost means the bigger issue is context being carried or reread, not answer length."
-      />
-
-      <MetricCard
-        label="OPUS TO SONNET DELTA"
-        value={formatCurrency(data.opusToSonnetSavings30d)}
-        context="pricing-only model-routing hypothesis"
-        deltaPercent={null}
-        icon={<Brain size={14} aria-hidden="true" className="shrink-0" />}
-        tooltip="This estimates what the same Opus-priced token usage would have cost at Sonnet rates. It is not a recommendation by itself: only route work down if matched trials keep completion quality, review defects, test pass rate, and rework stable."
       />
 
       <MetricCard

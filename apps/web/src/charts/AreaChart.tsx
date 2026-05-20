@@ -7,9 +7,10 @@
  */
 
 import type { DailyBucket } from '@tokenomix/shared';
-import ReactECharts from 'echarts-for-react';
+import EChartsReactCore from 'echarts-for-react/esm/core';
 import { useMemo } from 'react';
 import {
+  echarts,
   getBaseOption,
   gridColor,
   mutedColor,
@@ -17,6 +18,7 @@ import {
   surfaceColorDark,
   surfaceColorLight,
 } from '../lib/echarts.js';
+import { formatCurrency } from '../lib/formatters.js';
 import { useTheme } from '../providers/ThemeProvider.js';
 
 export type AreaField = 'costUsd' | 'inputTokens' | 'outputTokens';
@@ -57,11 +59,17 @@ const FIELD_LABELS: Record<AreaField, string> = {
 };
 
 function formatValue(field: AreaField, v: number): string {
-  if (field === 'costUsd') return `$${v.toFixed(2)}`;
+  if (field === 'costUsd') return formatCurrency(v);
   return v.toLocaleString();
 }
 
-export function AreaChart({ data, field, height = 220, xAxisLabelFormat, tooltipHeaderFormat }: AreaChartProps) {
+export function AreaChart({
+  data,
+  field,
+  height = 220,
+  xAxisLabelFormat,
+  tooltipHeaderFormat,
+}: AreaChartProps) {
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme === 'dark';
 
@@ -129,7 +137,7 @@ export function AreaChart({ data, field, height = 220, xAxisLabelFormat, tooltip
           fontSize: 11,
           formatter: (val: number) =>
             field === 'costUsd'
-              ? `$${val.toFixed(2)}`
+              ? formatCurrency(val)
               : val >= 1000
                 ? `${(val / 1000).toFixed(0)}k`
                 : String(val),
@@ -162,5 +170,12 @@ export function AreaChart({ data, field, height = 220, xAxisLabelFormat, tooltip
     };
   }, [data, field, isDark, xAxisLabelFormat, tooltipHeaderFormat]);
 
-  return <ReactECharts option={option} style={{ height: `${height}px`, width: '100%' }} notMerge />;
+  return (
+    <EChartsReactCore
+      echarts={echarts}
+      option={option}
+      style={{ height: `${height}px`, width: '100%' }}
+      notMerge
+    />
+  );
 }

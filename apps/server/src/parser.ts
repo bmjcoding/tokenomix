@@ -11,7 +11,7 @@ import type { RawUsageEventParsed } from '@tokenomix/shared';
 import { RawUsageEventSchema } from '@tokenomix/shared';
 import { logEvent } from './logger.js';
 
-export type ParseSkipReason = 'invalid-json' | 'schema-mismatch' | 'file-open-error';
+type ParseSkipReason = 'invalid-json' | 'schema-mismatch' | 'file-open-error';
 
 interface ParseJSONLFileOptions {
   onSkip?: (reason: ParseSkipReason) => void;

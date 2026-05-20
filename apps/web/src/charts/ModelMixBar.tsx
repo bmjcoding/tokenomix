@@ -10,9 +10,9 @@
  */
 
 import type { ModelBucket } from '@tokenomix/shared';
-import ReactECharts from 'echarts-for-react';
+import EChartsReactCore from 'echarts-for-react/esm/core';
 import { useMemo } from 'react';
-import { getBaseOption, gridColor } from '../lib/echarts.js';
+import { echarts, getBaseOption, gridColor } from '../lib/echarts.js';
 import { useTheme } from '../providers/ThemeProvider.js';
 
 interface ModelMixBarProps {
@@ -153,5 +153,12 @@ export function ModelMixBar({ data, height = 240 }: ModelMixBarProps) {
     };
   }, [data, isDark]);
 
-  return <ReactECharts option={option} style={{ height: `${height}px`, width: '100%' }} notMerge />;
+  return (
+    <EChartsReactCore
+      echarts={echarts}
+      option={option}
+      style={{ height: `${height}px`, width: '100%' }}
+      notMerge
+    />
+  );
 }

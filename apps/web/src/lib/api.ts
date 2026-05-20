@@ -16,8 +16,10 @@ import type {
   RecommendationChatStatus,
   SessionDetail,
   SessionSummary,
-  TurnBucket,
+  UsageSourceProviderFilter,
 } from '@tokenomix/shared';
+
+const LOCAL_ACTION_HEADERS = { 'X-Tokenomix-Local-Action': '1' } as const;
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -62,18 +64,6 @@ async function apiFetch<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-async function apiPost<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    throw new Error(await responseErrorMessage(res, path));
-  }
-  return res.json() as Promise<T>;
-}
-
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -85,19 +75,15 @@ async function apiPost<T>(path: string, body: unknown): Promise<T> {
  * and retro forward-compatibility stubs.
  */
 export async function fetchMetrics(query: MetricsQuery): Promise<MetricSummary> {
-  const qs = buildQuery({ since: query.since, project: query.project });
+  const qs = buildQuery({ since: query.since, project: query.project, provider: query.provider });
   return apiFetch<MetricSummary>(`/api/metrics${qs}`);
 }
 
-export async function fetchRecommendationChatStatus(): Promise<RecommendationChatStatus> {
-  return apiFetch<RecommendationChatStatus>('/api/recommendations/chat/status');
-}
-
-export async function sendRecommendationChat(params: {
-  message: string;
-  history: RecommendationChatMessage[];
-}): Promise<RecommendationChatResponse> {
-  return apiPost<RecommendationChatResponse>('/api/recommendations/chat', params);
+export async function fetchRecommendationChatStatus(
+  provider?: UsageSourceProviderFilter
+): Promise<RecommendationChatStatus> {
+  const qs = buildQuery({ provider });
+  return apiFetch<RecommendationChatStatus>(`/api/recommendations/chat/status${qs}`);
 }
 
 type RecommendationChatStreamEvent =
@@ -107,18 +93,24 @@ type RecommendationChatStreamEvent =
   | { type: 'error'; error: string };
 
 export async function streamRecommendationChat(
-  params: { message: string },
+  params: {
+    message: string;
+    history?: RecommendationChatMessage[];
+    provider?: UsageSourceProviderFilter;
+  },
   handlers: {
     onStart?: (sessionSeeded: boolean) => void;
     onDelta: (text: string) => void;
     onDone: (response: RecommendationChatResponse) => void;
     onError: (message: string) => void;
-  }
+  },
+  signal?: AbortSignal
 ): Promise<void> {
   const res = await fetch('/api/recommendations/chat/stream', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(params),
+    ...(signal !== undefined && { signal }),
   });
 
   if (!res.ok) {
@@ -206,27 +198,26 @@ export async function fetchSessions(
   const qs = buildQuery({
     since: query.since,
     project: query.project,
+    provider: query.provider,
     limit: query.limit,
   });
   return apiFetch<SessionSummary[]>(`/api/sessions${qs}`);
 }
 
 /**
- * GET /api/turns
+ * GET /api/sessions/active
  *
- * Returns an array of TurnBucket objects sorted by costUsd descending.
- * The `limit` parameter controls the max number of turns returned (default 10, max 50 on server).
- * The `since` parameter accepts the same values as MetricsQuery.since.
+ * Returns an array of SessionSummary objects filtered by recency server-side,
+ * sorted by lastTs descending.
+ *
+ * @param params.windowMs - Lookback window in ms (positive int, max 86400000). Default: server default.
+ * @param params.limit    - Max sessions to return (positive int, max 100). Default: server default.
  */
-export async function fetchTurns(
-  params: { since?: string; project?: string; limit?: number } = {}
-): Promise<TurnBucket[]> {
-  const qs = buildQuery({
-    since: params.since,
-    project: params.project,
-    limit: params.limit,
-  });
-  return apiFetch<TurnBucket[]>(`/api/turns${qs}`);
+export async function fetchActiveSessions(
+  params: { windowMs?: number; limit?: number } = {}
+): Promise<SessionSummary[]> {
+  const qs = buildQuery({ windowMs: params.windowMs, limit: params.limit });
+  return apiFetch<SessionSummary[]>(`/api/sessions/active${qs}`);
 }
 
 /**
@@ -247,34 +238,9 @@ export async function fetchSessionDetail(sessionId: string): Promise<SessionDeta
  * Throws on non-2xx.
  */
 export async function revealSessionJsonl(sessionId: string): Promise<void> {
-  const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/reveal`, {
-    method: 'POST',
-  });
+  const path = `/api/sessions/${encodeURIComponent(sessionId)}/reveal`;
+  const res = await fetch(path, { method: 'POST', headers: LOCAL_ACTION_HEADERS });
   if (!res.ok) {
-    throw new Error(`reveal failed: ${res.status}`);
+    throw new Error(await responseErrorMessage(res, path));
   }
-}
-
-/**
- * GET /api/health
- *
- * Returns a lightweight health check object.
- * Throws on non-2xx (server unreachable or in error state).
- */
-export async function fetchHealth(): Promise<{
-  ok: boolean;
-  projectsDir: string;
-  isReady: boolean;
-  indexedRows: number;
-  lastUpdated: string;
-  lastRescanTs: string | null;
-}> {
-  return apiFetch<{
-    ok: boolean;
-    projectsDir: string;
-    isReady: boolean;
-    indexedRows: number;
-    lastUpdated: string;
-    lastRescanTs: string | null;
-  }>('/api/health');
 }

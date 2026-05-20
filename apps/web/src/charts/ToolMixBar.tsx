@@ -9,9 +9,9 @@
  */
 
 import type { ToolBucket } from '@tokenomix/shared';
-import ReactECharts from 'echarts-for-react';
+import EChartsReactCore from 'echarts-for-react/esm/core';
 import { useMemo } from 'react';
-import { getBaseOption, gridColor } from '../lib/echarts.js';
+import { echarts, getBaseOption, gridColor } from '../lib/echarts.js';
 import { useTheme } from '../providers/ThemeProvider.js';
 
 interface ToolMixBarProps {
@@ -159,5 +159,12 @@ export function ToolMixBar({ data, height = 240 }: ToolMixBarProps) {
     };
   }, [data, isDark]);
 
-  return <ReactECharts option={option} style={{ height: `${height}px`, width: '100%' }} notMerge />;
+  return (
+    <EChartsReactCore
+      echarts={echarts}
+      option={option}
+      style={{ height: `${height}px`, width: '100%' }}
+      notMerge
+    />
+  );
 }
