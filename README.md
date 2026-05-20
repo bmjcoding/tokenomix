@@ -1,8 +1,10 @@
 # tokenomix
 
-Interactive TypeScript dashboard for Claude Code token usage. The server reads
-Claude Code JSONL session logs from `~/.claude/projects`, prices usage locally,
-and serves a localhost-only API consumed by the Vite/React dashboard.
+Interactive TypeScript dashboard for AI coding assistant token usage. The
+server reads Claude Code JSONL session logs from `~/.claude/projects`, OpenAI
+Codex session logs from `~/.codex/sessions`, and local-model telemetry,
+normalizes them into one local metrics index, and serves a localhost-only API
+consumed by the Vite/React dashboard.
 
 ## Layout
 
@@ -46,7 +48,10 @@ Defaults:
 
 - Web dashboard: `http://127.0.0.1:3000`
 - API server: `http://127.0.0.1:3001`
-- Data source: `~/.claude/projects/**/*.jsonl`
+- Data sources:
+  - Claude Code: `~/.claude/projects/**/*.jsonl`
+  - OpenAI Codex: `~/.codex/sessions/**/*.jsonl` and `~/.codex/archived_sessions/*.jsonl`
+  - Local models: `~/.tokenomix/local-models/**/*.jsonl`
 
 Set `PORT_BASE` to move both ports. The web server uses `PORT_BASE`; the API
 server uses `PORT_BASE + 1`.
@@ -65,7 +70,7 @@ corepack pnpm@10.33.0 lint         # Biome
 corepack pnpm@10.33.0 test         # Vitest
 corepack pnpm@10.33.0 start        # server only, built output
 corepack pnpm@10.33.0 start:full   # server + Vite preview
-corepack pnpm@10.33.0 verify:pricing
+corepack pnpm@10.33.0 verify:pricing # official Anthropic + OpenAI/Codex pricing checks
 ```
 
 ## Stack
@@ -86,6 +91,40 @@ corepack pnpm@10.33.0 verify:pricing
 
 By default, tokenomix estimates cost from Claude Code JSONL usage using a static
 public Anthropic catalog committed in `packages/shared/src/pricing.ts`.
+
+OpenAI Codex rows are estimated from the static OpenAI API pricing catalog and
+Codex rate card when the local model ID is recognized. Current coverage includes
+`gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, and `gpt-5.2`.
+Research-preview or unknown OpenAI Codex model IDs remain token-counted but
+unpriced, and the pricing audit lists those model IDs explicitly. GPT-5.5 and
+GPT-5.4 rows apply OpenAI long-context pricing when captured input exceeds
+272,000 tokens.
+
+OpenAI Codex pricing is intentionally disclosed as a standard-speed estimate.
+Local Codex JSONL currently does not include a per-turn service-tier marker, so
+tokenomix cannot reconstruct Fast mode billing from logs alone. This matters
+for `gpt-5.5` and `gpt-5.4`, where OpenAI documents higher Fast mode credit
+rates. OpenAI Codex web-search calls are counted as tool/session activity but
+are not separately added to Codex cost because the Codex rate card is token-based
+and the local logs do not identify API-key vs ChatGPT billing mode for tool-call
+fees.
+
+For controlled pilot gates, provider caveats, and local-model adapter examples,
+see `docs/pilot-readiness.md`.
+
+Local-model rows are priced as counterfactual Claude Sonnet-equivalent cost in
+the primary dashboard cost field. This is not actual spend; local API spend is
+`$0` before hardware, power, and operator time. Each local row also carries a
+OpenAI Codex/GPT-5.5-equivalent estimate for comparison surfaces.
+
+## Ask AI Provider Mode
+
+The floating Ask AI panel follows the selected provider mode:
+
+- `Claude Code` and `All providers` use the local Claude Code subprocess runner.
+- `OpenAI Codex` uses `codex exec --json` through the local Codex CLI.
+- `Local Models` hides Ask AI for now; local-model telemetry remains visible in
+  the dashboard/report and in all-provider aggregates.
 
 For Amazon Bedrock deployments:
 
@@ -133,10 +172,10 @@ corepack pnpm@10.33.0 dev
 
 The chat route runs Claude Code in print mode with tools disabled, a bounded
 turn count, and the configured budget cap. Streamed turns use deterministic
-retrieval over the existing in-memory index from `~/.claude/projects`: global
-optimization context for the initial seed, then targeted project/session/turn
-context for follow-up questions. Follow-up streamed turns resume the same
-server-process Claude Code session until the server is stopped.
+retrieval over the existing in-memory usage index: global optimization context
+for the initial seed, then targeted project/session/turn context for follow-up
+questions. Follow-up streamed turns resume the same server-process Claude Code
+session until the server is stopped.
 
 `TOKENOMIX_CLAUDE_CHAT_EFFORT` is optional and accepts Claude Code effort
 levels such as `low`, `medium`, or `high`. `TOKENOMIX_CLAUDE_CHAT_BARE=1`
@@ -186,13 +225,47 @@ window size is controlled by the `ACTIVE_SESSION_WINDOW_MS` constant in
 ## Development Notes
 
 - The server binds to `127.0.0.1` only.
-- The startup scan and file watcher index `~/.claude/projects/**/*.jsonl`.
+- The startup scan and file watcher index Claude Code, Codex, and local-model
+  JSONL sources.
 - Usage rows deduplicate by `(requestId, message.id)` when both identifiers are
-  present.
+  present for Claude Code. Codex rows deduplicate by session, timestamp, and
+  cumulative token total. Local-model rows deduplicate by session, timestamp,
+  model ID, and token totals.
 - Daily and weekly buckets use system-local time, matching how users inspect
-  Claude Code activity by day.
+  coding-assistant activity by day.
 - The dashboard intentionally avoids chat-content ingestion. Tool/file-touch
   policy is documented in `docs/adr/0002-tool-event-ingestion-and-files-touched-policy.md`.
+
+## Local Model Tracking
+
+Local models are indexed from `~/.tokenomix/local-models/**/*.jsonl`. Each line
+can be:
+
+- a normalized Tokenomix usage record with `timestamp`, `runtime`, `session_id`,
+  `cwd`, `model`, `usage.input_tokens`, and `usage.output_tokens`;
+- a final Ollama response chunk with `created_at`, `model`,
+  `prompt_eval_count`, `eval_count`, and nanosecond duration fields; or
+- an LM Studio response with `model`, `stats.input_tokens`,
+  `stats.total_output_tokens`, `stats.tokens_per_second`, and
+  `stats.time_to_first_token_seconds`.
+- an OpenAI-compatible response with numeric `created`, `model`, and
+  `usage.prompt_tokens` / `usage.completion_tokens`. Cached-token details are
+  read from `usage.prompt_tokens_details.cached_tokens` when present.
+- an OpenCode-style `step_finish` JSONL event when the line includes a model ID
+  plus `part.tokens.input` and `part.tokens.output`.
+
+Useful normalized fields include `cached_input_tokens`, `duration_ms`,
+`time_to_first_token_ms`, `prompt_eval_duration_ms`, `eval_duration_ms`,
+`load_duration_ms`, `tokens_per_second`, `tool_uses`, and `tool_errors`.
+
+If the runtime does not emit usage, tokenomix can only estimate usage by running
+model-specific tokenizers over prompts and responses. That is possible for
+families such as Gemma and Qwen when their tokenizer is available locally, but
+it has two tradeoffs: it requires reading prompt/response text, and counts can
+drift from the serving runtime when chat templates, system prompts, tool
+schemas, image inputs, or speculative decoding differ from the tokenizer pass.
+The safer design is to ingest runtime usage logs first and add tokenizer
+fallbacks only as an explicit opt-in.
 
 ## Watcher Configuration
 

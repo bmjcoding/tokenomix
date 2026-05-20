@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `docs/pilot-readiness.md` documents the controlled-pilot gates,
+  provider-specific accuracy boundaries, OpenAI Codex pricing caveats, and
+  local-model telemetry adapter contract.
+- `verify:pricing` now checks OpenAI/Codex pricing against official OpenAI API,
+  Codex rate-card, model-page long-context, and Codex Fast mode sources in
+  addition to the existing Anthropic pricing verifier.
+- Local-model ingest accepts OpenCode-style `step_finish` JSONL events when the
+  line includes a model ID and token counts.
 - Hero date range selector: single calendar pill trigger with active-range label, opening a single-month popover with `PREV MO. | MTD | YTD` quick presets and a custom range picker. Future dates disabled. Popover stays open during range selection; dismisses via outside-click, Escape, or trigger toggle.
 - New dependency: `react-day-picker@9.14.0` (apps/web), pinned exact. Theming is via the `classNames` prop with project Tailwind tokens; no external stylesheet imported.
 
@@ -18,6 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Provider label changed from "Codex" to "OpenAI Codex" across the dashboard.
+- OpenAI Codex pricing now applies documented long-context rates for GPT-5.5 and
+  GPT-5.4 when captured input exceeds 272,000 tokens, and rate-card-only Codex
+  models are marked as USD-equivalent estimates instead of API-catalog rows.
+- Ask AI now follows provider mode: OpenAI Codex mode uses `codex exec --json`,
+  while Local Models mode hides the chat entry point until a local-model chat
+  runner is implemented.
+- Hero card: period switcher pill is now anchored in the card's top-right corner, aligned with the CURRENT SPEND label, eliminating the empty top bar that previously pushed the hero number down.
 - Ask AI chat panel now minimizes when clicking outside or pressing Escape (suppressed while a response is streaming, so in-flight Claude Code responses are never orphaned from view).
 - Hero calendar popover uses a smoked-glass surface (`bg-white/55` light, `bg-gray-950/50` dark, `backdrop-blur-xl`, `backdrop-saturate-150`) with a subtle ring highlight. Text contrast verified above WCAG AA on all popover labels.
 

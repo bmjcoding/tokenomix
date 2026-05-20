@@ -22,9 +22,9 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
-import type { SessionSummary } from '@tokenomix/shared';
-import { X } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import type { SessionSummary, UsageSourceProvider } from '@tokenomix/shared';
+import { Cpu, X } from 'lucide-react';
+import { type ComponentType, useEffect, useRef, useState } from 'react';
 import { ACTIVE_SESSION_WINDOW_MS } from '../lib/activeSessionConstants.js';
 import { fetchActiveSessions } from '../lib/api.js';
 import {
@@ -35,6 +35,7 @@ import {
 } from '../lib/formatters.js';
 import { queryKeys } from '../lib/query-keys.js';
 import { useMotionPreference } from '../providers/MotionPreferenceProvider.js';
+import { ClaudeMonoIcon, CodexMonoIcon } from '../ui/BrandIcons.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -44,6 +45,25 @@ import { useMotionPreference } from '../providers/MotionPreferenceProvider.js';
 function computeSessionAge(nowMs: number, session: SessionSummary): number | null {
   if (session.firstTs === null) return null;
   return Math.max(0, nowMs - new Date(session.firstTs).getTime());
+}
+
+type ProviderMark = {
+  Icon: ComponentType<{ className?: string; 'aria-hidden'?: boolean }>;
+  label: string;
+};
+
+/** Maps a session's source provider to a monochrome watermark icon. */
+function providerMark(source: UsageSourceProvider | undefined): ProviderMark | null {
+  switch (source) {
+    case 'claude-code':
+      return { Icon: ClaudeMonoIcon, label: 'Claude Code' };
+    case 'codex':
+      return { Icon: CodexMonoIcon, label: 'OpenAI Codex' };
+    case 'local-models':
+      return { Icon: Cpu, label: 'Local Models' };
+    default:
+      return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -188,7 +208,10 @@ export default function ActiveSessionsRail() {
                 const turnLabel = s.events === 1 ? '1 turn' : `${s.events} turns`;
                 const tokenCount = s.inputTokens + s.outputTokens;
                 const formattedTokens = formatTokens(tokenCount);
-                const ariaLabel = `Open session ${id7}, project ${displayName}, ${cost} spend, running for ${ageLabel}, ${formattedTokens} input + output tokens`;
+                const mark = providerMark(s.sourceProvider);
+                const ariaLabel = mark
+                  ? `Open ${mark.label} session ${id7}, project ${displayName}, ${cost} spend, running for ${ageLabel}, ${formattedTokens} input + output tokens`
+                  : `Open session ${id7}, project ${displayName}, ${cost} spend, running for ${ageLabel}, ${formattedTokens} input + output tokens`;
 
                 return (
                   <li key={s.sessionId}>
@@ -196,34 +219,50 @@ export default function ActiveSessionsRail() {
                       to="/report/$sessionId"
                       params={{ sessionId: s.sessionId }}
                       aria-label={ariaLabel}
-                      className="block rounded-xl border border-gray-200 bg-gray-50 p-3 transition-colors hover:bg-gray-100 dark:border-gray-800 dark:bg-gray-900 dark:hover:bg-gray-800"
+                      className="relative block overflow-hidden rounded-xl border border-gray-200 bg-gray-50 p-3 transition-colors hover:bg-gray-100 dark:border-gray-800 dark:bg-gray-900 dark:hover:bg-gray-800"
                     >
-                      {/* Top row: project name + cost */}
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="truncate font-medium text-sm text-gray-950 dark:text-white">
-                          {displayName}
+                      {/* Provider watermark — centred ghost mark behind text.
+                          Matches the hero token-count ghost treatment
+                          (text-gray-300 / dark:text-gray-700). pointer-events-none
+                          keeps the parent <Link> clickable. */}
+                      {mark && (
+                        <span
+                          aria-hidden="true"
+                          className="pointer-events-none absolute inset-0 z-0 flex items-center justify-center text-gray-300 dark:text-gray-700"
+                        >
+                          <mark.Icon className="h-12 w-12" aria-hidden />
                         </span>
-                        <span className="shrink-0 tabular-nums text-sm text-gray-950 dark:text-white">
-                          {cost}
-                        </span>
-                      </div>
-                      {/* Mid row: short session id + session age */}
-                      <div className="mt-0.5 flex items-center justify-between gap-2">
-                        <span className="font-mono text-xs text-gray-500 dark:text-gray-400">
-                          {id7}&hellip;
-                        </span>
-                        <span className="shrink-0 text-xs text-gray-500 dark:text-gray-400">
-                          {ageLabel}
-                        </span>
-                      </div>
-                      {/* Bottom row: turn count + token count */}
-                      <div className="mt-0.5 flex items-center justify-between gap-2">
-                        <span className="text-xs text-gray-500 dark:text-gray-400">
-                          {turnLabel}
-                        </span>
-                        <span className="shrink-0 tabular-nums text-xs text-gray-500 dark:text-gray-400">
-                          {formattedTokens} tok
-                        </span>
+                      )}
+
+                      {/* Content layer — relative + z-10 to stack above the watermark. */}
+                      <div className="relative z-10">
+                        {/* Top row: project name + cost */}
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="truncate font-medium text-sm text-gray-950 dark:text-white">
+                            {displayName}
+                          </span>
+                          <span className="shrink-0 tabular-nums text-sm text-gray-950 dark:text-white">
+                            {cost}
+                          </span>
+                        </div>
+                        {/* Mid row: short session id + session age */}
+                        <div className="mt-0.5 flex items-center justify-between gap-2">
+                          <span className="font-mono text-xs text-gray-500 dark:text-gray-400">
+                            {id7}&hellip;
+                          </span>
+                          <span className="shrink-0 text-xs text-gray-500 dark:text-gray-400">
+                            {ageLabel}
+                          </span>
+                        </div>
+                        {/* Bottom row: turn count + token count */}
+                        <div className="mt-0.5 flex items-center justify-between gap-2">
+                          <span className="text-xs text-gray-500 dark:text-gray-400">
+                            {turnLabel}
+                          </span>
+                          <span className="shrink-0 tabular-nums text-xs text-gray-500 dark:text-gray-400">
+                            {formattedTokens} tok
+                          </span>
+                        </div>
                       </div>
                     </Link>
                   </li>

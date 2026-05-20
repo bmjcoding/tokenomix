@@ -1,8 +1,8 @@
 /**
- * RecommendationChatPanel — local Claude Code analyst widget.
+ * RecommendationChatPanel — local provider-backed analyst widget.
  *
- * The browser talks only to the local tokenomix server. Claude Code provider
- * settings stay behind the backend route.
+ * The browser talks only to the local tokenomix server. Provider settings stay
+ * behind the backend route.
  */
 
 import { useQuery } from '@tanstack/react-query';
@@ -19,16 +19,29 @@ import {
   useState,
 } from 'react';
 import { fetchRecommendationChatStatus, streamRecommendationChat } from '../lib/api.js';
+import type { ProviderMode } from '../lib/provider-modes.js';
 import { queryKeys } from '../lib/query-keys.js';
+import { useProviderMode } from '../lib/useProviderMode.js';
 
 function cx(...classes: (string | false | null | undefined)[]): string {
   return classes.filter(Boolean).join(' ');
 }
 
-function statusLabel(available: boolean | undefined): string {
-  if (available === true) return 'Claude Code ready';
-  if (available === false) return 'Claude Code unavailable';
-  return 'Checking Claude Code';
+function chatRuntimeLabel(providerMode: ProviderMode): string {
+  return providerMode === 'codex' ? 'OpenAI Codex' : 'Claude Code';
+}
+
+function usageScopeLabel(providerMode: ProviderMode): string {
+  if (providerMode === 'codex') return 'OpenAI Codex usage';
+  if (providerMode === 'claude-code') return 'Claude Code usage';
+  return 'usage';
+}
+
+function statusLabel(available: boolean | undefined, providerMode: ProviderMode): string {
+  const runtime = chatRuntimeLabel(providerMode);
+  if (available === true) return `${runtime} ready`;
+  if (available === false) return `${runtime} unavailable`;
+  return `Checking ${runtime}`;
 }
 
 type LocalChatMessage = RecommendationChatMessage & {
@@ -176,6 +189,7 @@ const AssistantMarkdown = lazy(async () => {
 });
 
 export function RecommendationChatPanel() {
+  const { providerMode } = useProviderMode();
   const [draft, setDraft] = useState('');
   const [messages, setMessages] = useState<LocalChatMessage[]>([]);
   const [isOpen, setIsOpen] = useState(false);
@@ -183,8 +197,11 @@ export function RecommendationChatPanel() {
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const providerModeRef = useRef(providerMode);
   const [thinkingElapsedSeconds, setThinkingElapsedSeconds] = useState<number | null>(null);
   const thinkingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const isLocalModelMode = providerMode === 'local-models';
+  const runtimeLabel = chatRuntimeLabel(providerMode);
 
   const clearThinkingTimer = useCallback(() => {
     if (thinkingIntervalRef.current) {
@@ -195,6 +212,18 @@ export function RecommendationChatPanel() {
   }, []);
 
   useEffect(() => () => clearThinkingTimer(), [clearThinkingTimer]);
+
+  useEffect(() => {
+    if (providerModeRef.current === providerMode) return;
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    clearThinkingTimer();
+    setDraft('');
+    setMessages([]);
+    setIsSending(false);
+    setIsOpen(false);
+    providerModeRef.current = providerMode;
+  }, [providerMode, clearThinkingTimer]);
 
   // Abort any in-flight stream request on unmount to prevent fetch leaks.
   useEffect(() => {
@@ -235,15 +264,21 @@ export function RecommendationChatPanel() {
   }, [isOpen, isSending]);
 
   const statusQuery = useQuery({
-    queryKey: queryKeys.recommendationChatStatus(),
-    queryFn: fetchRecommendationChatStatus,
+    queryKey: queryKeys.recommendationChatStatus(providerMode),
+    queryFn: () => fetchRecommendationChatStatus(providerMode),
+    enabled: !isLocalModelMode,
     staleTime: 60_000,
     retry: 1,
   });
 
   const canSubmit = useMemo(() => {
-    return draft.trim().length > 0 && statusQuery.data?.available === true && !isSending;
-  }, [draft, statusQuery.data?.available, isSending]);
+    return (
+      !isLocalModelMode &&
+      draft.trim().length > 0 &&
+      statusQuery.data?.available === true &&
+      !isSending
+    );
+  }, [draft, statusQuery.data?.available, isSending, isLocalModelMode]);
   const scrollSignal = messages.map((message) => message.content.length).join(':');
 
   useEffect(() => {
@@ -279,7 +314,7 @@ export function RecommendationChatPanel() {
     setIsSending(true);
 
     void streamRecommendationChat(
-      { message, history },
+      { message, history, provider: providerMode },
       {
         onStart: () => {
           clearThinkingTimer();
@@ -318,7 +353,7 @@ export function RecommendationChatPanel() {
           setMessages((current) =>
             current.map((entry) =>
               entry.id === assistantId
-                ? { ...entry, content: error || 'Claude Code request failed.' }
+                ? { ...entry, content: error || `${runtimeLabel} request failed.` }
                 : entry
             )
           );
@@ -338,7 +373,7 @@ export function RecommendationChatPanel() {
           entry.id === assistantId
             ? {
                 ...entry,
-                content: error instanceof Error ? error.message : 'Claude Code request failed.',
+                content: error instanceof Error ? error.message : `${runtimeLabel} request failed.`,
               }
             : entry
         )
@@ -363,6 +398,8 @@ export function RecommendationChatPanel() {
   const toggleBtnFocusCls =
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 dark:focus-visible:ring-white/70 focus-visible:ring-offset-2';
 
+  if (isLocalModelMode) return null;
+
   return (
     <div ref={containerRef} className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-3">
       {isOpen && (
@@ -380,7 +417,9 @@ export function RecommendationChatPanel() {
               </div>
               <div className="flex items-center gap-2">
                 <span className="inline-flex items-center rounded-full border border-gray-200 dark:border-black/80 bg-gray-100 dark:bg-black/30 px-2 py-0.5 text-xs font-medium text-primary dark:text-primary-light">
-                  {statusQuery.isLoading ? 'Checking' : statusLabel(statusQuery.data?.available)}
+                  {statusQuery.isLoading
+                    ? 'Checking'
+                    : statusLabel(statusQuery.data?.available, providerMode)}
                 </span>
                 <button
                   type="button"
@@ -399,7 +438,7 @@ export function RecommendationChatPanel() {
               <div className="flex items-start gap-2 rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-100 dark:bg-gray-950 px-3 py-2 text-sm text-gray-600 dark:text-gray-400">
                 <AlertCircle size={16} aria-hidden="true" className="mt-0.5 shrink-0" />
                 <span>
-                  {statusQuery.data.message ?? 'Claude Code is not available in this process.'}
+                  {statusQuery.data.message ?? `${runtimeLabel} is not available in this process.`}
                 </span>
               </div>
             )}
@@ -410,7 +449,8 @@ export function RecommendationChatPanel() {
             >
               {messages.length === 0 ? (
                 <div className="flex h-full items-center justify-center px-4 text-center text-sm text-gray-500 dark:text-gray-500">
-                  Ask about your Claude Code usage, cost drivers, or optimization opportunities.
+                  Ask about your {usageScopeLabel(providerMode)}, cost drivers, or optimization
+                  opportunities.
                 </div>
               ) : (
                 <div className="space-y-3 p-3">

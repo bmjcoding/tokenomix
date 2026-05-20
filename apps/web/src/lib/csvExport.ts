@@ -18,6 +18,7 @@
 
 import type { DailyBucket, SessionSummary } from '@tokenomix/shared';
 import { formatDurationNullable, formatSessionDate } from './formatters.js';
+import { providerModeLabel } from './provider-modes.js';
 
 // ---------------------------------------------------------------------------
 // RFC 4180 helpers (exported for testing)
@@ -72,6 +73,7 @@ export const SESSIONS_HEADERS = [
   'Date',
   'Project',
   'ProjectName',
+  'Provider',
   'SessionId',
   'CostUSD',
   'InputTokens',
@@ -105,6 +107,7 @@ export function buildSessionsRows(
         formatSessionDate(s.firstTs),
         s.project,
         s.projectName,
+        providerModeLabel(s.sourceProvider ?? 'claude-code'),
         s.sessionId,
         s.costUsd,
         s.inputTokens,

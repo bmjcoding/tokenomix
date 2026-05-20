@@ -59,6 +59,12 @@ function providerLabel(provider: PricingProvider): string {
       return 'AWS Bedrock';
     case 'internal_gateway':
       return 'Internal Gateway';
+    case 'openai_api':
+      return 'OpenAI API';
+    case 'local_equivalent':
+      return 'Local Equivalent';
+    case 'mixed_static_catalogs':
+      return 'Mixed Static Catalogs';
   }
 }
 
@@ -70,6 +76,12 @@ function costBasisText(audit: PricingAuditSummary): string {
       return 'Internal gateway mode is enabled, but at least one row is still locally estimated because a rated gateway cost field was not present.';
     case 'estimated_from_jsonl_usage_static_bedrock_catalog':
       return 'Cost totals are estimated from AWS Bedrock public pricing and Claude Code usage logs.';
+    case 'estimated_from_jsonl_usage_static_openai_catalog':
+      return 'Cost totals are estimated from OpenAI API pricing, the Codex rate card, and OpenAI Codex usage logs.';
+    case 'counterfactual_local_model_usage_static_public_catalogs':
+      return 'Cost totals are counterfactual estimates for local-model usage, not actual local runtime spend.';
+    case 'mixed_static_public_catalogs':
+      return 'Cost totals are estimated from multiple static public pricing catalogs.';
     case 'estimated_from_jsonl_usage_static_anthropic_catalog':
       return 'Cost totals are estimated from Anthropic public pricing and Claude Code usage logs.';
   }
@@ -251,18 +263,25 @@ export function HeroSpend({ data, period, customRange, switcher }: HeroSpendProp
   const cacheShare30d = data.costUsd30d > 0 ? (cacheCost30d / data.costUsd30d) * 100 : 0;
 
   const periodLabel = periodDisplayLabel(period, currentRange);
+  const hasLocalCounterfactual =
+    (data.localEquivalentClaudeCostUsd ?? 0) > 0 || (data.localEquivalentClaudeCostUsd30d ?? 0) > 0;
+  const spendLabel =
+    data.pricingAudit.provider === 'local_equivalent'
+      ? 'Equivalent Spend'
+      : hasLocalCounterfactual
+        ? 'Blended Estimate'
+        : 'Current Spend';
 
   return (
-    <Card as="section" aria-label={`Current spend — ${periodLabel}`} className="p-6">
-      {/* ── Top bar: period switcher (right-aligned) ── */}
-      {switcher && <div className="flex justify-end mb-4">{switcher}</div>}
+    <Card as="section" aria-label={`${spendLabel} — ${periodLabel}`} className="p-6 relative">
+      {switcher && <div className="absolute top-6 right-6 z-10">{switcher}</div>}
 
       <div className="grid grid-cols-1 lg:grid-cols-[2fr_3fr] gap-8">
         {/* ── Left column: primary $ metric + satellite cost driver ── */}
         <div className="min-w-0">
           {/* Label */}
           <p className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-4">
-            Current Spend · {periodLabel}
+            {spendLabel} · {periodLabel}
           </p>
 
           {/* Hero number + inline warning icon */}

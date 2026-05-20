@@ -16,6 +16,7 @@ import type {
   RecommendationChatStatus,
   SessionDetail,
   SessionSummary,
+  UsageSourceProviderFilter,
 } from '@tokenomix/shared';
 
 const LOCAL_ACTION_HEADERS = { 'X-Tokenomix-Local-Action': '1' } as const;
@@ -74,12 +75,15 @@ async function apiFetch<T>(path: string): Promise<T> {
  * and retro forward-compatibility stubs.
  */
 export async function fetchMetrics(query: MetricsQuery): Promise<MetricSummary> {
-  const qs = buildQuery({ since: query.since, project: query.project });
+  const qs = buildQuery({ since: query.since, project: query.project, provider: query.provider });
   return apiFetch<MetricSummary>(`/api/metrics${qs}`);
 }
 
-export async function fetchRecommendationChatStatus(): Promise<RecommendationChatStatus> {
-  return apiFetch<RecommendationChatStatus>('/api/recommendations/chat/status');
+export async function fetchRecommendationChatStatus(
+  provider?: UsageSourceProviderFilter
+): Promise<RecommendationChatStatus> {
+  const qs = buildQuery({ provider });
+  return apiFetch<RecommendationChatStatus>(`/api/recommendations/chat/status${qs}`);
 }
 
 type RecommendationChatStreamEvent =
@@ -89,7 +93,11 @@ type RecommendationChatStreamEvent =
   | { type: 'error'; error: string };
 
 export async function streamRecommendationChat(
-  params: { message: string; history?: RecommendationChatMessage[] },
+  params: {
+    message: string;
+    history?: RecommendationChatMessage[];
+    provider?: UsageSourceProviderFilter;
+  },
   handlers: {
     onStart?: (sessionSeeded: boolean) => void;
     onDelta: (text: string) => void;
@@ -190,6 +198,7 @@ export async function fetchSessions(
   const qs = buildQuery({
     since: query.since,
     project: query.project,
+    provider: query.provider,
     limit: query.limit,
   });
   return apiFetch<SessionSummary[]>(`/api/sessions${qs}`);

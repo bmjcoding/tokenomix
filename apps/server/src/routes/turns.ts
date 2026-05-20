@@ -9,6 +9,7 @@
  *             Sentinel 'all' is treated as no filter (same as omitting since).
  *   limit   — max turns to return (default: 10, capped at 50)
  *   project — project path substring filter (optional)
+ *   provider — claude-code | codex | local-models | all (optional)
  *
  * Each entry in the response corresponds to one TokenRow (one assistant turn).
  * The timestamp field uses hour-level precision and includes the local UTC
@@ -19,7 +20,7 @@
 import type { MetricsQuery, TurnBucket } from '@tokenomix/shared';
 import { Hono } from 'hono';
 import type { IndexStore } from '../index-store.js';
-import { parsePositiveIntegerParam } from './query-params.js';
+import { parsePositiveIntegerParam, parseUsageProviderFilterParam } from './query-params.js';
 
 export function turnsRoute(store: IndexStore): Hono {
   const app = new Hono();
@@ -28,6 +29,7 @@ export function turnsRoute(store: IndexStore): Hono {
     const limitParam = c.req.query('limit');
     const since = c.req.query('since');
     const project = c.req.query('project');
+    const provider = c.req.query('provider');
 
     // Reject query params that exceed the maximum allowed length (200 chars)
     // to prevent log pollution and potential ReDoS from crafted patterns.
@@ -47,6 +49,11 @@ export function turnsRoute(store: IndexStore): Hono {
     // 'all' is a sentinel meaning no time filter — treat as absent.
     if (since && since !== 'all') query.since = since;
     if (project) query.project = project;
+    const parsedProvider = parseUsageProviderFilterParam(provider);
+    if (parsedProvider === null) return c.json({ error: 'invalid provider' }, 400);
+    if (parsedProvider && parsedProvider !== 'all') {
+      query.provider = parsedProvider;
+    }
 
     const turns: TurnBucket[] = store.getTurns(query, limit);
     return c.json(turns);

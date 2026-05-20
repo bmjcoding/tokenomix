@@ -95,6 +95,8 @@ export interface TokenRow {
    */
   minute: number;
   sessionId: string;
+  /** Runtime/source that emitted this usage row. Defaults to Claude Code for legacy rows. */
+  sourceProvider?: UsageSourceProvider;
   project: string;
   /**
    * Human-readable project name derived from path.basename(cwd).
@@ -125,6 +127,20 @@ export interface TokenRow {
   pricingMultiplier?: number;
   /** Pricing status for this row. Fallback or unrated rows are estimates, not authoritative. */
   pricingStatus?: PricingStatus;
+  /** Local runtime that emitted this row, e.g. "ollama", "lm-studio", or "opencode". */
+  localRuntime?: string;
+  /** Counterfactual Claude-equivalent cost for local-model rows. */
+  equivalentClaudeCostUsd?: number;
+  equivalentClaudeCostUsdMicros?: number;
+  /** Counterfactual Codex/OpenAI-equivalent cost for local-model rows. */
+  equivalentCodexCostUsd?: number;
+  equivalentCodexCostUsdMicros?: number;
+  /** Local runtime performance telemetry, when the runtime exposes it. */
+  tokensPerSecond?: number;
+  timeToFirstTokenMs?: number;
+  promptEvalDurationMs?: number;
+  evalDurationMs?: number;
+  loadDurationMs?: number;
   /** USD cost from raw input tokens after pricing multipliers. */
   inputCostUsd?: number;
   /** Micro-USD cost from raw input tokens after pricing multipliers. */
@@ -228,6 +244,7 @@ export interface ProjectBucket {
  */
 export interface SessionBucket {
   sessionId: string;
+  sourceProvider?: UsageSourceProvider;
   project: string;
   costUsd: number;
   inputTokens: number;
@@ -316,11 +333,24 @@ export interface PricingCatalogMetadata {
   costBasis:
     | 'estimated_from_jsonl_usage_static_anthropic_catalog'
     | 'estimated_from_jsonl_usage_static_bedrock_catalog'
+    | 'estimated_from_jsonl_usage_static_openai_catalog'
+    | 'counterfactual_local_model_usage_static_public_catalogs'
+    | 'mixed_static_public_catalogs'
     | 'rated_internal_gateway_cost'
     | 'estimated_from_jsonl_usage_without_gateway_rated_cost';
 }
 
-export type PricingProvider = 'anthropic_1p' | 'aws_bedrock' | 'internal_gateway';
+export type PricingProvider =
+  | 'anthropic_1p'
+  | 'aws_bedrock'
+  | 'internal_gateway'
+  | 'openai_api'
+  | 'local_equivalent'
+  | 'mixed_static_catalogs';
+
+export type UsageSourceProvider = 'claude-code' | 'codex' | 'local-models';
+
+export type UsageSourceProviderFilter = UsageSourceProvider | 'all';
 
 export type BedrockEndpointScope =
   | 'in_region'
@@ -334,10 +364,14 @@ export type BedrockServiceTier = 'standard' | 'batch' | 'provisioned' | 'reserve
 export type PricingStatus =
   | 'catalog'
   | 'bedrock_catalog'
+  | 'openai_api_catalog'
+  | 'openai_codex_rate_card_equivalent'
   | 'internal_gateway_rated'
   | 'internal_gateway_unrated_estimate'
   | 'fallback_sonnet'
-  | 'zero_usage_unknown_model';
+  | 'local_counterfactual'
+  | 'zero_usage_unknown_model'
+  | 'unpriced_provider';
 
 /** Audit metadata returned with metrics so reports can disclose pricing quality. */
 export interface PricingAuditSummary {
@@ -415,7 +449,7 @@ export interface RecommendationChatMessage {
 export interface RecommendationChatStatus {
   available: boolean;
   configured: boolean;
-  providerDetails: 'managed_by_claude_code';
+  providerDetails: 'managed_by_claude_code' | 'managed_by_codex_cli' | 'disabled_for_local_models';
   version: string | null;
   message: string | null;
 }
@@ -423,6 +457,7 @@ export interface RecommendationChatStatus {
 export interface RecommendationChatRequest {
   message: string;
   history?: RecommendationChatMessage[];
+  provider?: UsageSourceProviderFilter;
 }
 
 export interface RecommendationChatResponse {
@@ -475,6 +510,7 @@ export interface TurnBucket {
    */
   timestamp: string;
   sessionId: string;
+  sourceProvider?: UsageSourceProvider;
   project: string;
   modelId: string;
   modelFamily: string;
@@ -487,6 +523,14 @@ export interface TurnBucket {
    * null when no duration event was recorded for this turn.
    */
   durationMs: number | null;
+  localRuntime?: string;
+  tokensPerSecond?: number;
+  timeToFirstTokenMs?: number;
+  promptEvalDurationMs?: number;
+  evalDurationMs?: number;
+  loadDurationMs?: number;
+  equivalentClaudeCostUsd?: number;
+  equivalentCodexCostUsd?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -496,6 +540,7 @@ export interface TurnBucket {
 /** Session-level summary returned by GET /api/sessions. */
 export interface SessionSummary {
   sessionId: string;
+  sourceProvider?: UsageSourceProvider;
   /** Full absolute cwd path (e.g. "/Users/x/.claude/projects/my-app"). */
   project: string;
   /** Human-readable project name derived from path.basename(cwd). */
@@ -557,6 +602,14 @@ export interface SessionTurnRow {
    * null when no duration event was recorded for this turn.
    */
   durationMs: number | null;
+  localRuntime?: string;
+  tokensPerSecond?: number;
+  timeToFirstTokenMs?: number;
+  promptEvalDurationMs?: number;
+  evalDurationMs?: number;
+  loadDurationMs?: number;
+  equivalentClaudeCostUsd?: number;
+  equivalentCodexCostUsd?: number;
   /**
    * Per-tool invocation counts for this turn.
    * Empty object when no tool_use events were associated with this turn
@@ -576,6 +629,7 @@ export interface SessionTurnRow {
  */
 export interface SessionDetail {
   sessionId: string;
+  sourceProvider?: UsageSourceProvider;
   /** Full absolute cwd path. */
   project: string;
   /** Human-readable project name derived from path.basename(cwd). */
@@ -716,6 +770,12 @@ export interface MetricSummary {
   totalOutputTokens: number;
   totalCacheCreationTokens: number;
   totalCacheReadTokens: number;
+  /**
+   * Counterfactual local-model equivalent costs. Populated when local-model rows
+   * are indexed; zero when the filtered result set has no local rows.
+   */
+  localEquivalentClaudeCostUsd?: number;
+  localEquivalentCodexCostUsd?: number;
   totalSessions: number;
   totalProjects: number;
   /**
@@ -730,6 +790,10 @@ export interface MetricSummary {
   // ── Windowed totals ──
   costUsd30d: number;
   costUsd5d: number;
+  localEquivalentClaudeCostUsd30d?: number;
+  localEquivalentCodexCostUsd30d?: number;
+  localEquivalentClaudeCostUsd5d?: number;
+  localEquivalentCodexCostUsd5d?: number;
   inputTokens30d: number;
   outputTokens30d: number;
   /**
@@ -945,6 +1009,8 @@ export interface MetricsQuery {
   since?: string;
   /** Project path substring filter. */
   project?: string;
+  /** Usage source provider filter. Omitted or "all" includes every provider. */
+  provider?: UsageSourceProviderFilter;
 }
 
 // ---------------------------------------------------------------------------

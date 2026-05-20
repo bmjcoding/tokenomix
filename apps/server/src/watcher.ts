@@ -1,9 +1,9 @@
 /**
  * chokidar file watcher for live JSONL updates.
  *
- * Watches ~/.claude/projects/**\/*.jsonl for add and change events.
+ * Watches Claude Code and Codex JSONL sources for add and change events.
  * Debounces 300ms before triggering a store rebuild to avoid partial reads
- * when Claude Code is actively writing session logs.
+ * when assistant runtimes are actively writing session logs.
  *
  * awaitWriteFinish (stabilityThreshold: 250ms) provides additional protection
  * against partial reads during active writes.
@@ -12,8 +12,8 @@
  *
  * Polling is the DEFAULT on macOS because chokidar's FSEvents backend is
  * known to silently drop events after long process uptimes or when the watched
- * directory tree is modified by another process (e.g. Claude Code). Polling at
- * 1 000 ms adds negligible CPU overhead on the small ~/.claude/projects tree
+ * directory tree is modified by another process. Polling at
+ * 1 000 ms adds negligible CPU overhead on the small local source trees
  * and guarantees every write is detected within ~1 250 ms (1 s poll + 250 ms
  * stabilityThreshold).
  *
@@ -23,7 +23,7 @@
 
 import chokidar, { type FSWatcher } from 'chokidar';
 import { serverEnv } from './env.js';
-import { type IndexStore, PROJECTS_DIR } from './index-store.js';
+import { type IndexStore, WATCHED_SOURCE_DIRS } from './index-store.js';
 import { logEvent } from './logger.js';
 
 /**
@@ -31,14 +31,14 @@ import { logEvent } from './logger.js';
  * (index.ts) can call `.close()` on graceful shutdown.
  */
 export function startWatcher(store: IndexStore): FSWatcher {
-  const pattern = `${PROJECTS_DIR}/**/*.jsonl`;
+  const patterns = WATCHED_SOURCE_DIRS.map((dir) => `${dir}/**/*.jsonl`);
 
   // Polling is on by default; set TOKENOMIX_WATCHER_FSEVENTS=1 to use FSEvents instead.
   const usePolling = !serverEnv().TOKENOMIX_WATCHER_FSEVENTS;
 
-  logEvent('info', 'watcher-init', { usePolling, pattern });
+  logEvent('info', 'watcher-init', { usePolling, patterns });
 
-  const watcher = chokidar.watch(pattern, {
+  const watcher = chokidar.watch(patterns, {
     ignoreInitial: true, // startup scan handled by store.initialize()
     persistent: true,
     // interval only takes effect when usePolling is true.
@@ -78,7 +78,7 @@ export function startWatcher(store: IndexStore): FSWatcher {
   watcher.on('change', (filePath: string) => scheduleIngest('change', filePath));
 
   // Register error handler so watch-attach failures (inotify limit exhaustion,
-  // PROJECTS_DIR missing) are observable rather than silently dropped.
+  // missing source directories) are observable rather than silently dropped.
   watcher.on('error', (err: unknown) => {
     logEvent('error', 'watcher-error', {
       error: err instanceof Error ? err.message : String(err),

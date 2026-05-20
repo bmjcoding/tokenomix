@@ -51,6 +51,11 @@ function totalToolUses(toolUses: Record<string, number>): number {
   return Object.values(toolUses).reduce((sum, n) => sum + n, 0);
 }
 
+function formatTokensPerSecond(value: number | undefined): string {
+  if (value === undefined) return '—';
+  return `${value.toFixed(value >= 10 ? 1 : 2)}/s`;
+}
+
 /** Format ISO timestamp as compact local date+time. */
 function fmtTs(ts: string): string {
   try {
@@ -457,6 +462,10 @@ function TurnsTab({ turns }: { turns: SessionTurnRow[] }) {
     );
   }
 
+  const showLocalPerformance = turns.some(
+    (turn) => turn.tokensPerSecond !== undefined || turn.timeToFirstTokenMs !== undefined
+  );
+
   return (
     <div className="pt-6">
       <Card as="section" className="p-0 overflow-hidden" aria-label="Session turns table">
@@ -506,6 +515,22 @@ function TurnsTab({ turns }: { turns: SessionTurnRow[] }) {
                 >
                   Duration
                 </th>
+                {showLocalPerformance && (
+                  <>
+                    <th
+                      scope="col"
+                      className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400"
+                    >
+                      Tok/s
+                    </th>
+                    <th
+                      scope="col"
+                      className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400"
+                    >
+                      TTFT
+                    </th>
+                  </>
+                )}
               </tr>
             </thead>
             <tbody>
@@ -538,6 +563,18 @@ function TurnsTab({ turns }: { turns: SessionTurnRow[] }) {
                     <td className="px-4 py-3 text-right text-sm tabular-nums text-gray-600 dark:text-gray-400">
                       {turn.durationMs !== null ? formatDuration(turn.durationMs) : '—'}
                     </td>
+                    {showLocalPerformance && (
+                      <>
+                        <td className="px-4 py-3 text-right text-sm tabular-nums text-gray-600 dark:text-gray-400">
+                          {formatTokensPerSecond(turn.tokensPerSecond)}
+                        </td>
+                        <td className="px-4 py-3 text-right text-sm tabular-nums text-gray-600 dark:text-gray-400">
+                          {turn.timeToFirstTokenMs !== undefined
+                            ? formatDuration(turn.timeToFirstTokenMs)
+                            : '—'}
+                        </td>
+                      </>
+                    )}
                   </tr>
                 );
               })}

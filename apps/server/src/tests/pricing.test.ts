@@ -14,11 +14,16 @@ import { describe, expect, it } from 'vitest';
 import {
   computeCost,
   computeCostWithFamily,
+  computeOpenAiCodexCost,
   costForRow,
   inferBedrockEndpointScope,
   isKnownPricingModelId,
   MODEL_PRICES,
   model_family,
+  OPENAI_API_PRICING_CATALOG_METADATA,
+  openAiCodexFastModeMultiplierForModel,
+  openAiCodexLongContextApplies,
+  openAiCodexPriceForModel,
   PRICING_CATALOG_METADATA,
   pricing_status_for_usage,
   resolveCacheTokens,
@@ -276,6 +281,100 @@ describe('pricing audit helpers', () => {
     expect(PRICING_CATALOG_METADATA.costBasis).toBe(
       'estimated_from_jsonl_usage_static_anthropic_catalog'
     );
+  });
+
+  it('locks OpenAI/Codex pricing catalog arithmetic and Fast mode metadata', () => {
+    expect(OPENAI_API_PRICING_CATALOG_METADATA.sourceUrl).toContain(
+      'https://developers.openai.com/api/docs/pricing'
+    );
+    expect(OPENAI_API_PRICING_CATALOG_METADATA.sourceUrl).toContain(
+      'https://help.openai.com/en/articles/20001106-codex-rate-card'
+    );
+    expect(OPENAI_API_PRICING_CATALOG_METADATA.sourceUrl).toContain(
+      'https://developers.openai.com/codex/speed'
+    );
+
+    expect(openAiCodexPriceForModel('gpt-5.5')).toMatchObject({
+      input: 5,
+      cachedInput: 0.5,
+      output: 30,
+      fastModeMultiplier: 2.5,
+      longContext: {
+        thresholdInputTokens: 272_000,
+        input: 10,
+        cachedInput: 1,
+        output: 45,
+      },
+    });
+    expect(openAiCodexPriceForModel('gpt-5.4')).toMatchObject({
+      input: 2.5,
+      cachedInput: 0.25,
+      output: 15,
+      fastModeMultiplier: 2,
+      longContext: {
+        thresholdInputTokens: 272_000,
+        input: 5,
+        cachedInput: 0.5,
+        output: 22.5,
+      },
+    });
+    expect(openAiCodexPriceForModel('gpt-5.4-mini')).toMatchObject({
+      input: 0.75,
+      cachedInput: 0.075,
+      output: 4.5,
+    });
+    expect(openAiCodexPriceForModel('gpt-5.3-codex')).toMatchObject({
+      input: 1.75,
+      cachedInput: 0.175,
+      output: 14,
+    });
+    expect(openAiCodexPriceForModel('gpt-5.2')).toMatchObject({
+      input: 1.75,
+      cachedInput: 0.175,
+      output: 14,
+    });
+    expect(openAiCodexPriceForModel('gpt-5.3-codex-spark')).toBeNull();
+    expect(openAiCodexFastModeMultiplierForModel('gpt-5.4-mini')).toBeNull();
+
+    const breakdown = computeOpenAiCodexCost(
+      { uncachedInputTokens: 800, cachedInputTokens: 200, outputTokens: 50 },
+      'gpt-5.5'
+    );
+    expect(breakdown?.inputCostUsdMicros).toBe(4000);
+    expect(breakdown?.cacheReadCostUsdMicros).toBe(100);
+    expect(breakdown?.outputCostUsdMicros).toBe(1500);
+    expect(breakdown?.totalCostUsdMicros).toBe(5600);
+    expect(breakdown?.pricingStatus).toBe('openai_api_catalog');
+
+    const rateCardBreakdown = computeOpenAiCodexCost(
+      { uncachedInputTokens: 1000, cachedInputTokens: 0, outputTokens: 1000 },
+      'gpt-5.3-codex'
+    );
+    expect(rateCardBreakdown?.totalCostUsdMicros).toBe(15_750);
+    expect(rateCardBreakdown?.pricingStatus).toBe('openai_codex_rate_card_equivalent');
+
+    expect(
+      openAiCodexLongContextApplies(
+        { uncachedInputTokens: 272_000, cachedInputTokens: 0 },
+        'gpt-5.5'
+      )
+    ).toBe(false);
+    expect(
+      openAiCodexLongContextApplies(
+        { uncachedInputTokens: 272_001, cachedInputTokens: 0 },
+        'gpt-5.5'
+      )
+    ).toBe(true);
+
+    const longContextBreakdown = computeOpenAiCodexCost(
+      { uncachedInputTokens: 272_001, cachedInputTokens: 10_000, outputTokens: 1000 },
+      'gpt-5.5'
+    );
+    expect(longContextBreakdown?.inputCostUsdMicros).toBe(2_720_010);
+    expect(longContextBreakdown?.cacheReadCostUsdMicros).toBe(10_000);
+    expect(longContextBreakdown?.outputCostUsdMicros).toBe(45_000);
+    expect(longContextBreakdown?.totalCostUsdMicros).toBe(2_775_010);
+    expect(longContextBreakdown?.pricingMultiplier).toBeGreaterThan(1);
   });
 
   it('marks Bedrock catalog rows separately from Anthropic 1P catalog rows', () => {

@@ -53,19 +53,28 @@ import type {
   ToolUseContentParsed,
   ToolUseEventParsed,
   TurnBucket,
+  UsageSourceProvider,
   WeeklyBucket,
 } from '@tokenomix/shared';
+import { type CodexUsageRowEvent, parseCodexUsageRows } from './codex-parser.js';
 import { serverEnv } from './env.js';
+import { type LocalModelUsageRowEvent, parseLocalModelUsageRows } from './local-model-parser.js';
 import { logEvent } from './logger.js';
 import { parseJSONLFile } from './parser.js';
 import {
   ANTHROPIC_1P_PRICING_CATALOG_METADATA,
   AWS_BEDROCK_PRICING_CATALOG_METADATA,
   computeCostWithFamily,
+  computeOpenAiCodexCost,
   inferBedrockEndpointScope,
+  LOCAL_MODEL_EQUIVALENT_PRICING_CATALOG_METADATA,
+  MIXED_STATIC_PRICING_CATALOG_METADATA,
   MODEL_PRICES,
   microsToUsd,
   model_family,
+  OPENAI_API_PRICING_CATALOG_METADATA,
+  openAiCodexFastModeMultiplierForModel,
+  openAiCodexLongContextApplies,
   resolveCacheTokens,
   WEB_SEARCH_USD_PER_REQUEST,
 } from './pricing.js';
@@ -76,6 +85,20 @@ import { formatLocalHourIso, formatLocalIso } from './time.js';
 // ---------------------------------------------------------------------------
 
 export const PROJECTS_DIR = nodePath.resolve(os.homedir(), '.claude', 'projects');
+export const CODEX_SESSIONS_DIR = nodePath.resolve(os.homedir(), '.codex', 'sessions');
+export const CODEX_ARCHIVED_SESSIONS_DIR = nodePath.resolve(
+  os.homedir(),
+  '.codex',
+  'archived_sessions'
+);
+export const LOCAL_MODELS_DIR = nodePath.resolve(os.homedir(), '.tokenomix', 'local-models');
+
+export const WATCHED_SOURCE_DIRS = [
+  PROJECTS_DIR,
+  CODEX_SESSIONS_DIR,
+  CODEX_ARCHIVED_SESSIONS_DIR,
+  LOCAL_MODELS_DIR,
+] as const;
 
 const BATCH_SIZE = 50;
 
@@ -287,6 +310,64 @@ function pricingCatalogForConfig(
     };
   }
   return ANTHROPIC_1P_PRICING_CATALOG_METADATA;
+}
+
+function sourceProviderForPath(filePath: string): UsageSourceProvider {
+  if (
+    filePath.startsWith(CODEX_SESSIONS_DIR + nodePath.sep) ||
+    filePath.startsWith(CODEX_ARCHIVED_SESSIONS_DIR + nodePath.sep)
+  ) {
+    return 'codex';
+  }
+  if (filePath.startsWith(LOCAL_MODELS_DIR + nodePath.sep)) {
+    return 'local-models';
+  }
+  return 'claude-code';
+}
+
+function sourceProviderForRow(row: TokenRow): UsageSourceProvider {
+  return row.sourceProvider ?? 'claude-code';
+}
+
+function matchesProviderFilter(row: TokenRow, provider: MetricsQuery['provider']): boolean {
+  if (!provider || provider === 'all') return true;
+  return sourceProviderForRow(row) === provider;
+}
+
+function localEquivalentClaudeCostForRow(row: TokenRow): number {
+  return sourceProviderForRow(row) === 'local-models'
+    ? (row.equivalentClaudeCostUsd ?? row.costUsd)
+    : 0;
+}
+
+function localEquivalentCodexCostForRow(row: TokenRow): number {
+  return sourceProviderForRow(row) === 'local-models' ? (row.equivalentCodexCostUsd ?? 0) : 0;
+}
+
+function codexSessionId(rawSessionId: string): string {
+  return rawSessionId.startsWith('codex:') ? rawSessionId : `codex:${rawSessionId}`;
+}
+
+function localModelSessionId(rawSessionId: string): string {
+  return rawSessionId.startsWith('local:') ? rawSessionId : `local:${rawSessionId}`;
+}
+
+function modelFamilyForSource(modelId: string, sourceProvider: UsageSourceProvider): string {
+  if (sourceProvider === 'codex') {
+    const id = modelId.toLowerCase();
+    if (id.includes('codex')) return 'codex';
+    if (id.includes('gpt')) return 'gpt';
+    return 'openai';
+  }
+  if (sourceProvider === 'local-models') {
+    const id = modelId.toLowerCase();
+    if (id.includes('qwen')) return 'qwen';
+    if (id.includes('gemma')) return 'gemma';
+    if (id.includes('llama')) return 'llama';
+    if (id.includes('mistral')) return 'mistral';
+    return 'local';
+  }
+  return model_family(modelId);
 }
 
 // ---------------------------------------------------------------------------
@@ -913,7 +994,17 @@ function buildPricingAudit(rows: TokenRow[], config: PricingRuntimeConfig): Pric
   let zeroUsageUnknownModelRows = 0;
   let internalGatewayRatedRows = 0;
   let internalGatewayUnratedRows = 0;
+  let staticCatalogRows = 0;
+  let openAiCatalogRows = 0;
+  let openAiRateCardEquivalentRows = 0;
+  let openAiFastCapableRows = 0;
+  let openAiLongContextRows = 0;
+  let codexRows = 0;
+  let codexWebSearchRequests = 0;
+  let localCounterfactualRows = 0;
+  let unpricedProviderRows = 0;
   const fallbackModelIds = new Set<string>();
+  const unpricedModelIds = new Set<string>();
   const inferredBedrockScopes = new Set<BedrockEndpointScope>();
 
   for (const row of rows) {
@@ -928,10 +1019,44 @@ function buildPricingAudit(rows: TokenRow[], config: PricingRuntimeConfig): Pric
       fallbackModelIds.add(row.modelId || '<missing>');
     } else if (row.pricingStatus === 'zero_usage_unknown_model') {
       zeroUsageUnknownModelRows += 1;
+    } else if (row.pricingStatus === 'catalog' || row.pricingStatus === 'bedrock_catalog') {
+      staticCatalogRows += 1;
+    } else if (
+      row.pricingStatus === 'openai_api_catalog' ||
+      row.pricingStatus === 'openai_codex_rate_card_equivalent'
+    ) {
+      openAiCatalogRows += 1;
+      if (row.pricingStatus === 'openai_codex_rate_card_equivalent') {
+        openAiRateCardEquivalentRows += 1;
+      }
+      if (openAiCodexFastModeMultiplierForModel(row.modelId) !== null) {
+        openAiFastCapableRows += 1;
+      }
+      if (
+        openAiCodexLongContextApplies(
+          {
+            uncachedInputTokens: row.inputTokens,
+            cachedInputTokens: row.cacheReadTokens,
+          },
+          row.modelId
+        )
+      ) {
+        openAiLongContextRows += 1;
+      }
     } else if (row.pricingStatus === 'internal_gateway_rated') {
       internalGatewayRatedRows += 1;
     } else if (row.pricingStatus === 'internal_gateway_unrated_estimate') {
       internalGatewayUnratedRows += 1;
+    } else if (row.pricingStatus === 'local_counterfactual') {
+      localCounterfactualRows += 1;
+    } else if (row.pricingStatus === 'unpriced_provider') {
+      unpricedProviderRows += 1;
+      unpricedModelIds.add(row.modelId || '<missing>');
+    }
+
+    if (sourceProviderForRow(row) === 'codex') {
+      codexRows += 1;
+      codexWebSearchRequests += row.webSearchRequests;
     }
   }
 
@@ -948,10 +1073,71 @@ function buildPricingAudit(rows: TokenRow[], config: PricingRuntimeConfig): Pric
         ? 'model_id'
         : 'unknown';
 
+  const hasOpenAiPricing = openAiCatalogRows > 0;
+  const hasLocalCounterfactualPricing = localCounterfactualRows > 0;
+  const hasNonOpenAiPricing =
+    staticCatalogRows > 0 ||
+    fallbackPricedRows > 0 ||
+    internalGatewayRatedRows > 0 ||
+    internalGatewayUnratedRows > 0;
+  const auditProvider: PricingProvider = hasOpenAiPricing
+    ? hasNonOpenAiPricing || hasLocalCounterfactualPricing
+      ? 'mixed_static_catalogs'
+      : 'openai_api'
+    : hasLocalCounterfactualPricing
+      ? hasNonOpenAiPricing
+        ? 'mixed_static_catalogs'
+        : 'local_equivalent'
+      : codexRows > 0 && !hasNonOpenAiPricing
+        ? 'openai_api'
+        : config.provider;
+
   const warnings: string[] = [];
-  if (config.provider !== 'internal_gateway') {
+  if (auditProvider === 'openai_api' && openAiCatalogRows > 0) {
+    warnings.push(
+      'OpenAI Codex costs are standard-speed token estimates from the static OpenAI API pricing and Codex rate card catalogs.'
+    );
+  } else if (auditProvider === 'mixed_static_catalogs') {
+    warnings.push(
+      'Cost totals mix static public catalogs across providers; treat combined provider totals as estimates.'
+    );
+  } else if (auditProvider === 'local_equivalent') {
+    warnings.push(
+      'Local model costs are counterfactual Claude Sonnet-equivalent estimates. Actual local model API spend is $0 before hardware, power, and operator time.'
+    );
+  } else if (config.provider !== 'internal_gateway') {
     warnings.push(
       `Pricing provider is ${config.provider}; values are estimates from static public pricing, not internal LLM Gateway rated cost.`
+    );
+  }
+  if (openAiFastCapableRows > 0) {
+    warnings.push(
+      `${openAiFastCapableRows.toLocaleString('en-US')} OpenAI Codex row(s) use GPT-5.5/GPT-5.4 standard-speed rates. Local Codex JSONL does not include per-turn service tier, so Fast mode multipliers (GPT-5.5 2.5x, GPT-5.4 2x) cannot be applied or ruled out from logs alone.`
+    );
+  }
+  if (openAiCatalogRows > 0) {
+    warnings.push(
+      'OpenAI API regional-processing uplifts are not applied to Codex rows because local Codex JSONL does not expose a per-turn processing region.'
+    );
+  }
+  if (openAiLongContextRows > 0) {
+    warnings.push(
+      `${openAiLongContextRows.toLocaleString('en-US')} OpenAI Codex row(s) exceeded 272K captured input tokens and used OpenAI long-context pricing for GPT-5.5/GPT-5.4.`
+    );
+  }
+  if (openAiRateCardEquivalentRows > 0) {
+    warnings.push(
+      `${openAiRateCardEquivalentRows.toLocaleString('en-US')} OpenAI Codex row(s) use Codex rate-card credits converted to USD-equivalent estimates at 25 credits per USD, inferred from the GPT-5.5 and GPT-5.4 rows shared by OpenAI API pricing and the Codex rate card.`
+    );
+  }
+  if (codexWebSearchRequests > 0) {
+    warnings.push(
+      `${codexWebSearchRequests.toLocaleString('en-US')} OpenAI Codex web search call(s) are counted as tool usage but not separately priced; the Codex rate card is token-based and local JSONL does not identify API-key vs ChatGPT billing mode for tool-call fees.`
+    );
+  }
+  if (localCounterfactualRows > 0 && auditProvider !== 'local_equivalent') {
+    warnings.push(
+      `${localCounterfactualRows.toLocaleString('en-US')} local-model row(s) are priced as Claude Sonnet-equivalent counterfactual cost, not actual local runtime spend.`
     );
   }
   if (config.provider === 'internal_gateway' && internalGatewayUnratedRows > 0) {
@@ -1003,6 +1189,11 @@ function buildPricingAudit(rows: TokenRow[], config: PricingRuntimeConfig): Pric
       `${zeroUsageUnknownModelRows.toLocaleString('en-US')} zero-usage row(s) had unrecognized model IDs and did not affect cost.`
     );
   }
+  if (unpricedProviderRows > 0) {
+    warnings.push(
+      `${unpricedProviderRows.toLocaleString('en-US')} provider row(s) had no supported static price and were not priced (${[...unpricedModelIds].sort().join(', ')}).`
+    );
+  }
 
   const internalGatewayCostBasis =
     config.provider === 'internal_gateway' &&
@@ -1010,10 +1201,18 @@ function buildPricingAudit(rows: TokenRow[], config: PricingRuntimeConfig): Pric
     internalGatewayUnratedRows === 0
       ? 'rated_internal_gateway_cost'
       : 'estimated_from_jsonl_usage_without_gateway_rated_cost';
+  const auditCatalog =
+    auditProvider === 'openai_api'
+      ? OPENAI_API_PRICING_CATALOG_METADATA
+      : auditProvider === 'local_equivalent'
+        ? LOCAL_MODEL_EQUIVALENT_PRICING_CATALOG_METADATA
+        : auditProvider === 'mixed_static_catalogs'
+          ? MIXED_STATIC_PRICING_CATALOG_METADATA
+          : pricingCatalogForConfig(config, internalGatewayCostBasis);
 
   return {
-    catalog: pricingCatalogForConfig(config, internalGatewayCostBasis),
-    provider: config.provider,
+    catalog: auditCatalog,
+    provider: auditProvider,
     bedrockRegion: config.bedrockRegion,
     bedrockEndpointScope,
     bedrockServiceTier: config.bedrockServiceTier,
@@ -1168,6 +1367,11 @@ export async function collectJsonlFiles(dir: string): Promise<string[]> {
   return results;
 }
 
+export async function collectJsonlFilesFromDirs(dirs: readonly string[]): Promise<string[]> {
+  const batches = await Promise.all(dirs.map((dir) => collectJsonlFiles(dir).catch(() => [])));
+  return batches.flat();
+}
+
 // ---------------------------------------------------------------------------
 // Row construction
 // ---------------------------------------------------------------------------
@@ -1236,6 +1440,7 @@ export function buildTokenRow(
     hour: toLocalHour(ts),
     minute: ts.getMinutes(),
     sessionId: event.sessionId ?? '',
+    sourceProvider: 'claude-code',
     project: rawCwd,
     projectName,
     modelId,
@@ -1261,6 +1466,152 @@ export function buildTokenRow(
     webSearchCostUsd: costComponents.webSearchCostUsd,
     webSearchCostUsdMicros: costComponents.webSearchCostUsdMicros,
     isSubagent,
+  };
+
+  return row;
+}
+
+export function buildCodexTokenRow(event: CodexUsageRowEvent, filePath: string): TokenRow | null {
+  const ts = parseIso(event.timestamp);
+  if (!ts) return null;
+
+  // Codex/OpenAI token_count records expose cached input as a subset of input.
+  // Tokenomix's row model stores cache reads separately, matching Claude's
+  // shape, so the visible input bucket excludes the cached subset.
+  const billableInputTokens = Math.max(0, event.usage.inputTokens - event.usage.cachedInputTokens);
+  const rawCwd = event.cwd || nodePath.dirname(filePath);
+  const modelId = event.modelId;
+  const sourceProvider: UsageSourceProvider = 'codex';
+  const costComponents = computeOpenAiCodexCost(
+    {
+      uncachedInputTokens: billableInputTokens,
+      cachedInputTokens: event.usage.cachedInputTokens,
+      outputTokens: event.usage.outputTokens,
+    },
+    modelId
+  );
+
+  const row: TokenRow = {
+    date: toLocalDateStr(ts),
+    hour: toLocalHour(ts),
+    minute: ts.getMinutes(),
+    sessionId: codexSessionId(event.sessionId),
+    sourceProvider,
+    project: rawCwd,
+    projectName: displayPathSegment(rawCwd),
+    modelId,
+    modelFamily: modelFamilyForSource(modelId, sourceProvider),
+    inputTokens: billableInputTokens,
+    outputTokens: event.usage.outputTokens,
+    cacheCreation5m: 0,
+    cacheCreation1h: 0,
+    cacheReadTokens: event.usage.cachedInputTokens,
+    webSearchRequests: event.webSearchRequests ?? 0,
+    costUsd: costComponents?.totalCostUsd ?? 0,
+    costUsdMicros: costComponents?.totalCostUsdMicros ?? 0,
+    pricingMultiplier: costComponents?.pricingMultiplier ?? 1,
+    pricingStatus: costComponents?.pricingStatus ?? 'unpriced_provider',
+    inputCostUsd: costComponents?.inputCostUsd ?? 0,
+    inputCostUsdMicros: costComponents?.inputCostUsdMicros ?? 0,
+    outputCostUsd: costComponents?.outputCostUsd ?? 0,
+    outputCostUsdMicros: costComponents?.outputCostUsdMicros ?? 0,
+    cacheCreationCostUsd: 0,
+    cacheCreationCostUsdMicros: 0,
+    cacheReadCostUsd: costComponents?.cacheReadCostUsd ?? 0,
+    cacheReadCostUsdMicros: costComponents?.cacheReadCostUsdMicros ?? 0,
+    webSearchCostUsd: 0,
+    webSearchCostUsdMicros: 0,
+    isSubagent: false,
+    ...(event.toolUses ? { toolUses: event.toolUses } : {}),
+    ...(event.toolErrors ? { toolErrors: event.toolErrors } : {}),
+  };
+
+  return row;
+}
+
+export function buildLocalModelTokenRow(
+  event: LocalModelUsageRowEvent,
+  filePath: string
+): TokenRow | null {
+  const ts = parseIso(event.timestamp);
+  if (!ts) return null;
+
+  const billableInputTokens = Math.max(0, event.usage.inputTokens - event.usage.cachedInputTokens);
+  const rawCwd = event.cwd || nodePath.dirname(filePath);
+  const modelId = event.modelId;
+  const sourceProvider: UsageSourceProvider = 'local-models';
+  const equivalentClaude = computeCostWithFamily(
+    {
+      input_tokens: billableInputTokens,
+      output_tokens: event.usage.outputTokens,
+      cache_read_input_tokens: event.usage.cachedInputTokens,
+    },
+    'claude-sonnet-4-6',
+    'sonnet'
+  );
+  const equivalentCodex = computeOpenAiCodexCost(
+    {
+      uncachedInputTokens: billableInputTokens,
+      cachedInputTokens: event.usage.cachedInputTokens,
+      outputTokens: event.usage.outputTokens,
+    },
+    'gpt-5.5'
+  );
+
+  const row: TokenRow = {
+    date: toLocalDateStr(ts),
+    hour: toLocalHour(ts),
+    minute: ts.getMinutes(),
+    sessionId: localModelSessionId(event.sessionId),
+    sourceProvider,
+    project: rawCwd,
+    projectName: displayPathSegment(rawCwd),
+    modelId,
+    modelFamily: modelFamilyForSource(modelId, sourceProvider),
+    inputTokens: billableInputTokens,
+    outputTokens: event.usage.outputTokens,
+    cacheCreation5m: 0,
+    cacheCreation1h: 0,
+    cacheReadTokens: event.usage.cachedInputTokens,
+    webSearchRequests: 0,
+    costUsd: equivalentClaude.totalCostUsd,
+    costUsdMicros: equivalentClaude.totalCostUsdMicros,
+    pricingMultiplier: 1,
+    pricingStatus: 'local_counterfactual',
+    localRuntime: event.runtime,
+    equivalentClaudeCostUsd: equivalentClaude.totalCostUsd,
+    equivalentClaudeCostUsdMicros: equivalentClaude.totalCostUsdMicros,
+    equivalentCodexCostUsd: equivalentCodex?.totalCostUsd ?? 0,
+    equivalentCodexCostUsdMicros: equivalentCodex?.totalCostUsdMicros ?? 0,
+    inputCostUsd: equivalentClaude.inputCostUsd,
+    inputCostUsdMicros: equivalentClaude.inputCostUsdMicros,
+    outputCostUsd: equivalentClaude.outputCostUsd,
+    outputCostUsdMicros: equivalentClaude.outputCostUsdMicros,
+    cacheCreationCostUsd: 0,
+    cacheCreationCostUsdMicros: 0,
+    cacheReadCostUsd: equivalentClaude.cacheReadCostUsd,
+    cacheReadCostUsdMicros: equivalentClaude.cacheReadCostUsdMicros,
+    webSearchCostUsd: 0,
+    webSearchCostUsdMicros: 0,
+    isSubagent: false,
+    ...(event.metrics.tokensPerSecond !== undefined
+      ? { tokensPerSecond: event.metrics.tokensPerSecond }
+      : {}),
+    ...(event.metrics.timeToFirstTokenMs !== undefined
+      ? { timeToFirstTokenMs: event.metrics.timeToFirstTokenMs }
+      : {}),
+    ...(event.metrics.promptEvalDurationMs !== undefined
+      ? { promptEvalDurationMs: event.metrics.promptEvalDurationMs }
+      : {}),
+    ...(event.metrics.evalDurationMs !== undefined
+      ? { evalDurationMs: event.metrics.evalDurationMs }
+      : {}),
+    ...(event.metrics.loadDurationMs !== undefined
+      ? { loadDurationMs: event.metrics.loadDurationMs }
+      : {}),
+    ...(event.metrics.durationMs !== undefined ? { turnDurationMs: event.metrics.durationMs } : {}),
+    ...(event.toolUses ? { toolUses: event.toolUses } : {}),
+    ...(event.toolErrors ? { toolErrors: event.toolErrors } : {}),
   };
 
   return row;
@@ -1333,6 +1684,7 @@ function aggregate(
 
   // Filter rows for time-series and totals (project + since).
   const filtered = rows.filter((r) => {
+    if (!matchesProviderFilter(r, query.provider)) return false;
     if (query.project && !r.project.includes(query.project)) return false;
     if (sinceCutoff) {
       const rowDate = new Date(`${r.date}T00:00:00`);
@@ -1345,12 +1697,18 @@ function aggregate(
   // project-filtered, but NOT since-filtered). They are absolute 30d/5d
   // windows from today, independent of any since filter the caller passes.
   const projectFilter = query.project;
-  const projectFiltered = projectFilter
-    ? rows.filter((r) => r.project.includes(projectFilter))
-    : rows;
+  const projectFiltered = rows.filter((r) => {
+    if (!matchesProviderFilter(r, query.provider)) return false;
+    if (projectFilter && !r.project.includes(projectFilter)) return false;
+    return true;
+  });
 
   let costUsd30d = 0;
   let costUsd5d = 0;
+  let localEquivalentClaudeCostUsd30d = 0;
+  let localEquivalentCodexCostUsd30d = 0;
+  let localEquivalentClaudeCostUsd5d = 0;
+  let localEquivalentCodexCostUsd5d = 0;
   let inputTokens30d = 0;
   let outputTokens30d = 0;
   let cacheCreationTokens30d = 0;
@@ -1370,6 +1728,8 @@ function aggregate(
     const rowDate = new Date(`${row.date}T00:00:00`);
     if (rowDate >= cutoff30d) {
       costUsd30d += row.costUsd;
+      localEquivalentClaudeCostUsd30d += localEquivalentClaudeCostForRow(row);
+      localEquivalentCodexCostUsd30d += localEquivalentCodexCostForRow(row);
       inputTokens30d += row.inputTokens;
       outputTokens30d += row.outputTokens;
       cacheCreationTokens30d += row.cacheCreation5m + row.cacheCreation1h;
@@ -1405,6 +1765,8 @@ function aggregate(
     }
     if (rowDate >= cutoff5d) {
       costUsd5d += row.costUsd;
+      localEquivalentClaudeCostUsd5d += localEquivalentClaudeCostForRow(row);
+      localEquivalentCodexCostUsd5d += localEquivalentCodexCostForRow(row);
     }
   }
 
@@ -1426,6 +1788,8 @@ function aggregate(
 
   // All-time totals (over the since+project filtered set).
   let totalCostUsd = 0;
+  let localEquivalentClaudeCostUsd = 0;
+  let localEquivalentCodexCostUsd = 0;
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let totalCacheCreationTokens = 0;
@@ -1463,6 +1827,8 @@ function aggregate(
 
   for (const row of filtered) {
     totalCostUsd += row.costUsd;
+    localEquivalentClaudeCostUsd += localEquivalentClaudeCostForRow(row);
+    localEquivalentCodexCostUsd += localEquivalentCodexCostForRow(row);
     totalInputTokens += row.inputTokens;
     totalOutputTokens += row.outputTokens;
     totalCacheCreationTokens += row.cacheCreation5m + row.cacheCreation1h;
@@ -1579,6 +1945,7 @@ function aggregate(
     } else {
       sessionMap.set(row.sessionId, {
         sessionId: row.sessionId,
+        sourceProvider: sourceProviderForRow(row),
         project: row.project,
         costUsd: row.costUsd,
         inputTokens: row.inputTokens,
@@ -1865,7 +2232,7 @@ function aggregate(
   // other projects. Without this, sessions from unrelated projects pollute the
   // duration distribution.
   let effectiveSessionTimes = sessionTimes;
-  if (query.project) {
+  if (query.project || (query.provider && query.provider !== 'all')) {
     // Collect all sessionIds that appear in the project-filtered rows.
     const projectSessionIds = new Set<string>();
     for (const row of projectFiltered) {
@@ -2004,6 +2371,8 @@ function aggregate(
 
   return {
     totalCostUsd,
+    localEquivalentClaudeCostUsd,
+    localEquivalentCodexCostUsd,
     totalInputTokens,
     totalOutputTokens,
     totalCacheCreationTokens,
@@ -2013,6 +2382,10 @@ function aggregate(
     totalProjectsTouched: projectsNameSet.size,
     costUsd30d,
     costUsd5d,
+    localEquivalentClaudeCostUsd30d,
+    localEquivalentCodexCostUsd30d,
+    localEquivalentClaudeCostUsd5d,
+    localEquivalentCodexCostUsd5d,
     inputTokens30d,
     outputTokens30d,
     cacheCreationTokens30d,
@@ -2069,6 +2442,7 @@ function computeSessionSummaries(
     string,
     {
       sessionId: string;
+      sourceProvider: UsageSourceProvider;
       project: string;
       projectName: string;
       costUsd: number;
@@ -2085,6 +2459,7 @@ function computeSessionSummaries(
   const toolAccumulator = new Map<string, Map<string, { count: number; errorCount: number }>>();
 
   for (const row of rows) {
+    if (!matchesProviderFilter(row, query.provider)) continue;
     if (query.project && !row.project.includes(query.project)) continue;
     if (sinceCutoff) {
       const rowDate = new Date(`${row.date}T00:00:00`);
@@ -2103,6 +2478,7 @@ function computeSessionSummaries(
     } else {
       sessionMap.set(row.sessionId, {
         sessionId: row.sessionId,
+        sourceProvider: sourceProviderForRow(row),
         project: row.project,
         projectName: row.projectName,
         costUsd: row.costUsd,
@@ -2424,6 +2800,197 @@ export class IndexStore extends EventEmitter {
     }
   }
 
+  private async captureCodexInitialPrompt(filePath: string): Promise<void> {
+    let fh: Awaited<ReturnType<typeof fsOpen>> | undefined;
+    try {
+      fh = await fsOpen(filePath, 'r');
+      const buf = Buffer.allocUnsafe(PROMPT_SCAN_MAX_BYTES);
+      const { bytesRead } = await fh.read(buf, 0, PROMPT_SCAN_MAX_BYTES, 0);
+      const chunk = buf.subarray(0, bytesRead).toString('utf-8');
+      const rawLines = chunk.split('\n');
+      const lines = bytesRead < PROMPT_SCAN_MAX_BYTES ? rawLines : rawLines.slice(0, -1);
+
+      let sessionId = '';
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(trimmed);
+        } catch {
+          continue;
+        }
+        if (typeof parsed !== 'object' || parsed === null) continue;
+        const rec = parsed as Record<string, unknown>;
+        const payload =
+          typeof rec.payload === 'object' && rec.payload !== null
+            ? (rec.payload as Record<string, unknown>)
+            : null;
+        if (!payload) continue;
+
+        if (rec.type === 'session_meta' && typeof payload.id === 'string') {
+          sessionId = codexSessionId(payload.id);
+          if (this.sessionInitialPrompts.has(sessionId)) return;
+          continue;
+        }
+
+        if (rec.type !== 'event_msg' || payload.type !== 'user_message' || !sessionId) continue;
+        if (this.sessionInitialPrompts.has(sessionId)) return;
+
+        const message = typeof payload.message === 'string' ? payload.message : '';
+        const trimmedText = message.trim();
+        if (!trimmedText) continue;
+
+        const truncated = trimmedText.length > PROMPT_MAX_CHARS;
+        const prompt = truncated ? trimmedText.slice(0, PROMPT_MAX_CHARS) : trimmedText;
+        this.sessionInitialPrompts.set(sessionId, { prompt, truncated, jsonlPath: filePath });
+        return;
+      }
+    } catch {
+      // Prompt capture is best-effort only.
+    } finally {
+      await fh?.close().catch(() => undefined);
+    }
+  }
+
+  private async ingestCodexFileInternal(filePath: string): Promise<boolean> {
+    const fileAudit = emptyFileIngestionAudit();
+    let rowsChanged = false;
+
+    await this.captureCodexInitialPrompt(filePath);
+
+    try {
+      for await (const event of parseCodexUsageRows(filePath, {
+        onSkip: (reason) => {
+          if (reason === 'invalid-json') fileAudit.invalidJsonLines += 1;
+          if (reason === 'file-open-error') fileAudit.fileOpenErrors += 1;
+        },
+      })) {
+        fileAudit.assistantUsageEvents += 1;
+        const row = buildCodexTokenRow(event, filePath);
+        if (!row) {
+          fileAudit.tokenRowsRejected += 1;
+          continue;
+        }
+
+        const tsMs = parseIso(event.timestamp)?.getTime();
+        const dedupKey = ['codex', row.sessionId, event.timestamp, event.usage.totalTokens].join(
+          ':'
+        );
+
+        if (this.rows.has(dedupKey)) {
+          fileAudit.duplicateRowsSkipped += 1;
+          continue;
+        }
+
+        this.rows.set(dedupKey, row);
+        if (tsMs !== undefined) this.rowTimestampMs.set(dedupKey, tsMs);
+
+        if (row.sessionId) {
+          let sessionKeys = this.sessionIndex.get(row.sessionId);
+          if (!sessionKeys) {
+            sessionKeys = new Set<string>();
+            this.sessionIndex.set(row.sessionId, sessionKeys);
+          }
+          sessionKeys.add(dedupKey);
+        }
+
+        fileAudit.rowsIndexed += 1;
+        rowsChanged = true;
+        this.recordSessionTimestamp(row, tsMs);
+      }
+    } catch (err: unknown) {
+      fileAudit.ingestErrors += 1;
+      logEvent('error', 'codex-ingest-error', {
+        path: filePath,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    fileAudit.lastIndexedAt = formatLocalIso();
+    this.fileIngestionAudits.set(filePath, fileAudit);
+    if (this.fileIngestionAudits.size > this.maxFileIngestionAudits) {
+      evictOldestInsertionOrder(
+        this.fileIngestionAudits,
+        Math.ceil(this.maxFileIngestionAudits * 0.1)
+      );
+    }
+
+    return rowsChanged;
+  }
+
+  private async ingestLocalModelFileInternal(filePath: string): Promise<boolean> {
+    const fileAudit = emptyFileIngestionAudit();
+    let rowsChanged = false;
+
+    try {
+      for await (const event of parseLocalModelUsageRows(filePath, {
+        onSkip: (reason) => {
+          if (reason === 'invalid-json') fileAudit.invalidJsonLines += 1;
+          if (reason === 'schema-mismatch') fileAudit.schemaMismatchLines += 1;
+          if (reason === 'file-open-error') fileAudit.fileOpenErrors += 1;
+        },
+      })) {
+        fileAudit.assistantUsageEvents += 1;
+        const row = buildLocalModelTokenRow(event, filePath);
+        if (!row) {
+          fileAudit.tokenRowsRejected += 1;
+          continue;
+        }
+
+        const tsMs = parseIso(event.timestamp)?.getTime();
+        const dedupKey = [
+          'local',
+          filePath,
+          event.sourceLine,
+          row.sessionId,
+          event.timestamp,
+          row.modelId,
+          event.usage.inputTokens + event.usage.outputTokens + event.usage.cachedInputTokens,
+        ].join('\0');
+
+        if (this.rows.has(dedupKey)) {
+          fileAudit.duplicateRowsSkipped += 1;
+          continue;
+        }
+
+        this.rows.set(dedupKey, row);
+        if (tsMs !== undefined) this.rowTimestampMs.set(dedupKey, tsMs);
+
+        if (row.sessionId) {
+          let sessionKeys = this.sessionIndex.get(row.sessionId);
+          if (!sessionKeys) {
+            sessionKeys = new Set<string>();
+            this.sessionIndex.set(row.sessionId, sessionKeys);
+          }
+          sessionKeys.add(dedupKey);
+        }
+
+        fileAudit.rowsIndexed += 1;
+        rowsChanged = true;
+        this.recordSessionTimestamp(row, tsMs);
+      }
+    } catch (err: unknown) {
+      fileAudit.ingestErrors += 1;
+      logEvent('error', 'local-model-ingest-error', {
+        path: filePath,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    fileAudit.lastIndexedAt = formatLocalIso();
+    this.fileIngestionAudits.set(filePath, fileAudit);
+    if (this.fileIngestionAudits.size > this.maxFileIngestionAudits) {
+      evictOldestInsertionOrder(
+        this.fileIngestionAudits,
+        Math.ceil(this.maxFileIngestionAudits * 0.1)
+      );
+    }
+
+    return rowsChanged;
+  }
+
   private async indexRequestedSubagentModels(filePath: string): Promise<Set<string>> {
     const changedAgentIds = new Set<string>();
     if (isSubagentFilePath(filePath)) return changedAgentIds;
@@ -2543,11 +3110,14 @@ export class IndexStore extends EventEmitter {
    * of BATCH_SIZE to avoid fd-limit exhaustion with 2,500+ files.
    */
   async initialize(): Promise<void> {
-    const files = await collectJsonlFiles(PROJECTS_DIR).catch(() => [] as string[]);
+    const files = await collectJsonlFilesFromDirs(WATCHED_SOURCE_DIRS).catch(() => [] as string[]);
     this.filesDiscovered = files.length;
+    const claudeFiles = files.filter(
+      (filePath) => sourceProviderForPath(filePath) === 'claude-code'
+    );
 
-    for (let i = 0; i < files.length; i += BATCH_SIZE) {
-      const batch = files.slice(i, i + BATCH_SIZE);
+    for (let i = 0; i < claudeFiles.length; i += BATCH_SIZE) {
+      const batch = claudeFiles.slice(i, i + BATCH_SIZE);
       await Promise.all(batch.map((f) => this.indexRequestedSubagentModels(f)));
     }
 
@@ -2600,6 +3170,13 @@ export class IndexStore extends EventEmitter {
     filePath: string,
     options: { skipRequestedSubagentModelScan?: boolean } = {}
   ): Promise<boolean> {
+    if (sourceProviderForPath(filePath) === 'codex') {
+      return this.ingestCodexFileInternal(filePath);
+    }
+    if (sourceProviderForPath(filePath) === 'local-models') {
+      return this.ingestLocalModelFileInternal(filePath);
+    }
+
     const fileAudit = emptyFileIngestionAudit();
     let rowsChanged = false;
 
@@ -3041,7 +3618,8 @@ export class IndexStore extends EventEmitter {
 
   /** Return MetricSummary, using cached snapshot when no filters applied. */
   getMetrics(query: MetricsQuery = {}): MetricSummary {
-    const isDefaultQuery = !query.since && !query.project;
+    const isDefaultQuery =
+      !query.since && !query.project && (!query.provider || query.provider === 'all');
     if (isDefaultQuery && this.snapshot) return this.snapshot;
 
     const allRows = [...this.rows.values()];
@@ -3144,6 +3722,7 @@ export class IndexStore extends EventEmitter {
 
     const result: TurnBucket[] = [];
     for (const row of this.rows.values()) {
+      if (!matchesProviderFilter(row, query.provider)) continue;
       if (query.project && !row.project.includes(query.project)) continue;
       if (sinceCutoff) {
         const rowDate = new Date(`${row.date}T00:00:00`);
@@ -3154,6 +3733,7 @@ export class IndexStore extends EventEmitter {
       result.push({
         timestamp,
         sessionId: row.sessionId,
+        sourceProvider: sourceProviderForRow(row),
         project: row.project,
         modelId: row.modelId,
         modelFamily: row.modelFamily,
@@ -3162,6 +3742,22 @@ export class IndexStore extends EventEmitter {
         cacheReadTokens: row.cacheReadTokens,
         costUsd: row.costUsd,
         durationMs: row.turnDurationMs ?? null,
+        ...(row.localRuntime ? { localRuntime: row.localRuntime } : {}),
+        ...(row.tokensPerSecond !== undefined ? { tokensPerSecond: row.tokensPerSecond } : {}),
+        ...(row.timeToFirstTokenMs !== undefined
+          ? { timeToFirstTokenMs: row.timeToFirstTokenMs }
+          : {}),
+        ...(row.promptEvalDurationMs !== undefined
+          ? { promptEvalDurationMs: row.promptEvalDurationMs }
+          : {}),
+        ...(row.evalDurationMs !== undefined ? { evalDurationMs: row.evalDurationMs } : {}),
+        ...(row.loadDurationMs !== undefined ? { loadDurationMs: row.loadDurationMs } : {}),
+        ...(row.equivalentClaudeCostUsd !== undefined
+          ? { equivalentClaudeCostUsd: row.equivalentClaudeCostUsd }
+          : {}),
+        ...(row.equivalentCodexCostUsd !== undefined
+          ? { equivalentCodexCostUsd: row.equivalentCodexCostUsd }
+          : {}),
       });
     }
 
@@ -3210,6 +3806,7 @@ export class IndexStore extends EventEmitter {
     let isSubagent = false;
     let project = '';
     let projectName = '';
+    let sourceProvider: UsageSourceProvider = 'claude-code';
 
     // Per-component cost accumulators (USD).
     let sumInputCostUsd = 0;
@@ -3233,6 +3830,7 @@ export class IndexStore extends EventEmitter {
       if (!project) {
         project = row.project;
         projectName = row.projectName;
+        sourceProvider = sourceProviderForRow(row);
       }
 
       // Use the same micro-USD-aware component resolver used by metrics rollups.
@@ -3290,6 +3888,22 @@ export class IndexStore extends EventEmitter {
         cacheReadTokens: row.cacheReadTokens,
         costUsd: row.costUsd,
         durationMs: row.turnDurationMs ?? null,
+        ...(row.localRuntime ? { localRuntime: row.localRuntime } : {}),
+        ...(row.tokensPerSecond !== undefined ? { tokensPerSecond: row.tokensPerSecond } : {}),
+        ...(row.timeToFirstTokenMs !== undefined
+          ? { timeToFirstTokenMs: row.timeToFirstTokenMs }
+          : {}),
+        ...(row.promptEvalDurationMs !== undefined
+          ? { promptEvalDurationMs: row.promptEvalDurationMs }
+          : {}),
+        ...(row.evalDurationMs !== undefined ? { evalDurationMs: row.evalDurationMs } : {}),
+        ...(row.loadDurationMs !== undefined ? { loadDurationMs: row.loadDurationMs } : {}),
+        ...(row.equivalentClaudeCostUsd !== undefined
+          ? { equivalentClaudeCostUsd: row.equivalentClaudeCostUsd }
+          : {}),
+        ...(row.equivalentCodexCostUsd !== undefined
+          ? { equivalentCodexCostUsd: row.equivalentCodexCostUsd }
+          : {}),
         toolUses: row.toolUses ?? {},
         toolErrors: row.toolErrors ?? {},
       }));
@@ -3307,6 +3921,7 @@ export class IndexStore extends EventEmitter {
 
     return {
       sessionId,
+      sourceProvider,
       project,
       projectName,
       costUsd,

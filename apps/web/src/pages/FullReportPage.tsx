@@ -52,10 +52,13 @@ import {
   formatSessionDate,
   formatTokens,
 } from '../lib/formatters.js';
+import { providerModeLabel, withProviderMode } from '../lib/provider-modes.js';
 import { queryKeys } from '../lib/query-keys.js';
+import { useProviderMode } from '../lib/useProviderMode.js';
 import { MetricCard } from '../panels/MetricCard.js';
 import { Button } from '../ui/Button.js';
 import { Card } from '../ui/Card.js';
+import { ProviderModeToggle } from '../ui/ProviderModeToggle.js';
 import type { SelectOption } from '../ui/Select.js';
 import { Select } from '../ui/Select.js';
 
@@ -424,13 +427,19 @@ export default function FullReportPage() {
   const [pageIndex, setPageIndex] = useState<number>(0);
   const [datePreset, setDatePreset] = useState<DateRangePreset>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const { providerMode, setProviderMode } = useProviderMode();
 
-  const query = { limit: 500 } as const;
+  const query = withProviderMode({ limit: 500 }, providerMode);
 
   const { data, isLoading, isError } = useQuery<SessionSummary[]>({
     queryKey: queryKeys.sessions(query),
     queryFn: () => fetchSessions(query),
   });
+
+  function handleProviderModeChange(next: typeof providerMode) {
+    setProviderMode(next);
+    setPageIndex(0);
+  }
 
   function handleSort(key: SortKey) {
     if (key === sortKey) {
@@ -541,17 +550,20 @@ export default function FullReportPage() {
             </h1>
           </div>
 
-          {/* Right: Export CSV — primary pill button using Button primitive */}
-          <Button
-            variant="primary"
-            Icon={Download}
-            className="rounded-full px-5 py-2.5"
-            disabled={sessions.length === 0}
-            onClick={() => exportSessionsCsv(filtered)}
-            aria-label="Export filtered sessions as CSV"
-          >
-            Export CSV
-          </Button>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <ProviderModeToggle value={providerMode} onChange={handleProviderModeChange} />
+            {/* Export CSV — primary pill button using Button primitive */}
+            <Button
+              variant="primary"
+              Icon={Download}
+              className="rounded-full px-5 py-2.5"
+              disabled={sessions.length === 0}
+              onClick={() => exportSessionsCsv(filtered)}
+              aria-label="Export filtered sessions as CSV"
+            >
+              Export CSV
+            </Button>
+          </div>
         </div>
 
         {/* ROW 2: KPI grid — 4 MetricCards, no deltas */}
@@ -770,6 +782,9 @@ export default function FullReportPage() {
                             </span>
                             <span className="block font-mono text-xs text-gray-500 dark:text-gray-400 mt-0.5">
                               {truncateSessionId(session.sessionId)}
+                            </span>
+                            <span className="block text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                              {providerModeLabel(session.sourceProvider ?? 'claude-code')}
                             </span>
                           </Link>
                         </td>

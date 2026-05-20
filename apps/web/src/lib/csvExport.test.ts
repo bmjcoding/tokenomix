@@ -267,15 +267,16 @@ describe('buildSessionsRows', () => {
     const rows = buildSessionsRows(SESSION_FIXTURES);
     const first = rows[1];
     expect(first).toBeDefined();
-    // [date, project, projectName, sessionId, costUsd, inputTokens, outputTokens, cacheCreation, cacheRead, events, duration]
+    // [date, project, projectName, provider, sessionId, costUsd, inputTokens, outputTokens, cacheCreation, cacheRead, events, duration]
     // index 0 is the formatted date string
     expect(first?.[1]).toBe('/home/user/project-a');
     expect(first?.[2]).toBe('project-a');
-    expect(first?.[3]).toBe('abc123');
-    expect(first?.[4]).toBe(1.2345);
+    expect(first?.[3]).toBe('Claude Code');
+    expect(first?.[4]).toBe('abc123');
+    expect(first?.[5]).toBe(1.2345);
     // Duration cell: first fixture has durationMs: 2_250_000 (37m 30s)
-    expect(typeof first?.[10]).toBe('string');
-    expect(first?.[10]).not.toBe('');
+    expect(typeof first?.[11]).toBe('string');
+    expect(first?.[11]).not.toBe('');
   });
 
   it('date cell formats firstTs to MM-DD-YYYY', () => {
@@ -292,11 +293,11 @@ describe('buildSessionsRows', () => {
     expect(rows[2]?.[0]).toBe('—');
   });
 
-  it('each data row has 11 elements', () => {
+  it('each data row has 12 elements', () => {
     const rows = buildSessionsRows(SESSION_FIXTURES);
     // Skip header row (index 0)
     for (let i = 1; i < rows.length; i++) {
-      expect(rows[i]).toHaveLength(11);
+      expect(rows[i]).toHaveLength(12);
     }
   });
 
@@ -359,6 +360,7 @@ describe('RFC 4180 output via serializeCsv + buildSessionsRows', () => {
       'Date',
       'Project',
       'ProjectName',
+      'Provider',
       'SessionId',
       'CostUSD',
       'InputTokens',
@@ -373,10 +375,10 @@ describe('RFC 4180 output via serializeCsv + buildSessionsRows', () => {
   it('Duration cell is formatted string for known durationMs', () => {
     const rows = parseCsvRows(serializeCsv(buildSessionsRows(SESSION_FIXTURES)));
     // first fixture: durationMs 2_250_000 — formatDurationNullable produces a non-em-dash string
-    expect(rows[1]?.[10]).toBeDefined();
-    expect(rows[1]?.[10]).not.toBe('—');
+    expect(rows[1]?.[11]).toBeDefined();
+    expect(rows[1]?.[11]).not.toBe('—');
     // second fixture: durationMs null — should be em-dash
-    expect(rows[2]?.[10]).toBe('—');
+    expect(rows[2]?.[11]).toBe('—');
   });
 });
 
@@ -559,7 +561,7 @@ describe('exportSessionsCsv — download trigger', () => {
 
   it('passes a string blob containing the CSV header to Blob', () => {
     exportSessionsCsv(SESSION_FIXTURES);
-    expect(lastBlobParts).toContain('Date,Project,ProjectName,SessionId,CostUSD');
+    expect(lastBlobParts).toContain('Date,Project,ProjectName,Provider,SessionId,CostUSD');
   });
 
   it('passes a blob with correct row count', () => {

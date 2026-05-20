@@ -16,7 +16,7 @@ import { serve } from '@hono/node-server';
 import type { MiddlewareHandler } from 'hono';
 import { Hono } from 'hono';
 import { initServerEnv, validateEnv } from './env.js';
-import { IndexStore, PROJECTS_DIR } from './index-store.js';
+import { IndexStore, WATCHED_SOURCE_DIRS } from './index-store.js';
 import { logEvent } from './logger.js';
 import { RescanScheduler } from './rescan-scheduler.js';
 import { adminRoute } from './routes/admin.js';
@@ -78,7 +78,7 @@ async function main(): Promise<void> {
   // Collect file count for the startup log.
   let fileCount = 0;
   try {
-    fileCount = await countJsonlFiles(PROJECTS_DIR);
+    fileCount = await countJsonlFilesFromDirs(WATCHED_SOURCE_DIRS);
   } catch {
     fileCount = 0;
   }
@@ -143,7 +143,7 @@ async function main(): Promise<void> {
   serve({ fetch: app.fetch, port: PORT, hostname: '127.0.0.1' }, (info) => {
     // Structured startup log with all relevant context.
     logEvent('info', 'startup', {
-      projectsDir: PROJECTS_DIR,
+      sourceDirs: WATCHED_SOURCE_DIRS,
       fileCount,
       port: info.port,
       indexedRows: store.indexedRows,
@@ -175,6 +175,11 @@ async function countJsonlFiles(dir: string): Promise<number> {
   }
   await walk(dir);
   return count;
+}
+
+async function countJsonlFilesFromDirs(dirs: readonly string[]): Promise<number> {
+  const counts = await Promise.all(dirs.map((dir) => countJsonlFiles(dir)));
+  return counts.reduce((sum, count) => sum + count, 0);
 }
 
 main().catch((err: unknown) => {

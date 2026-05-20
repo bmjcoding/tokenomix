@@ -9,7 +9,7 @@
  * inline — keeping cache semantics consistent across the whole app.
  */
 
-import type { MetricsQuery } from '@tokenomix/shared';
+import type { MetricsQuery, UsageSourceProviderFilter } from '@tokenomix/shared';
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -33,8 +33,8 @@ export const queryKeys = {
     return ['sessions', query] as const;
   },
 
-  recommendationChatStatus(): readonly unknown[] {
-    return ['recommendationChatStatus'] as const;
+  recommendationChatStatus(provider?: UsageSourceProviderFilter): readonly unknown[] {
+    return ['recommendationChatStatus', provider ?? 'all'] as const;
   },
 
   /**

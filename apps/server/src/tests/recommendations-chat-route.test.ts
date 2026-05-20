@@ -11,8 +11,11 @@ import { IndexStore } from '../index-store.js';
 import type { ClaudeRecommendationRunner } from '../routes/recommendations-chat.js';
 import {
   LocalClaudeRecommendationRunner,
+  LocalCodexRecommendationRunner,
   parseClaudeOutput,
   parseClaudeStreamLine,
+  parseCodexOutput,
+  parseCodexStreamLine,
   recommendationsChatRoute,
 } from '../routes/recommendations-chat.js';
 
@@ -51,7 +54,7 @@ function makeRow(overrides: Partial<TokenRow>): TokenRow {
   };
 }
 
-function buildApp(store: IndexStore, runner: ClaudeRecommendationRunner): Hono {
+function buildApp(store: IndexStore, runner: Parameters<typeof recommendationsChatRoute>[1]): Hono {
   const app = new Hono();
   app.route('/api/recommendations/chat', recommendationsChatRoute(store, runner));
   return app;
@@ -61,6 +64,7 @@ function makeRunner(
   overrides: Partial<ClaudeRecommendationRunner> = {}
 ): ClaudeRecommendationRunner {
   return {
+    preservesContext: true,
     status: async () => readyStatus,
     ask: async () => ({
       answer: 'unused',
@@ -179,6 +183,48 @@ describe('recommendationsChatRoute', () => {
     });
   });
 
+  it('parses Codex JSONL output from agent_message/task_complete events', () => {
+    const stdout = [
+      JSON.stringify({
+        type: 'session_meta',
+        payload: { id: 'codex-session-id' },
+      }),
+      JSON.stringify({
+        type: 'event_msg',
+        payload: {
+          type: 'agent_message',
+          message: 'Use the OpenAI Codex filtered context.',
+          phase: 'final_answer',
+        },
+      }),
+      JSON.stringify({
+        type: 'event_msg',
+        payload: {
+          type: 'task_complete',
+          last_agent_message: 'Use the OpenAI Codex filtered context.',
+          duration_ms: 3210,
+        },
+      }),
+    ].join('\n');
+
+    const parsed = parseCodexOutput(stdout);
+    const done = parseCodexStreamLine(stdout.split('\n')[2] ?? '');
+
+    expect(parsed.answer).toBe('Use the OpenAI Codex filtered context.');
+    expect(parsed.durationMs).toBe(3210);
+    expect(parsed.sessionId).toBe('codex-session-id');
+    expect(done).toEqual({
+      type: 'done',
+      result: {
+        answer: 'Use the OpenAI Codex filtered context.',
+        durationMs: 3210,
+        costUsd: null,
+        sessionId: null,
+        warning: null,
+      },
+    });
+  });
+
   it('reports Claude Code status without provider details', async () => {
     const store = new IndexStore();
     const app = buildApp(store, makeRunner());
@@ -191,6 +237,25 @@ describe('recommendationsChatRoute', () => {
     expect(body.providerDetails).toBe('managed_by_claude_code');
     expect(JSON.stringify(body)).not.toContain('litellm');
     expect(JSON.stringify(body)).not.toContain('bedrock-runtime');
+  });
+
+  it('reports local-model chat as disabled', async () => {
+    const store = new IndexStore();
+    const app = buildApp(store, makeRunner());
+
+    const status = await app.request('/api/recommendations/chat/status?provider=local-models');
+    const statusBody = (await status.json()) as RecommendationChatStatus;
+    const stream = await app.request('/api/recommendations/chat/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'local-models', message: 'Explain local usage.' }),
+    });
+
+    expect(status.status).toBe(200);
+    expect(statusBody.available).toBe(false);
+    expect(statusBody.providerDetails).toBe('disabled_for_local_models');
+    expect(stream.status).toBe(400);
+    expect(await stream.text()).toContain('disabled for Local Models mode');
   });
 
   it('builds a path-redacted metrics prompt and returns runner output', async () => {
@@ -243,6 +308,81 @@ describe('recommendationsChatRoute', () => {
     expect(capturedPrompt).toContain('bank-app');
     expect(capturedPrompt).not.toContain('/Users/private');
     expect(capturedPrompt).toContain('Impact estimates are non-additive');
+  });
+
+  it('uses OpenAI Codex runner and Codex-filtered context for codex provider chat', async () => {
+    const store = new IndexStore();
+    const rows = store.rows as Map<string, TokenRow>;
+    rows.set(
+      'claude:req1',
+      makeRow({
+        sessionId: 'claude-session',
+        project: '/tmp/claude-only',
+        projectName: 'claude-only',
+        costUsd: 900,
+      })
+    );
+    rows.set(
+      'codex:req1',
+      makeRow({
+        sourceProvider: 'codex',
+        sessionId: 'codex-session',
+        project: '/tmp/codex-only',
+        projectName: 'codex-only',
+        modelId: 'gpt-5.5',
+        modelFamily: 'gpt',
+        costUsd: 12,
+        inputCostUsd: 8,
+        outputCostUsd: 4,
+      })
+    );
+
+    const prompts: string[] = [];
+    const app = buildApp(store, {
+      'claude-code': makeRunner({
+        stream: () => {
+          throw new Error('wrong runner');
+        },
+      }),
+      codex: makeRunner({
+        preservesContext: false,
+        stream: async function* (prompt) {
+          prompts.push(prompt);
+          yield {
+            type: 'done',
+            result: {
+              answer: 'codex context',
+              durationMs: 20,
+              costUsd: null,
+              sessionId: 'codex-chat',
+              warning: null,
+            },
+          };
+        },
+      }),
+    });
+
+    const first = await app.request('/api/recommendations/chat/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'codex', message: 'Explain this.' }),
+    });
+    await first.text();
+    const second = await app.request('/api/recommendations/chat/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'codex', message: 'Follow up.' }),
+    });
+    await second.text();
+
+    expect(first.status).toBe(200);
+    expect(prompts).toHaveLength(2);
+    expect(prompts[0]).toContain('OpenAI Codex usage');
+    expect(prompts[0]).toContain('codex-only');
+    expect(prompts[0]).not.toContain('claude-only');
+    expect(prompts[0]).toContain('baseline-plus-targeted-retrieval');
+    expect(prompts[1]).toContain('baseline-plus-targeted-retrieval');
+    expect(prompts[1]).not.toContain('already supplied earlier');
   });
 
   it('rejects invalid chat requests', async () => {
@@ -495,5 +635,89 @@ describe('LocalClaudeRecommendationRunner — subprocess cwd isolation (H1)', ()
 
     // cwd must NOT equal process.cwd() — the critical H1 invariant.
     expect(cwd).not.toBe(process.cwd());
+  }, 10_000);
+});
+
+describe('LocalCodexRecommendationRunner — subprocess command', () => {
+  beforeEach(() => {
+    const result = validateEnv({
+      TOKENOMIX_CODEX_COMMAND: 'codex',
+      TOKENOMIX_CODEX_CHAT_MODEL: 'gpt-5.5',
+    });
+    if (!result.success) throw new Error('validateEnv failed in test setup');
+    initServerEnv(result.env);
+    vi.mocked(mockSpawn).mockReset();
+  });
+
+  afterEach(() => {
+    vi.mocked(mockSpawn).mockReset();
+  });
+
+  it('spawns codex exec --json and passes the prompt on stdin', async () => {
+    const { EventEmitter } = await import('node:events');
+
+    class ChildProcessStub extends EventEmitter {
+      stdout = new EventEmitter();
+      stderr = new EventEmitter();
+      stdin = {
+        write: vi.fn(),
+        end: vi.fn(),
+      };
+      kill = vi.fn();
+    }
+
+    const createdStubs: ChildProcessStub[] = [];
+    vi.mocked(mockSpawn).mockImplementation(() => {
+      const stub = new ChildProcessStub();
+      createdStubs.push(stub);
+      setImmediate(() => {
+        stub.stdout.emit(
+          'data',
+          Buffer.from(
+            `${JSON.stringify({
+              type: 'event_msg',
+              payload: {
+                type: 'task_complete',
+                last_agent_message: 'codex answer',
+                duration_ms: 111,
+              },
+            })}\n`
+          )
+        );
+        stub.emit('close', 0);
+      });
+      return stub as unknown as ReturnType<typeof import('node:child_process').spawn>;
+    });
+
+    const runner = new LocalCodexRecommendationRunner({ timeoutMs: 5_000 });
+    const result = await runner.ask('codex prompt');
+
+    expect(result.answer).toBe('codex answer');
+    expect(result.durationMs).toBe(111);
+    expect(vi.mocked(mockSpawn)).toHaveBeenCalledOnce();
+    const stub = createdStubs[0];
+    expect(stub?.stdin.write).toHaveBeenCalledWith('codex prompt');
+    expect(stub?.stdin.end).toHaveBeenCalledOnce();
+
+    const spawnCall = vi.mocked(mockSpawn).mock.calls[0];
+    const command = spawnCall?.[0];
+    const args = spawnCall?.[1] as string[] | undefined;
+    const spawnOptions = spawnCall?.[2] as { cwd?: string } | undefined;
+
+    expect(command).toBe('codex');
+    expect(args?.slice(0, 2)).toEqual(['exec', '--json']);
+    expect(args).toEqual(
+      expect.arrayContaining([
+        '--skip-git-repo-check',
+        '--ephemeral',
+        '--ignore-rules',
+        '--sandbox',
+        'read-only',
+        '--model',
+        'gpt-5.5',
+        '-',
+      ])
+    );
+    expect(spawnOptions?.cwd?.startsWith(os.tmpdir())).toBe(true);
   }, 10_000);
 });

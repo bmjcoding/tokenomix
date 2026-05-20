@@ -1,9 +1,9 @@
 /**
- * Local Claude Code chat route for Optimization Opportunities.
+ * Local provider-backed chat route for Optimization Opportunities.
  *
- * The server treats Claude Code as an opaque local executable. Enterprise
- * gateway URLs and credentials remain in Claude Code settings/environment and
- * are never read or exposed by tokenomix.
+ * The server treats provider CLIs as opaque local executables. Gateway URLs,
+ * credentials, and provider account settings remain in those CLIs and are never
+ * read or exposed by tokenomix.
  */
 
 import { spawn } from 'node:child_process';
@@ -22,12 +22,15 @@ import type {
   SessionDetail,
   SessionSummary,
   SessionTurnRow,
+  UsageSourceProvider,
+  UsageSourceProviderFilter,
 } from '@tokenomix/shared';
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { serverEnv } from '../env.js';
 import type { IndexStore } from '../index-store.js';
 import { logEvent } from '../logger.js';
+import { parseUsageProviderFilterParam } from './query-params.js';
 
 const MAX_MESSAGE_CHARS = 2_000;
 const MAX_HISTORY_MESSAGES = 8;
@@ -41,7 +44,9 @@ const MAX_CONTEXT_SESSIONS = 5;
 const MAX_CONTEXT_TURNS = 5;
 const MAX_CONTEXT_TOOLS = 8;
 
-interface ClaudeRunResult {
+type ChatProvider = 'claude-code' | 'codex';
+
+export interface ChatRunResult {
   answer: string;
   durationMs: number | null;
   costUsd: number | null;
@@ -49,15 +54,20 @@ interface ClaudeRunResult {
   warning: string | null;
 }
 
-type ClaudeStreamEvent =
+export type ChatStreamEvent =
   | { type: 'delta'; text: string }
-  | { type: 'done'; result: ClaudeRunResult };
+  | { type: 'done'; result: ChatRunResult };
 
-export interface ClaudeRecommendationRunner {
+export interface RecommendationChatRunner {
+  readonly preservesContext?: boolean;
   status(): Promise<RecommendationChatStatus>;
-  ask(prompt: string): Promise<ClaudeRunResult>;
-  stream(prompt: string, signal?: AbortSignal): AsyncIterable<ClaudeStreamEvent>;
+  ask(prompt: string): Promise<ChatRunResult>;
+  stream(prompt: string, signal?: AbortSignal): AsyncIterable<ChatStreamEvent>;
 }
+
+export type ClaudeRunResult = ChatRunResult;
+export type ClaudeStreamEvent = ChatStreamEvent;
+export type ClaudeRecommendationRunner = RecommendationChatRunner;
 
 function basename(pathLike: string | undefined): string {
   if (!pathLike) return 'current project';
@@ -72,6 +82,54 @@ function roundCurrency(value: number): number {
 
 function trimText(value: string, maxChars: number): string {
   return value.length <= maxChars ? value : `${value.slice(0, maxChars)}...`;
+}
+
+function defaultProviderFilter(
+  provider: UsageSourceProviderFilter | undefined
+): UsageSourceProviderFilter {
+  return provider ?? 'all';
+}
+
+function metricsProviderFilter(
+  provider: UsageSourceProviderFilter
+): UsageSourceProvider | undefined {
+  return provider === 'all' ? undefined : provider;
+}
+
+function chatProviderFor(provider: UsageSourceProviderFilter): ChatProvider | null {
+  if (provider === 'local-models') return null;
+  return provider === 'codex' ? 'codex' : 'claude-code';
+}
+
+function providerRuntimeLabel(provider: ChatProvider): string {
+  return provider === 'codex' ? 'OpenAI Codex' : 'Claude Code';
+}
+
+function rowMatchesProvider(
+  row: { sourceProvider?: UsageSourceProvider },
+  provider?: UsageSourceProvider
+): boolean {
+  if (provider === undefined) return true;
+  return (row.sourceProvider ?? 'claude-code') === provider;
+}
+
+function providerQuery(
+  provider?: UsageSourceProvider
+): { provider: UsageSourceProvider } | Record<string, never> {
+  return provider === undefined ? {} : { provider };
+}
+
+function sourceBoundaryForProvider(provider: UsageSourceProviderFilter): string {
+  if (provider === 'claude-code') {
+    return 'Indexed Claude Code usage under ~/.claude/projects only; no arbitrary filesystem reads and no full transcript text.';
+  }
+  if (provider === 'codex') {
+    return 'Indexed OpenAI Codex usage under ~/.codex/sessions and ~/.codex/archived_sessions only; no arbitrary filesystem reads and no full transcript text.';
+  }
+  if (provider === 'local-models') {
+    return 'Indexed local-model telemetry under ~/.tokenomix/local-models only; chat is disabled for local-model-only mode.';
+  }
+  return 'Indexed Claude Code, OpenAI Codex, and local-model telemetry from configured Tokenomix usage sources only; no arbitrary filesystem reads and no full transcript text.';
 }
 
 function sanitizeHistory(value: unknown): RecommendationChatMessage[] {
@@ -96,16 +154,32 @@ function validateRequest(raw: unknown): RecommendationChatRequest | null {
   if (typeof body.message !== 'string') return null;
   const message = body.message.trim();
   if (!message || message.length > MAX_MESSAGE_CHARS) return null;
+  const provider =
+    typeof body.provider === 'string'
+      ? parseUsageProviderFilterParam(body.provider)
+      : body.provider === undefined
+        ? undefined
+        : null;
+  if (provider === null) return null;
   return {
     message,
     history: sanitizeHistory(body.history),
+    ...(provider !== undefined && { provider }),
   };
 }
 
-function buildChatContext(summary: MetricSummary): unknown {
+function buildChatContext(
+  summary: MetricSummary,
+  provider: UsageSourceProviderFilter = 'all'
+): unknown {
   return {
+    sourceProvider: provider,
     window: 'absolute last 30 local calendar days unless noted otherwise',
     costUsd30d: roundCurrency(summary.costUsd30d),
+    localEquivalentCosts30d: {
+      claudeUsd: roundCurrency(summary.localEquivalentClaudeCostUsd30d ?? 0),
+      openAiCodexUsd: roundCurrency(summary.localEquivalentCodexCostUsd30d ?? 0),
+    },
     listedImpactUsd30d: roundCurrency(
       summary.optimizationOpportunities.reduce((sum, opportunity) => {
         return sum + opportunity.impactUsd30d;
@@ -189,6 +263,7 @@ function compactToolRecord(record: Record<string, number> | undefined): Record<s
 function compactSessionSummary(session: SessionSummary): unknown {
   return {
     sessionId: session.sessionId,
+    sourceProvider: session.sourceProvider ?? 'claude-code',
     project: session.projectName || basename(session.project),
     costUsd: roundCurrency(session.costUsd),
     events: session.events,
@@ -202,10 +277,15 @@ function compactSessionSummary(session: SessionSummary): unknown {
   };
 }
 
-function compactTurn(turn: SessionTurnRow, rank: number): unknown {
+function compactTurn(
+  turn: SessionTurnRow,
+  rank: number,
+  sourceProvider: UsageSourceProvider | undefined
+): unknown {
   return {
     rank,
     timestamp: turn.timestamp,
+    sourceProvider: sourceProvider ?? 'claude-code',
     modelFamily: turn.modelFamily,
     modelId: turn.modelId,
     costUsd: roundCurrency(turn.costUsd),
@@ -213,6 +293,17 @@ function compactTurn(turn: SessionTurnRow, rank: number): unknown {
     outputTokens: turn.outputTokens,
     cacheReadTokens: turn.cacheReadTokens,
     durationMs: turn.durationMs,
+    localRuntime: turn.localRuntime,
+    tokensPerSecond: turn.tokensPerSecond,
+    timeToFirstTokenMs: turn.timeToFirstTokenMs,
+    equivalentClaudeCostUsd:
+      turn.equivalentClaudeCostUsd === undefined
+        ? undefined
+        : roundCurrency(turn.equivalentClaudeCostUsd),
+    equivalentOpenAiCodexCostUsd:
+      turn.equivalentCodexCostUsd === undefined
+        ? undefined
+        : roundCurrency(turn.equivalentCodexCostUsd),
     toolUses: compactToolRecord(turn.toolUses),
     toolErrors: compactToolRecord(turn.toolErrors),
   };
@@ -231,10 +322,11 @@ function compactSessionDetail(detail: SessionDetail): unknown {
     .slice()
     .sort((a, b) => b.costUsd - a.costUsd)
     .slice(0, MAX_CONTEXT_TURNS)
-    .map((turn, index) => compactTurn(turn, index + 1));
+    .map((turn, index) => compactTurn(turn, index + 1, detail.sourceProvider));
 
   return {
     sessionId: detail.sessionId,
+    sourceProvider: detail.sourceProvider ?? 'claude-code',
     project: detail.projectName || basename(detail.project),
     firstTs: detail.firstTs,
     lastTs: detail.lastTs,
@@ -261,12 +353,17 @@ function compactSessionDetail(detail: SessionDetail): unknown {
   };
 }
 
-function findSessionIdsForQuestion(store: IndexStore, question: string): string[] {
+function findSessionIdsForQuestion(
+  store: IndexStore,
+  question: string,
+  provider?: UsageSourceProvider
+): string[] {
   const terms = extractIdentifierTerms(question);
   if (terms.length === 0) return [];
 
   const matches = new Set<string>();
   for (const row of store.rows.values()) {
+    if (!rowMatchesProvider(row, provider)) continue;
     const sessionId = row.sessionId;
     const normalized = sessionId.toLowerCase();
     if (terms.some((term) => normalized.includes(term))) {
@@ -311,13 +408,14 @@ function shouldIncludeOpportunityContext(question: string): boolean {
 function buildProjectContext(
   store: IndexStore,
   summary: MetricSummary,
-  projectPath: string
+  projectPath: string,
+  provider?: UsageSourceProvider
 ): unknown {
   const projectName = basename(projectPath);
   const allTime = summary.byProject.find((project) => project.project === projectPath);
   const last30d = summary.byProject30d.find((project) => project.project === projectPath);
   const sessions = store
-    .getSessions({ project: projectPath })
+    .getSessions({ project: projectPath, ...providerQuery(provider) })
     .slice(0, MAX_CONTEXT_SESSIONS)
     .map(compactSessionSummary);
 
@@ -329,7 +427,7 @@ function buildProjectContext(
     events30d: last30d?.events ?? null,
     topSessions: sessions,
     topExpensiveTurns: store
-      .getTurns({ project: projectPath }, MAX_CONTEXT_TURNS)
+      .getTurns({ project: projectPath, ...providerQuery(provider) }, MAX_CONTEXT_TURNS)
       .map((turn, index) => ({
         rank: index + 1,
         sessionId: turn.sessionId,
@@ -349,16 +447,18 @@ function buildRetrievedChatContext(args: {
   summary: MetricSummary;
   request: RecommendationChatRequest;
   includeBaseline: boolean;
+  provider: UsageSourceProviderFilter;
 }): unknown | null {
-  const { store, summary, request, includeBaseline } = args;
-  const sessionIds = findSessionIdsForQuestion(store, request.message);
+  const { store, summary, request, includeBaseline, provider } = args;
+  const metricsProvider = metricsProviderFilter(provider);
+  const sessionIds = findSessionIdsForQuestion(store, request.message, metricsProvider);
   const matchedSessions = sessionIds
     .map((sessionId) => store.getSessionDetail(sessionId))
     .filter((detail): detail is SessionDetail => detail !== null)
     .map(compactSessionDetail);
   const projectPaths = findProjectsForQuestion(summary, request.message);
   const matchedProjects = projectPaths.map((projectPath) =>
-    buildProjectContext(store, summary, projectPath)
+    buildProjectContext(store, summary, projectPath, metricsProvider)
   );
 
   const includeBroadSessions = includeBaseline || shouldIncludeBroadSessionContext(request.message);
@@ -378,10 +478,9 @@ function buildRetrievedChatContext(args: {
   }
 
   return {
-    sourceBoundary:
-      'Indexed Claude Code usage under ~/.claude/projects only; no arbitrary filesystem reads and no full transcript text.',
+    sourceBoundary: sourceBoundaryForProvider(provider),
     mode: includeBaseline ? 'baseline-plus-targeted-retrieval' : 'targeted-followup-retrieval',
-    baseline: includeBaseline ? buildChatContext(summary) : undefined,
+    baseline: includeBaseline ? buildChatContext(summary, provider) : undefined,
     matchedSessions,
     matchedProjects,
     optimizationOpportunities: includeOpportunities
@@ -398,22 +497,39 @@ function buildRetrievedChatContext(args: {
         }))
       : undefined,
     topExpensiveSessions: includeBroadSessions
-      ? store.getSessions({}).slice(0, MAX_CONTEXT_SESSIONS).map(compactSessionSummary)
+      ? store
+          .getSessions({ ...providerQuery(metricsProvider) })
+          .slice(0, MAX_CONTEXT_SESSIONS)
+          .map(compactSessionSummary)
       : undefined,
     topExpensiveTurns: includeTurns
-      ? store.getTurns({}, MAX_CONTEXT_TURNS).map((turn, index) => ({
-          rank: index + 1,
-          sessionId: turn.sessionId,
-          project: basename(turn.project),
-          timestamp: turn.timestamp,
-          modelFamily: turn.modelFamily,
-          modelId: turn.modelId,
-          costUsd: roundCurrency(turn.costUsd),
-          inputTokens: turn.inputTokens,
-          outputTokens: turn.outputTokens,
-          cacheReadTokens: turn.cacheReadTokens,
-          durationMs: turn.durationMs,
-        }))
+      ? store
+          .getTurns({ ...providerQuery(metricsProvider) }, MAX_CONTEXT_TURNS)
+          .map((turn, index) => ({
+            rank: index + 1,
+            sessionId: turn.sessionId,
+            sourceProvider: turn.sourceProvider ?? 'claude-code',
+            project: basename(turn.project),
+            timestamp: turn.timestamp,
+            modelFamily: turn.modelFamily,
+            modelId: turn.modelId,
+            costUsd: roundCurrency(turn.costUsd),
+            inputTokens: turn.inputTokens,
+            outputTokens: turn.outputTokens,
+            cacheReadTokens: turn.cacheReadTokens,
+            durationMs: turn.durationMs,
+            localRuntime: turn.localRuntime,
+            tokensPerSecond: turn.tokensPerSecond,
+            timeToFirstTokenMs: turn.timeToFirstTokenMs,
+            equivalentClaudeCostUsd:
+              turn.equivalentClaudeCostUsd === undefined
+                ? undefined
+                : roundCurrency(turn.equivalentClaudeCostUsd),
+            equivalentOpenAiCodexCostUsd:
+              turn.equivalentCodexCostUsd === undefined
+                ? undefined
+                : roundCurrency(turn.equivalentCodexCostUsd),
+          }))
       : undefined,
   };
 }
@@ -450,7 +566,7 @@ function buildFollowupPrompt(
     {
       task: 'Continue the same read-only Tokenomix cost-optimization chat session.',
       responseRules: [
-        'Use the Tokenomix metrics context already supplied earlier in this Claude Code session.',
+        'Use the Tokenomix metrics context already supplied earlier in this analyst session.',
         'When supplemental retrieved context is present below, use it for this question.',
         'Keep the answer concise and concrete.',
         'Ground claims in the supplied metrics or retrieved context.',
@@ -496,7 +612,7 @@ function groundedOpportunityIds(summary: MetricSummary, answer: string): string[
  * shell word-splitting, so spaces in the binary path would only be valid for
  * an absolute path (which should be quoted at the OS level, not here).
  * Callers that need an absolute path with spaces should set
- * TOKENOMIX_CLAUDE_COMMAND to the quoted path — but that scenario is
+ * TOKENOMIX_*_COMMAND to the quoted path — but that scenario is
  * explicitly unsupported by this validator; users should use a wrapper script.
  */
 const SHELL_METACHAR_RE = /[\0\r\n\t ;<>&|$`'"\\*?~(){}[\]]/;
@@ -514,7 +630,7 @@ const SHELL_METACHAR_RE = /[\0\r\n\t ;<>&|$`'"\\*?~(){}[\]]/;
  *    also rejected because they depend on the working directory and are
  *    indistinguishable from a traversal attempt in many contexts.
  */
-function validateClaudeCommandPath(value: string): boolean {
+function validateCommandPath(value: string): boolean {
   if (!value) return false;
 
   // Null byte or non-printable ASCII (control chars 0x01-0x1f, 0x7f)
@@ -537,10 +653,11 @@ function validateClaudeCommandPath(value: string): boolean {
 // Module-level cache: resolved and validated on first call, reused thereafter.
 // `null` means the command was not found; `false` means it has not been resolved yet.
 let cachedClaudeCommand: string | null | false = false;
+let cachedCodexCommand: string | null | false = false;
 
 async function executableExists(command: string): Promise<boolean> {
   try {
-    await access(command);
+    await access(command, fsConstants.X_OK);
     return true;
   } catch {
     return false;
@@ -564,7 +681,7 @@ async function resolveClaudeCommand(): Promise<string | null> {
 
   const configured = serverEnv().TOKENOMIX_CLAUDE_COMMAND?.trim();
   if (configured !== undefined && configured !== '') {
-    if (!validateClaudeCommandPath(configured)) {
+    if (!validateCommandPath(configured)) {
       logEvent('warn', 'claude_command_invalid_path', {
         reason:
           'TOKENOMIX_CLAUDE_COMMAND contains shell metacharacters, path traversal, or non-printable characters and has been rejected.',
@@ -599,6 +716,53 @@ async function resolveClaudeCommand(): Promise<string | null> {
 
   cachedClaudeCommand = 'claude';
   return 'claude';
+}
+
+async function resolveCodexCommand(): Promise<string | null> {
+  if (cachedCodexCommand !== false) return cachedCodexCommand;
+
+  const configured = serverEnv().TOKENOMIX_CODEX_COMMAND?.trim();
+  if (configured !== undefined && configured !== '') {
+    if (!validateCommandPath(configured)) {
+      logEvent('warn', 'codex_command_invalid_path', {
+        reason:
+          'TOKENOMIX_CODEX_COMMAND contains shell metacharacters, path traversal, or non-printable characters and has been rejected.',
+        value: configured,
+      });
+      cachedCodexCommand = null;
+      return null;
+    }
+    if (nodePath.isAbsolute(configured)) {
+      try {
+        accessSync(configured, fsConstants.X_OK);
+      } catch {
+        logEvent('warn', 'codex_command_not_executable', {
+          reason: 'TOKENOMIX_CODEX_COMMAND path exists but is not executable by this process.',
+          value: configured,
+        });
+        cachedCodexCommand = null;
+        return null;
+      }
+    }
+    cachedCodexCommand = configured;
+    return configured;
+  }
+
+  const candidates = [
+    nodePath.join('/Applications', 'Codex.app', 'Contents', 'Resources', 'codex'),
+    nodePath.join(os.homedir(), '.local', 'bin', 'codex'),
+    nodePath.join('/opt', 'homebrew', 'bin', 'codex'),
+    nodePath.join('/usr', 'local', 'bin', 'codex'),
+  ];
+  for (const candidate of candidates) {
+    if (await executableExists(candidate)) {
+      cachedCodexCommand = candidate;
+      return candidate;
+    }
+  }
+
+  cachedCodexCommand = 'codex';
+  return 'codex';
 }
 
 export function parseClaudeOutput(stdout: string): ClaudeRunResult {
@@ -746,6 +910,192 @@ export function parseClaudeStreamLine(line: string): ClaudeStreamEvent | null {
   return null;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
+}
+
+function numberField(record: Record<string, unknown>, keys: string[]): number | null {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+  }
+  return null;
+}
+
+function stringField(record: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim()) return value;
+  }
+  return null;
+}
+
+function textFromCodexContent(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((block) => {
+      const typedBlock = asRecord(block);
+      if (!typedBlock) return '';
+      const type = typedBlock.type;
+      if (
+        (type === 'output_text' || type === 'text' || type === 'input_text') &&
+        typeof typedBlock.text === 'string'
+      ) {
+        return typedBlock.text;
+      }
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
+function codexPayload(event: Record<string, unknown>): Record<string, unknown> {
+  return asRecord(event.payload) ?? event;
+}
+
+function extractCodexSessionId(event: Record<string, unknown>): string | null {
+  const direct = stringField(event, ['session_id', 'sessionId', 'thread_id', 'threadId']);
+  if (direct) return direct;
+  const payload = codexPayload(event);
+  return stringField(payload, ['session_id', 'sessionId', 'thread_id', 'threadId', 'id']);
+}
+
+function extractCodexAnswer(event: Record<string, unknown>): string | null {
+  const payload = codexPayload(event);
+  const payloadType = payload.type;
+
+  if (payloadType === 'agent_message') {
+    return stringField(payload, ['message', 'text', 'last_agent_message']);
+  }
+
+  if (payloadType === 'task_complete') {
+    return stringField(payload, ['last_agent_message', 'message', 'result']);
+  }
+
+  if (payloadType === 'message' && payload.role === 'assistant') {
+    const text = textFromCodexContent(payload.content);
+    return text || null;
+  }
+
+  if (event.type === 'result' || event.type === 'turn.completed' || event.type === 'completed') {
+    return stringField(event, ['result', 'answer', 'message', 'last_agent_message']);
+  }
+
+  if (event.type === 'message' && event.role === 'assistant') {
+    const text = textFromCodexContent(event.content);
+    return text || null;
+  }
+
+  return null;
+}
+
+function extractCodexDelta(event: Record<string, unknown>): string | null {
+  const payload = codexPayload(event);
+  const type = typeof payload.type === 'string' ? payload.type : String(event.type ?? '');
+  if (!type.toLowerCase().includes('delta')) return null;
+  return (
+    stringField(payload, ['delta', 'text', 'message']) ?? stringField(event, ['delta', 'text'])
+  );
+}
+
+function extractCodexDurationMs(event: Record<string, unknown>): number | null {
+  const payload = codexPayload(event);
+  return (
+    numberField(payload, ['duration_ms', 'durationMs']) ??
+    numberField(event, ['duration_ms', 'durationMs'])
+  );
+}
+
+function extractCodexCostUsd(event: Record<string, unknown>): number | null {
+  const payload = codexPayload(event);
+  return (
+    numberField(payload, ['total_cost_usd', 'cost_usd', 'costUsd']) ??
+    numberField(event, ['total_cost_usd', 'cost_usd', 'costUsd'])
+  );
+}
+
+function extractCodexWarning(event: Record<string, unknown>): string | null {
+  const payload = codexPayload(event);
+  const type = stringField(payload, ['type']) ?? stringField(event, ['type']);
+  if (type === 'error' || type === 'turn.failed' || type === 'task_failed') {
+    return stringField(payload, ['message', 'error']) ?? stringField(event, ['message', 'error']);
+  }
+  return null;
+}
+
+function parseJsonEventLines(stdout: string): Record<string, unknown>[] {
+  const trimmed = stdout.trim();
+  if (!trimmed) return [];
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (Array.isArray(parsed)) return parsed.map(asRecord).filter((entry) => entry !== null);
+    const record = asRecord(parsed);
+    if (record) return [record];
+  } catch {
+    // Fall back to JSONL parsing below.
+  }
+
+  const events: Record<string, unknown>[] = [];
+  for (const line of trimmed.split(/\r?\n/)) {
+    const candidate = line.trim();
+    if (!candidate) continue;
+    try {
+      const record = asRecord(JSON.parse(candidate) as unknown);
+      if (record) events.push(record);
+    } catch {
+      // Codex may emit non-JSON diagnostics to stdout on old versions; ignore them.
+    }
+  }
+  return events;
+}
+
+export function parseCodexOutput(stdout: string): ChatRunResult {
+  const events = parseJsonEventLines(stdout);
+  let answer = '';
+  let durationMs: number | null = null;
+  let costUsd: number | null = null;
+  let sessionId: string | null = null;
+  let warning: string | null = null;
+
+  for (const event of events) {
+    sessionId = extractCodexSessionId(event) ?? sessionId;
+    answer = extractCodexAnswer(event) ?? answer;
+    durationMs = extractCodexDurationMs(event) ?? durationMs;
+    costUsd = extractCodexCostUsd(event) ?? costUsd;
+    warning = extractCodexWarning(event) ?? warning;
+  }
+
+  return {
+    answer: answer || stdout.trim(),
+    durationMs,
+    costUsd,
+    sessionId,
+    warning,
+  };
+}
+
+export function parseCodexStreamLine(line: string): ChatStreamEvent | null {
+  const event = asRecord(parseJsonEventLines(line)[0]);
+  if (!event) return null;
+
+  const delta = extractCodexDelta(event);
+  if (delta) return { type: 'delta', text: delta };
+
+  const payload = codexPayload(event);
+  const payloadType = payload.type;
+  const eventType = event.type;
+  const isDone =
+    payloadType === 'task_complete' ||
+    eventType === 'result' ||
+    eventType === 'turn.completed' ||
+    eventType === 'completed';
+  if (!isDone) return null;
+
+  const parsed = parseCodexOutput(line);
+  return { type: 'done', result: parsed };
+}
+
 function normalizeClaudeEffort(value: string | undefined): string | null {
   const normalized = value?.trim().toLowerCase();
   if (
@@ -761,6 +1111,8 @@ function normalizeClaudeEffort(value: string | undefined): string | null {
 }
 
 export class LocalClaudeRecommendationRunner implements ClaudeRecommendationRunner {
+  readonly preservesContext = true;
+
   private readonly timeoutMs: number;
   private readonly maxBudgetUsd: string;
   private readonly model: string;
@@ -913,8 +1265,128 @@ export class LocalClaudeRecommendationRunner implements ClaudeRecommendationRunn
   }
 }
 
+export class LocalCodexRecommendationRunner implements RecommendationChatRunner {
+  readonly preservesContext = false;
+
+  private readonly timeoutMs: number;
+  private readonly model: string | undefined;
+
+  constructor(args: { timeoutMs?: number; model?: string } = {}) {
+    const env = serverEnv();
+    this.timeoutMs = args.timeoutMs ?? env.TOKENOMIX_CODEX_CHAT_TIMEOUT_MS;
+    this.model = args.model ?? env.TOKENOMIX_CODEX_CHAT_MODEL;
+  }
+
+  async status(): Promise<RecommendationChatStatus> {
+    const command = await resolveCodexCommand();
+    if (!command) {
+      return {
+        available: false,
+        configured: false,
+        providerDetails: 'managed_by_codex_cli',
+        version: null,
+        message: 'OpenAI Codex executable was not found in this server process.',
+      };
+    }
+
+    try {
+      const version = await runCommand(command, ['--version'], 5_000);
+      if (version.code !== 0) throw new Error('codex_version_failed');
+      return {
+        available: true,
+        configured: true,
+        providerDetails: 'managed_by_codex_cli',
+        version: version.stdout.trim() || null,
+        message: 'OpenAI Codex is available. Provider configuration is managed by Codex CLI.',
+      };
+    } catch {
+      return {
+        available: false,
+        configured: false,
+        providerDetails: 'managed_by_codex_cli',
+        version: null,
+        message: 'OpenAI Codex is installed but could not be executed by this server process.',
+      };
+    }
+  }
+
+  async ask(prompt: string): Promise<ChatRunResult> {
+    const command = await resolveCodexCommand();
+    if (!command) throw new Error('codex_unavailable');
+
+    const result = await runCommand(command, this.buildArgs(), this.timeoutMs, {
+      stdin: prompt,
+      timeoutError: 'codex_timeout',
+    });
+    const parsed = parseCodexOutput(result.stdout);
+    if (result.code !== 0 && !parsed.answer) {
+      throw new Error(`codex_exit_${result.code}`);
+    }
+    return parsed;
+  }
+
+  async *stream(prompt: string, signal?: AbortSignal): AsyncIterable<ChatStreamEvent> {
+    const command = await resolveCodexCommand();
+    if (!command) throw new Error('codex_unavailable');
+
+    const stdoutLines: string[] = [];
+    let sawResult = false;
+    let streamedAnswer = '';
+    let finalResult: ChatRunResult | null = null;
+
+    for await (const line of streamCommand(command, this.buildArgs(), this.timeoutMs, signal, {
+      stdin: prompt,
+      timeoutError: 'codex_timeout',
+    })) {
+      stdoutLines.push(line);
+      const event = parseCodexStreamLine(line);
+      if (!event) continue;
+      if (event.type === 'delta') {
+        streamedAnswer += event.text;
+        yield event;
+        continue;
+      }
+
+      sawResult = true;
+      finalResult = {
+        ...event.result,
+        answer: event.result.answer || streamedAnswer,
+      };
+    }
+
+    if (!sawResult) {
+      finalResult = parseCodexOutput(stdoutLines.join('\n'));
+      sawResult = Boolean(finalResult.answer);
+    }
+    if (!sawResult || finalResult === null) throw new Error('codex_stream_missing_result');
+
+    yield {
+      type: 'done',
+      result: {
+        ...finalResult,
+        answer: finalResult.answer || streamedAnswer,
+      },
+    };
+  }
+
+  private buildArgs(): string[] {
+    const args = [
+      'exec',
+      '--json',
+      '--skip-git-repo-check',
+      '--ephemeral',
+      '--ignore-rules',
+      '--sandbox',
+      'read-only',
+    ];
+    if (this.model) args.push('--model', this.model);
+    args.push('-');
+    return args;
+  }
+}
+
 /**
- * Isolated working directory for the chatbot subprocess.
+ * Isolated working directory for chatbot subprocesses.
  *
  * Claude Code writes session JSONL files to ~/.claude/projects/<cwd-hash>/.
  * If the subprocess inherits the server's process.cwd() (the user's project
@@ -923,7 +1395,9 @@ export class LocalClaudeRecommendationRunner implements ClaudeRecommendationRunn
  *
  * Pointing cwd at a tokenomix-owned temp directory ensures chatbot sessions
  * hash to a separate directory that is NOT under ~/.claude/projects/<project>/,
- * so the watcher never ingests them.
+ * so the watcher never ingests them. Codex chat also runs from this directory
+ * and uses `codex exec --ephemeral` so its Ask AI turns are not persisted into
+ * ~/.codex/sessions.
  */
 const CHAT_SUBPROCESS_CWD = nodePath.join(os.tmpdir(), `tokenomix-chat-${process.pid}`);
 
@@ -942,16 +1416,21 @@ ensureChatCwd().catch((err: unknown) => {
   });
 });
 
+interface CommandRunOptions {
+  stdin?: string;
+  timeoutError?: string;
+}
+
 function runCommand(
   command: string,
   args: string[],
-  timeoutMs: number
+  timeoutMs: number,
+  options: CommandRunOptions = {}
 ): Promise<{ stdout: string; stderr: string; code: number }> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
-      // Use the tokenomix-owned temp dir so Claude Code session JSONL files
-      // are NOT written under the user's project directory and are therefore
-      // NOT ingested by the watcher into IndexStore. See CHAT_SUBPROCESS_CWD.
+      // Use the tokenomix-owned temp dir so provider chat sessions are not
+      // written under the user's watched project directory.
       cwd: CHAT_SUBPROCESS_CWD,
       env: process.env,
       shell: false,
@@ -968,6 +1447,11 @@ function runCommand(
     }, timeoutMs);
     if (timer.unref) timer.unref();
 
+    if (options.stdin !== undefined) {
+      child.stdin?.write(options.stdin);
+      child.stdin?.end();
+    }
+
     child.stdout.on('data', (chunk: Buffer) => {
       stdout = trimText(stdout + chunk.toString('utf8'), MAX_STDOUT_CHARS);
     });
@@ -981,7 +1465,7 @@ function runCommand(
     child.on('close', (code) => {
       clearTimeout(timer);
       if (didTimeout) {
-        reject(new Error('claude_timeout'));
+        reject(new Error(options.timeoutError ?? 'claude_timeout'));
         return;
       }
       resolve({ stdout, stderr, code: code ?? 1 });
@@ -993,10 +1477,11 @@ async function* streamCommand(
   command: string,
   args: string[],
   timeoutMs: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  options: CommandRunOptions = {}
 ): AsyncIterable<string> {
   const child = spawn(command, args, {
-    // Use the tokenomix-owned temp dir. See CHAT_SUBPROCESS_CWD comment above.
+    // Use the tokenomix-owned temp dir. See CHAT_SUBPROCESS_CWD.
     cwd: CHAT_SUBPROCESS_CWD,
     env: process.env,
     shell: false,
@@ -1011,6 +1496,11 @@ async function* streamCommand(
     child.kill('SIGTERM');
   }, timeoutMs);
   if (timer.unref) timer.unref();
+
+  if (options.stdin !== undefined) {
+    child.stdin?.write(options.stdin);
+    child.stdin?.end();
+  }
 
   const abortHandler = (): void => {
     child.kill('SIGTERM');
@@ -1044,23 +1534,119 @@ async function* streamCommand(
 
   const code = await closePromise;
   if (signal?.aborted) return;
-  if (didTimeout) throw new Error('claude_timeout');
+  if (didTimeout) throw new Error(options.timeoutError ?? 'claude_timeout');
   void code;
   void stderr;
 }
 
+type RecommendationChatRunnerRegistry = Partial<Record<ChatProvider, RecommendationChatRunner>>;
+
+interface ChatSessionState {
+  sessionSeeded: boolean;
+  seededSummary: MetricSummary | null;
+  seededStoreVersion: number;
+}
+
+function createDefaultRecommendationChatRunners(): Record<ChatProvider, RecommendationChatRunner> {
+  return {
+    'claude-code': new LocalClaudeRecommendationRunner(),
+    codex: new LocalCodexRecommendationRunner(),
+  };
+}
+
+function isRecommendationChatRunner(value: unknown): value is RecommendationChatRunner {
+  const candidate = value as Partial<RecommendationChatRunner> | null;
+  return (
+    typeof candidate === 'object' &&
+    candidate !== null &&
+    typeof candidate.status === 'function' &&
+    typeof candidate.ask === 'function' &&
+    typeof candidate.stream === 'function'
+  );
+}
+
+function normalizeRunnerRegistry(
+  input: RecommendationChatRunner | RecommendationChatRunnerRegistry
+): RecommendationChatRunnerRegistry {
+  if (isRecommendationChatRunner(input)) {
+    return { 'claude-code': input, codex: input };
+  }
+  return input;
+}
+
+function disabledLocalModelsStatus(): RecommendationChatStatus {
+  return {
+    available: false,
+    configured: false,
+    providerDetails: 'disabled_for_local_models',
+    version: null,
+    message: 'Ask AI is disabled for Local Models mode.',
+  };
+}
+
+function emptyRunnerStatus(provider: ChatProvider): RecommendationChatStatus {
+  return {
+    available: false,
+    configured: false,
+    providerDetails: provider === 'codex' ? 'managed_by_codex_cli' : 'managed_by_claude_code',
+    version: null,
+    message: `${providerRuntimeLabel(provider)} chat runner is not configured.`,
+  };
+}
+
+function initialChatSessionState(): ChatSessionState {
+  return {
+    sessionSeeded: false,
+    seededSummary: null,
+    seededStoreVersion: 0,
+  };
+}
+
 export function recommendationsChatRoute(
   store: IndexStore,
-  runner: ClaudeRecommendationRunner = new LocalClaudeRecommendationRunner()
+  runners:
+    | RecommendationChatRunner
+    | RecommendationChatRunnerRegistry = createDefaultRecommendationChatRunners()
 ): Hono {
   const app = new Hono();
-  let sessionSeeded = false;
+  const runnerRegistry = normalizeRunnerRegistry(runners);
+  const sessionStates = new Map<string, ChatSessionState>();
   let activeStream = false;
-  let seededSummary: MetricSummary | null = null;
-  let seededStoreVersion = 0;
+
+  function sessionStateFor(
+    provider: UsageSourceProviderFilter,
+    chatProvider: ChatProvider
+  ): ChatSessionState {
+    const key = `${chatProvider}:${provider}`;
+    const existing = sessionStates.get(key);
+    if (existing) return existing;
+    const created = initialChatSessionState();
+    sessionStates.set(key, created);
+    return created;
+  }
+
+  function resolveRequestProvider(rawProvider?: string): UsageSourceProviderFilter | null {
+    const parsed = parseUsageProviderFilterParam(rawProvider);
+    return parsed === null ? null : defaultProviderFilter(parsed);
+  }
+
+  function resolveRunner(provider: UsageSourceProviderFilter): {
+    provider: ChatProvider | null;
+    runner: RecommendationChatRunner | null;
+  } {
+    const chatProvider = chatProviderFor(provider);
+    if (chatProvider === null) return { provider: null, runner: null };
+    return { provider: chatProvider, runner: runnerRegistry[chatProvider] ?? null };
+  }
 
   app.get('/status', async (c) => {
-    const status = await runner.status();
+    const provider = resolveRequestProvider(c.req.query('provider'));
+    if (provider === null) return c.json({ error: 'Invalid provider filter.' }, 400);
+    const resolved = resolveRunner(provider);
+    if (resolved.provider === null) return c.json(disabledLocalModelsStatus());
+    if (resolved.runner === null) return c.json(emptyRunnerStatus(resolved.provider));
+
+    const status = await resolved.runner.status();
     return c.json(status);
   });
 
@@ -1077,15 +1663,37 @@ export function recommendationsChatRoute(
       return c.json({ error: 'Message is required and must be 2,000 characters or fewer.' }, 400);
     }
 
+    const provider = defaultProviderFilter(request.provider);
+    const resolved = resolveRunner(provider);
+    if (resolved.provider === null) {
+      return c.json({ error: 'Ask AI is disabled for Local Models mode.' }, 400);
+    }
+    if (resolved.runner === null) {
+      return c.json(
+        { error: `${providerRuntimeLabel(resolved.provider)} chat runner is not configured.` },
+        503
+      );
+    }
+
+    const runner = resolved.runner;
+    const runtimeLabel = providerRuntimeLabel(resolved.provider);
+    const state = sessionStateFor(provider, resolved.provider);
+    const canReuseSeed = runner.preservesContext === true;
     const hasCurrentSeed =
-      sessionSeeded && seededSummary !== null && seededStoreVersion === store.lastChangeTs;
+      canReuseSeed &&
+      state.sessionSeeded &&
+      state.seededSummary !== null &&
+      state.seededStoreVersion === store.lastChangeTs;
     const summary =
-      hasCurrentSeed && seededSummary ? seededSummary : store.getMetrics({ since: 'all' });
+      hasCurrentSeed && state.seededSummary
+        ? state.seededSummary
+        : store.getMetrics({ since: 'all', ...providerQuery(metricsProviderFilter(provider)) });
     const retrievedContext = buildRetrievedChatContext({
       store,
       summary,
       request,
       includeBaseline: !hasCurrentSeed,
+      provider,
     });
     const prompt = hasCurrentSeed
       ? buildFollowupPrompt(request, retrievedContext)
@@ -1093,10 +1701,12 @@ export function recommendationsChatRoute(
 
     try {
       const answer = await runner.ask(prompt);
-      sessionSeeded = true;
-      seededSummary = summary;
-      seededStoreVersion = store.lastChangeTs;
-      const responseText = answer.answer || 'Claude Code returned an empty response.';
+      if (canReuseSeed) {
+        state.sessionSeeded = true;
+        state.seededSummary = summary;
+        state.seededStoreVersion = store.lastChangeTs;
+      }
+      const responseText = answer.answer || `${runtimeLabel} returned an empty response.`;
       const response: RecommendationChatResponse = {
         answer: responseText,
         groundedOpportunityIds: groundedOpportunityIds(summary, responseText),
@@ -1107,17 +1717,11 @@ export function recommendationsChatRoute(
       };
       return c.json(response);
     } catch {
-      // L3: If the claude subprocess fails (e.g. session expired after a server
-      // restart or Claude Code session TTL), reset sessionSeeded so the next
-      // request re-seeds the full metrics context rather than relying on the
-      // now-invalid --resume session. Without this, the chatbot would silently
-      // produce low-quality answers that reference metrics it no longer has.
-      sessionSeeded = false;
-      seededSummary = null;
+      state.sessionSeeded = false;
+      state.seededSummary = null;
       return c.json(
         {
-          error:
-            'Claude Code request failed. Confirm Claude Code works in this server process context.',
+          error: `${runtimeLabel} request failed. Confirm ${runtimeLabel} works in this server process context.`,
         },
         502
       );
@@ -1141,15 +1745,37 @@ export function recommendationsChatRoute(
       return c.json({ error: 'Message is required and must be 2,000 characters or fewer.' }, 400);
     }
 
+    const provider = defaultProviderFilter(request.provider);
+    const resolved = resolveRunner(provider);
+    if (resolved.provider === null) {
+      return c.json({ error: 'Ask AI is disabled for Local Models mode.' }, 400);
+    }
+    if (resolved.runner === null) {
+      return c.json(
+        { error: `${providerRuntimeLabel(resolved.provider)} chat runner is not configured.` },
+        503
+      );
+    }
+
+    const runner = resolved.runner;
+    const runtimeLabel = providerRuntimeLabel(resolved.provider);
+    const state = sessionStateFor(provider, resolved.provider);
+    const canReuseSeed = runner.preservesContext === true;
     const hasCurrentSeed =
-      sessionSeeded && seededSummary !== null && seededStoreVersion === store.lastChangeTs;
+      canReuseSeed &&
+      state.sessionSeeded &&
+      state.seededSummary !== null &&
+      state.seededStoreVersion === store.lastChangeTs;
     const summary =
-      hasCurrentSeed && seededSummary ? seededSummary : store.getMetrics({ since: 'all' });
+      hasCurrentSeed && state.seededSummary
+        ? state.seededSummary
+        : store.getMetrics({ since: 'all', ...providerQuery(metricsProviderFilter(provider)) });
     const retrievedContext = buildRetrievedChatContext({
       store,
       summary,
       request,
       includeBaseline: !hasCurrentSeed,
+      provider,
     });
     const prompt = hasCurrentSeed
       ? buildFollowupPrompt(request, retrievedContext)
@@ -1168,7 +1794,7 @@ export function recommendationsChatRoute(
       try {
         await stream.writeSSE({
           event: 'message',
-          data: JSON.stringify({ type: 'start', sessionSeeded }),
+          data: JSON.stringify({ type: 'start', sessionSeeded: hasCurrentSeed }),
         });
 
         for await (const event of runner.stream(prompt, abortController.signal)) {
@@ -1182,15 +1808,17 @@ export function recommendationsChatRoute(
           }
 
           responseText = event.result.answer || responseText;
-          sessionSeeded = true;
-          seededSummary = summary;
-          seededStoreVersion = store.lastChangeTs;
+          if (canReuseSeed) {
+            state.sessionSeeded = true;
+            state.seededSummary = summary;
+            state.seededStoreVersion = store.lastChangeTs;
+          }
           await stream.writeSSE({
             event: 'message',
             data: JSON.stringify({
               type: 'done',
               result: {
-                answer: responseText || 'Claude Code returned an empty response.',
+                answer: responseText || `${runtimeLabel} returned an empty response.`,
                 groundedOpportunityIds: groundedOpportunityIds(summary, responseText),
                 durationMs: event.result.durationMs,
                 costUsd: event.result.costUsd,
@@ -1201,16 +1829,13 @@ export function recommendationsChatRoute(
           });
         }
       } catch {
-        // L3: Reset sessionSeeded on stream failure so the next request
-        // re-seeds context rather than relying on a potentially-expired session.
-        sessionSeeded = false;
-        seededSummary = null;
+        state.sessionSeeded = false;
+        state.seededSummary = null;
         await stream.writeSSE({
           event: 'message',
           data: JSON.stringify({
             type: 'error',
-            error:
-              'Claude Code request failed. Confirm Claude Code works in this server process context.',
+            error: `${runtimeLabel} request failed. Confirm ${runtimeLabel} works in this server process context.`,
           }),
         });
       } finally {

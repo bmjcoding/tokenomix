@@ -144,6 +144,29 @@ const ServerEnvSchema = z.object({
     .preprocess(coerceFlagBool, z.boolean())
     .default(false)
     .describe('Set to "1" to run Claude without the built-in system prompt (bare / raw mode).'),
+
+  // ---- Codex subprocess ----------------------------------------------------
+  TOKENOMIX_CODEX_COMMAND: z
+    .string()
+    .optional()
+    .describe(
+      'Absolute path or plain basename of the Codex executable. ' +
+        'Auto-detected from Codex.app, common install paths, or PATH when unset.'
+    ),
+
+  TOKENOMIX_CODEX_CHAT_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .default(60_000)
+    .describe('Maximum milliseconds to wait for a Codex subprocess response (default 60000).'),
+
+  TOKENOMIX_CODEX_CHAT_MODEL: z
+    .string()
+    .max(100, { message: 'Model identifier must be 100 characters or fewer.' })
+    .transform((s) => s.trim())
+    .optional()
+    .describe('Optional Codex model ID to pass to `codex exec`; omit to use Codex config.'),
 });
 
 // ---------------------------------------------------------------------------
