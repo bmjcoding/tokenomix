@@ -9,7 +9,7 @@ consumed by the Vite/React dashboard.
 ## Layout
 
 ```text
-~/.claude/tokenomix/
+tokenomix/
 ├── apps/
 │   ├── server/          # Hono API, JSONL parser, watcher, aggregation tests
 │   └── web/             # Vite/React dashboard
@@ -50,7 +50,7 @@ Defaults:
 - API server: `http://127.0.0.1:3001`
 - Data sources:
   - Claude Code: `~/.claude/projects/**/*.jsonl`
-  - OpenAI Codex: `~/.codex/sessions/**/*.jsonl` and `~/.codex/archived_sessions/*.jsonl`
+  - OpenAI Codex: `~/.codex/sessions/**/*.jsonl` and `~/.codex/archived_sessions/**/*.jsonl`
   - Local models: `~/.tokenomix/local-models/**/*.jsonl`
 
 Set `PORT_BASE` to move both ports. The web server uses `PORT_BASE`; the API
@@ -125,6 +125,22 @@ The floating Ask AI panel follows the selected provider mode:
 - `OpenAI Codex` uses `codex exec --json` through the local Codex CLI.
 - `Local Models` hides Ask AI for now; local-model telemetry remains visible in
   the dashboard/report and in all-provider aggregates.
+
+Optional OpenAI Codex subprocess controls (parallel to the Claude controls
+under [Recommendation Chat](#recommendation-chat)):
+
+```bash
+TOKENOMIX_CODEX_COMMAND=/Users/me/.codex/bin/codex
+TOKENOMIX_CODEX_CHAT_MODEL=gpt-5.5
+TOKENOMIX_CODEX_CHAT_TIMEOUT_MS=60000
+corepack pnpm@10.33.0 dev
+```
+
+`TOKENOMIX_CODEX_COMMAND` accepts an absolute path or a plain basename; when
+unset it is auto-detected from `Codex.app`, common install paths, or `PATH`.
+`TOKENOMIX_CODEX_CHAT_MODEL` is optional — omit it to use the model from your
+Codex config. `TOKENOMIX_CODEX_CHAT_TIMEOUT_MS` bounds how long the server
+waits for a Codex subprocess response (default 60000).
 
 For Amazon Bedrock deployments:
 
@@ -271,7 +287,7 @@ fallbacks only as an explicit opt-in.
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `TOKENOMIX_WATCHER_POLLING` | unset | When set to `1`, switches chokidar from FSEvents (macOS) / inotify (Linux) to `usePolling: true` with a 1-second interval. Useful for network mounts, VMs, or hosts where FSEvents queue overflow has been observed after long uptimes. |
+| `TOKENOMIX_WATCHER_FSEVENTS` | unset | The watcher uses polling (`usePolling: true`, 1-second interval) by default because chokidar's FSEvents backend can silently drop events after long process uptimes or when the watched tree is modified by another process. When set to `1`, switches to FSEvents (macOS) / inotify (Linux) — not recommended on macOS hosts with long uptimes. |
 
 ## Admin Endpoints
 
