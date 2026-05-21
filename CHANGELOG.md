@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.11.1] - 2026-05-21
+
+### Changed
+
+- The server now binds its HTTP port before running the startup JSONL
+  index scan instead of after it; the scan runs in the background, and the
+  file watcher and rescan scheduler start once it completes.
+- Data API endpoints return `503 {ready:false}` until the initial index
+  scan completes, so the dashboard shows loading states instead of partial
+  numbers. `/api/events` (SSE) and `/api/health` stay reachable throughout.
+- The web app refetches every panel when the SSE stream (re)connects, and
+  retries `503` responses while the server is still indexing.
+
+### Fixed
+
+- `pnpm dev` no longer floods the console with `ECONNREFUSED` proxy errors
+  during startup — the Vite proxy connects to an already-open port and
+  quietly absorbs the brief remaining startup window.
+- The dashboard no longer requires a manual refresh after the backend
+  finishes starting; panels populate automatically once the index is ready.
+
 ## [3.11.0] - 2026-05-21
 
 ### Added
@@ -816,6 +837,7 @@ Internal cross-references updated:
 - `DEFAULT_OUTPUT` now points to `output/usage-dashboard.html` within the
   project, instead of a session-specific retro directory.
 
+[3.11.1]: https://github.com/bmjcoding/tokenomix/compare/v3.11.0...v3.11.1
 [3.11.0]: https://github.com/bmjcoding/tokenomix/compare/v3.10.0...v3.11.0
 [3.10.0]: https://github.com/bmjcoding/tokenomix/compare/v3.9.0...v3.10.0
 [3.9.0]: https://github.com/bmjcoding/tokenomix/compare/v3.8.1...v3.9.0
