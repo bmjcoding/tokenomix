@@ -21,6 +21,21 @@ import type {
 
 const LOCAL_ACTION_HEADERS = { 'X-Tokenomix-Local-Action': '1' } as const;
 
+/**
+ * Error thrown by {@link apiFetch} on a non-2xx response. Carries the HTTP
+ * status so callers (e.g. the TanStack Query retry policy) can distinguish a
+ * transient 503 "index still building" reply from a real failure.
+ */
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -59,7 +74,7 @@ async function responseErrorMessage(res: Response, path: string): Promise<string
 async function apiFetch<T>(path: string): Promise<T> {
   const res = await fetch(path);
   if (!res.ok) {
-    throw new Error(await responseErrorMessage(res, path));
+    throw new ApiError(res.status, await responseErrorMessage(res, path));
   }
   return res.json() as Promise<T>;
 }

@@ -76,6 +76,14 @@ export function useServerEvents(): void {
     // Realtime branch: EventSource-driven updates.
     const source = new EventSource('/api/events');
 
+    source.onopen = () => {
+      // Connection (re)established — the backend is up. Reset the error
+      // counter and refetch every panel so a backend that started late (or
+      // restarted) populates the dashboard without a manual page refresh.
+      consecutiveErrorsRef.current = 0;
+      invalidateAll(queryClient);
+    };
+
     source.onmessage = (event: MessageEvent) => {
       // Successful message resets the error counter.
       consecutiveErrorsRef.current = 0;

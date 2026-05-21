@@ -72,26 +72,34 @@ function httpLogger(): MiddlewareHandler {
 async function main(): Promise<void> {
   const store = new IndexStore();
 
-  // Full JSONL scan on startup.
-  await store.initialize();
-
-  // Collect file count for the startup log.
-  let fileCount = 0;
-  try {
-    fileCount = await countJsonlFilesFromDirs(WATCHED_SOURCE_DIRS);
-  } catch {
-    fileCount = 0;
-  }
-
   const app = new Hono();
 
   // Use custom logger instead of hono/logger to avoid logging query-string values.
   app.use('*', httpLogger());
 
-  // Start file watcher and rescan scheduler; both handles needed by shutdown().
-  const watcher = startWatcher(store);
+  // Scheduler is constructed now (healthRoute needs the handle) but only
+  // started once the initial scan completes — see runStartupScan().
   const scheduler = new RescanScheduler(store);
-  scheduler.start();
+  // Watcher is created lazily after the initial scan; shutdown() must tolerate
+  // it still being undefined if a signal arrives mid-scan.
+  let watcher: ReturnType<typeof startWatcher> | undefined;
+
+  // Readiness gate: until the initial index scan completes, data endpoints
+  // return 503 so the UI shows a loading state instead of rendering partial
+  // numbers. /api/events (SSE) and /api/health stay reachable so the client
+  // can detect when the index becomes ready.
+  app.use('/api/*', async (c, next) => {
+    const pathname = new URL(c.req.url, 'http://localhost').pathname;
+    if (
+      store.isReady() ||
+      pathname.startsWith('/api/events') ||
+      pathname.startsWith('/api/health')
+    ) {
+      await next();
+      return;
+    }
+    return c.json({ error: 'indexing', ready: false }, 503);
+  });
 
   app.route('/api/metrics', metricsRoute(store));
   app.route('/api/sessions', sessionsRoute(store));
@@ -126,7 +134,11 @@ async function main(): Promise<void> {
     // Stop the rescan scheduler before closing the watcher.
     scheduler.stop();
 
-    // Close the chokidar watcher.
+    // Close the chokidar watcher (may not exist yet if shutdown races startup).
+    if (!watcher) {
+      process.exit(0);
+      return;
+    }
     watcher
       .close()
       .then(() => {
@@ -140,14 +152,53 @@ async function main(): Promise<void> {
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
 
+  // Bind the HTTP port immediately so the Vite dev proxy can connect right
+  // away — the (multi-second) JSONL index scan then runs in the background.
+  // This eliminates the ECONNREFUSED window during startup.
   serve({ fetch: app.fetch, port: PORT, hostname: '127.0.0.1' }, (info) => {
-    // Structured startup log with all relevant context.
-    logEvent('info', 'startup', {
-      sourceDirs: WATCHED_SOURCE_DIRS,
-      fileCount,
-      port: info.port,
-      indexedRows: store.indexedRows,
+    logEvent('info', 'listening', { port: info.port });
+    void runStartupScan(store, () => {
+      watcher = startWatcher(store);
+      scheduler.start();
     });
+  });
+}
+
+/**
+ * Run the full JSONL index scan in the background after the port is already
+ * open. When it completes, start the watcher + scheduler and emit 'change' so
+ * connected SSE clients refetch — the dashboard populates with no manual
+ * refresh.
+ */
+async function runStartupScan(store: IndexStore, onReady: () => void): Promise<void> {
+  const startedAt = Date.now();
+  try {
+    await store.initialize();
+  } catch (err) {
+    logEvent('error', 'startup-scan-failed', { error: String(err) });
+    return;
+  }
+
+  // Start the watcher + rescan scheduler only now, so neither runs concurrently
+  // with the initial scan.
+  onReady();
+
+  let fileCount = 0;
+  try {
+    fileCount = await countJsonlFilesFromDirs(WATCHED_SOURCE_DIRS);
+  } catch {
+    fileCount = 0;
+  }
+
+  // Notify connected SSE clients that the index is ready so panels refetch.
+  store.emit('change');
+
+  logEvent('info', 'startup', {
+    sourceDirs: WATCHED_SOURCE_DIRS,
+    fileCount,
+    port: PORT,
+    indexedRows: store.indexedRows,
+    scanMs: Date.now() - startedAt,
   });
 }
 

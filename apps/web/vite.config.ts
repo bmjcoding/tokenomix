@@ -17,6 +17,22 @@ export default defineConfig({
       '/api': {
         target: `http://127.0.0.1:${portBase + 1}`,
         changeOrigin: false,
+        configure: (proxy) => {
+          // The backend may not be listening yet during `pnpm dev` startup.
+          // Swallow the expected connection errors (no stack-trace spam) and
+          // return a quiet 503 so the client retries cleanly.
+          proxy.on('error', (err, _req, res) => {
+            const code = (err as NodeJS.ErrnoException).code;
+            if (code === 'ECONNREFUSED' || code === 'ECONNRESET') {
+              if (res && 'writeHead' in res && !res.writableEnded) {
+                res.writeHead(503, { 'Content-Type': 'application/json' });
+                res.end('{"error":"backend starting"}');
+              }
+              return;
+            }
+            console.warn(`[vite] proxy error: ${err.message}`);
+          });
+        },
       },
     },
   },
